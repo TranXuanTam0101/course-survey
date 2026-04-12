@@ -185,19 +185,6 @@ try:
     
     processed_container.get_blob_client(output_path).upload_blob(output, overwrite=True)
     
-    # ==================== HIỂN THỊ 5 DÒNG ĐẦU ====================
-    print(f"\n{'='*70}")
-    print(f"✅ SUCCESS!")
-    print(f"{'='*70}")
-    print(f"📊 Total: {len(df):,} responses | Students: {df['MaSV'].nunique():,} | Avg: {df['DanhGia'].mean():.2f}/5")
-    print(f"📤 Uploaded: processed-data/{output_path}")
-    
-    print(f"\n📋 FIRST 5 ROWS:")
-    print(f"{'-'*70}")
-    display_cols = ['Lop', 'MaSV', 'HoDem', 'Ten', 'MaHP', 'CauHoi', 'DanhGia']
-    display_cols = [c for c in display_cols if c in df.columns]
-    print(df[display_cols].head(5).to_string(index=False))
-    print(f"{'-'*70}")
     
     # Thống kê nhanh theo câu hỏi
     print(f"\n📊 RATING BY QUESTION:")
@@ -209,3 +196,51 @@ try:
 except Exception as e:
     print(f"❌ ERROR: {str(e)}")
     sys.exit(1)
+# insert_to_sql.py - Chèn dữ liệu vào SQL Azure
+import os
+import pandas as pd
+from sqlalchemy import create_engine, text
+import urllib
+
+# Cấu hình SQL Azure
+SQL_SERVER = "your-server.database.windows.net"
+SQL_DATABASE = "SurveyDB"
+SQL_USERNAME = "your_username"
+SQL_PASSWORD = "your_password"
+
+# Tạo connection string
+connection_string = (
+    f"Driver={{ODBC Driver 18 for SQL Server}};"
+    f"Server=tcp:{SQL_SERVER},1433;"
+    f"Database={SQL_DATABASE};"
+    f"Uid={SQL_USERNAME};"
+    f"Pwd={SQL_PASSWORD};"
+    f"Encrypt=yes;"
+    f"TrustServerCertificate=no;"
+    f"Connection Timeout=30;"
+)
+
+# Tạo engine
+params = urllib.parse.quote_plus(connection_string)
+engine = create_engine(f"mssql+pyodbc:///?odbc_connect={params}")
+
+# Đọc dữ liệu đã xử lý
+df = pd.read_csv("processed_data.csv", encoding='utf-8-sig')
+
+# Chuyển đổi kiểu dữ liệu
+df['NgaySinh'] = pd.to_datetime(df['NgaySinh'], errors='coerce')
+df['CauHoi'] = df['CauHoi'].astype(int)
+df['DanhGia'] = df['DanhGia'].astype(int)
+df['HocKy'] = df['HocKy'].astype(int)
+
+# Insert vào SQL Azure
+df.to_sql(
+    'survey_responses',
+    engine,
+    if_exists='append',  # 'append' để thêm, 'replace' để thay thế
+    index=False,
+    method='multi',
+    chunksize=1000
+)
+
+print(f"✅ Inserted {len(df)} records into SQL Azure")

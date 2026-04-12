@@ -175,7 +175,9 @@ try:
     print(f"📤 Uploaded to: processed-data/{output_path}")
     
     print(f"\n📋 Sample (first 3 rows):")
-    sample_cols = ['Lop', 'MaSV', 'Ten', 'MaHP', 'CauHoi', 'DanhGia']
+    sample_cols = ['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
+    'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 'CauHoi', 'DanhGia',
+    'FB1', 'FB2', 'FB3', 'FB4']
     sample_cols = [c for c in sample_cols if c in df.columns]
     print(df[sample_cols].head(3).to_string(index=False))
     

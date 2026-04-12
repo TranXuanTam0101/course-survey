@@ -1,4 +1,4 @@
-# etl.py - XỬ LÝ ĐÚNG 17 CỘT RAW
+# etl.py - XỬ LÝ DỮ LIỆU THEO ĐẶC ĐIỂM NHẬN DẠNG
 import os
 import sys
 from azure.storage.blob import BlobServiceClient
@@ -38,13 +38,162 @@ def convert_masv(value):
         return value
 
 def parse_lop(value):
-    """Xử lý Lop: '45K15.1\t1' -> '45K15.1'"""
+    """Lop: Đầu dòng (trước dấu cách)"""
     if pd.isna(value) or value == '':
         return None
     value_str = str(value).strip()
+    # Lấy phần trước dấu cách hoặc tab
+    if ' ' in value_str:
+        return value_str.split(' ')[0]
     if '\t' in value_str:
         return value_str.split('\t')[0]
     return value_str
+
+def extract_hodem_ten(full_name):
+    """
+    Tách HoDem và Ten từ chuỗi họ tên
+    Ten: Từ cuối cùng
+    HoDem: Tất cả các từ còn lại
+    """
+    if pd.isna(full_name) or full_name == '':
+        return None, None
+    
+    full_name = str(full_name).strip()
+    parts = full_name.split()
+    
+    if len(parts) == 0:
+        return None, None
+    elif len(parts) == 1:
+        return None, clean_text(parts[0])
+    else:
+        ten = clean_text(parts[-1])
+        hodem = clean_text(' '.join(parts[:-1]))
+        return hodem, ten
+
+def parse_row_advanced(row_text):
+    """
+    Parse một dòng dữ liệu dựa trên đặc điểm nhận dạng
+    Input: chuỗi text đã được tách bằng tab
+    """
+    if pd.isna(row_text) or row_text == '':
+        return None
+    
+    fields = str(row_text).split('\t')
+    
+    if len(fields) < 17:
+        return None
+    
+    result = {}
+    
+    # 1. Lop: Đầu dòng (trước dấu cách)
+    lop_raw = fields[0].strip()
+    if ' ' in lop_raw:
+        result['Lop'] = lop_raw.split(' ')[0]
+    elif '\t' in lop_raw:
+        result['Lop'] = lop_raw.split('\t')[0]
+    else:
+        result['Lop'] = lop_raw
+    
+    # 2. MaSV: Sau Lop, chuỗi số 12 ký tự (có thể ở dạng E+)
+    masv_raw = fields[1].strip() if len(fields) > 1 else ''
+    result['MaSV'] = convert_masv(masmv_raw)
+    
+    # 3-5. Tìm NgaySinh để xác định vị trí
+    ngaysinh_value = None
+    ngaysinh_index = -1
+    
+    # Tìm NgaySinh (định dạng dd/mm/yyyy)
+    for i, field in enumerate(fields):
+        if re.match(r'\d{1,2}/\d{1,2}/\d{4}', field.strip()):
+            ngaysinh_value = field.strip()
+            ngaysinh_index = i
+            break
+    
+    result['NgaySinh'] = pd.to_datetime(ngaysinh_value, errors='coerce', dayfirst=True) if ngaysinh_value else None
+    
+    # HoDem & Ten: Lấy phần giữa MaSV và NgaySinh
+    if ngaysinh_index > 1:
+        hoten_sv = ' '.join(fields[2:ngaysinh_index]).strip()
+        hodem, ten = extract_hodem_ten(hoten_sv)
+        result['HoDem'] = hodem
+        result['Ten'] = ten
+    else:
+        result['HoDem'] = None
+        result['Ten'] = None
+    
+    # 6. MaHP: Mã học phần, sau ngày sinh
+    if ngaysinh_index + 1 < len(fields):
+        result['MaHP'] = fields[ngaysinh_index + 1].strip()
+    else:
+        result['MaHP'] = None
+    
+    # 7. TenHP: Phần giữa MaHP và MaGV
+    # Tìm MaGV (chuỗi số)
+    magv_index = -1
+    for i in range(ngaysinh_index + 2, min(ngaysinh_index + 10, len(fields))):
+        if re.match(r'^\d+$', fields[i].strip()):
+            magv_index = i
+            break
+    
+    if magv_index > ngaysinh_index + 1:
+        tenhp = ' '.join(fields[ngaysinh_index + 2:magv_index]).strip()
+        result['TenHP'] = clean_text(tenhp)
+    else:
+        result['TenHP'] = None
+    
+    # 8. MaGV
+    if magv_index != -1:
+        result['MaGV'] = fields[magv_index].strip()
+    else:
+        result['MaGV'] = None
+    
+    # 9-10. HoDemGV & TenGV: Phần giữa MaGV và LopHP
+    # Tìm LopHP (mã lớp học phần)
+    lophp_index = -1
+    for i in range(magv_index + 1, min(magv_index + 10, len(fields))):
+        if '_' in fields[i] or (re.match(r'^[A-Z0-9_]+$', fields[i].strip())):
+            lophp_index = i
+            break
+    
+    if lophp_index > magv_index + 1:
+        hoten_gv = ' '.join(fields[magv_index + 1:lophp_index]).strip()
+        hodem_gv, ten_gv = extract_hodem_ten(hoten_gv)
+        result['HoDemGV'] = hodem_gv
+        result['TenGV'] = ten_gv
+    else:
+        result['HoDemGV'] = None
+        result['TenGV'] = None
+    
+    # 11. LopHP
+    if lophp_index != -1:
+        result['LopHP'] = fields[lophp_index].strip()
+    else:
+        result['LopHP'] = None
+    
+    # 12. CauHoi
+    if lophp_index + 1 < len(fields):
+        result['CauHoi'] = pd.to_numeric(fields[lophp_index + 1], errors='coerce')
+    else:
+        result['CauHoi'] = None
+    
+    # 13. DanhGia
+    if lophp_index + 2 < len(fields):
+        result['DanhGia'] = pd.to_numeric(fields[lophp_index + 2], errors='coerce')
+    else:
+        result['DanhGia'] = None
+    
+    # 14-17. FB1, FB2, FB3, FB4 (bỏ qua cột NULL)
+    fb_start = lophp_index + 3
+    # Bỏ qua các giá trị NULL
+    while fb_start < len(fields) and fields[fb_start].strip() == 'NULL':
+        fb_start += 1
+    
+    result['FB1'] = clean_text(fields[fb_start]) if fb_start < len(fields) else None
+    result['FB2'] = clean_text(fields[fb_start + 1]) if fb_start + 1 < len(fields) else None
+    result['FB3'] = clean_text(fields[fb_start + 2]) if fb_start + 2 < len(fields) else None
+    result['FB4'] = clean_text(fields[fb_start + 3]) if fb_start + 3 < len(fields) else None
+    
+    return result
 
 try:
     # ==================== 1. ĐỌC FILE ====================
@@ -59,126 +208,48 @@ try:
     data = blob_client.download_blob().readall()
     print(f"✅ Downloaded {len(data) / 1024 / 1024:.2f} MB")
     
-    # ==================== 2. ĐỌC CSV ====================
-    print("📊 Reading CSV file...")
+    # ==================== 2. GIẢI MÃ VÀ ĐỌC DÒNG ====================
+    print("📊 Decoding and parsing rows...")
     
-    # Đọc file với separator là tab
-    df_raw = pd.read_csv(
-        io.BytesIO(data),
-        sep='\t',
-        header=None,
-        dtype=str,
-        low_memory=False,
-        encoding='cp1258'
-    )
+    # Giải mã
+    try:
+        text_content = data.decode('cp1258')
+    except:
+        text_content = data.decode('utf-8')
     
-    print(f"✅ Read {len(df_raw):,} rows, {len(df_raw.columns)} columns")
+    # Fix encoding
+    text_content = ftfy.fix_text(text_content)
     
-    # ==================== 3. TẠO DATAFRAME KẾT QUẢ ====================
-    print("🔄 Building result DataFrame...")
+    # Đọc từng dòng
+    lines = text_content.split('\n')
+    print(f"   Total lines: {len(lines):,}")
     
-    result = pd.DataFrame()
+    # Parse từng dòng
+    records = []
+    for i, line in enumerate(lines):
+        if i % 50000 == 0 and i > 0:
+            print(f"   Processing line {i:,}/{len(lines):,}")
+        
+        if line.strip():
+            record = parse_row_advanced(line)
+            if record and record.get('MaSV') and record.get('MaHP') and record.get('CauHoi'):
+                records.append(record)
     
-    # Cột 0: Lop
-    result['Lop'] = df_raw[0].apply(parse_lop)
+    print(f"✅ Parsed {len(records):,} valid records")
     
-    # Cột 1: MaSV
-    result['MaSV'] = df_raw[1].apply(convert_masv) if 1 in df_raw.columns else None
-    
-    # Cột 2: HoDem
-    result['HoDem'] = df_raw[2].apply(clean_text) if 2 in df_raw.columns else None
-    
-    # Cột 3: Ten (có thể bị thiếu)
-    if 3 in df_raw.columns:
-        result['Ten'] = df_raw[3].apply(clean_text)
-    else:
-        result['Ten'] = None
-    
-    # Cột 4: NgaySinh
-    if 4 in df_raw.columns:
-        result['NgaySinh'] = pd.to_datetime(df_raw[4], errors='coerce', dayfirst=True)
-    else:
-        result['NgaySinh'] = None
-    
-    # Cột 5: MaHP
-    result['MaHP'] = df_raw[5] if 5 in df_raw.columns else None
-    
-    # Cột 6: TenHP
-    result['TenHP'] = df_raw[6].apply(clean_text) if 6 in df_raw.columns else None
-    
-    # Cột 7: MaGV
-    result['MaGV'] = df_raw[7] if 7 in df_raw.columns else None
-    
-    # Cột 8: HoDemGV
-    result['HoDemGV'] = df_raw[8].apply(clean_text) if 8 in df_raw.columns else None
-    
-    # Cột 9: TenGV
-    result['TenGV'] = df_raw[9].apply(clean_text) if 9 in df_raw.columns else None
-    
-    # Cột 10: LopHP
-    result['LopHP'] = df_raw[10] if 10 in df_raw.columns else None
-    
-    # Cột 11: CauHoi
-    result['CauHoi'] = pd.to_numeric(df_raw[11], errors='coerce') if 11 in df_raw.columns else None
-    
-    # Cột 12: DanhGia
-    result['DanhGia'] = pd.to_numeric(df_raw[12], errors='coerce') if 12 in df_raw.columns else None
-    
-    # Cột 13: NULL (bỏ qua)
-    
-    # Cột 14: FB1
-    result['FB1'] = df_raw[14].apply(clean_text) if 14 in df_raw.columns else None
-    
-    # Cột 15: FB2
-    result['FB2'] = df_raw[15].apply(clean_text) if 15 in df_raw.columns else None
-    
-    # Cột 16: FB3
-    result['FB3'] = df_raw[16].apply(clean_text) if 16 in df_raw.columns else None
-    
-    # Cột 17: FB4
-    result['FB4'] = df_raw[17].apply(clean_text) if 17 in df_raw.columns else None
-    
-    # ==================== 4. XỬ LÝ TRƯỜNG HỢP TEN BỊ THIẾU ====================
-    # Nếu Ten bị thiếu, thử lấy từ HoDem (trường hợp HoDem chứa cả họ và tên)
-    if result['Ten'].isna().any():
-        print("🔄 Handling missing Ten values...")
-        # Một số dòng có Ten bị thiếu, HoDem có dạng "Lê Bùi ?ông	Th?o"
-        # Cần tách HoDem nếu có tab
-        for idx in result[result['Ten'].isna()].index:
-            hodem_val = result.loc[idx, 'HoDem']
-            if hodem_val and '\t' in str(hodem_val):
-                parts = str(hodem_val).split('\t')
-                result.loc[idx, 'HoDem'] = clean_text(parts[0]) if len(parts) > 0 else None
-                result.loc[idx, 'Ten'] = clean_text(parts[1]) if len(parts) > 1 else None
-    
-    # ==================== 5. LỌC DỮ LIỆU ====================
-    print("🔄 Filtering valid records...")
-    before = len(result)
-    
-    valid_mask = (
-        result['MaSV'].notna() & 
-        result['MaHP'].notna() & 
-        result['CauHoi'].notna()
-    )
-    
-    result = result[valid_mask]
-    print(f"   Kept {len(result):,} / {before:,} rows ({len(result)/before*100:.1f}%)")
-    
-    if len(result) == 0:
+    if len(records) == 0:
         print("❌ ERROR: No valid records found!")
-        print("\n📋 Debug - First row raw data:")
-        if len(df_raw) > 0:
-            for i in range(min(len(df_raw.columns), 18)):
-                val = df_raw[i].iloc[0]
-                print(f"   Col {i}: {val[:80] if val else 'EMPTY'}")
         sys.exit(1)
     
-    # ==================== 6. THÊM METADATA ====================
+    # Tạo DataFrame
+    result = pd.DataFrame(records)
+    
+    # ==================== 3. THÊM METADATA ====================
     result['HocKy'] = 2 if "252" in SURVEY_FILE else 1 if "251" in SURVEY_FILE else None
     result['NamHoc'] = SEMESTER
     result['ProcessedDate'] = datetime.now()
     
-    # ==================== 7. SẮP XẾP CỘT ====================
+    # ==================== 4. SẮP XẾP CỘT ====================
     final_columns = [
         'Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
         'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 'CauHoi', 'DanhGia',
@@ -188,7 +259,7 @@ try:
     result = result[[col for col in final_columns if col in result.columns]]
     result = result.sort_values(['MaSV', 'MaHP', 'CauHoi'])
     
-    # ==================== 8. UPLOAD KẾT QUẢ ====================
+    # ==================== 5. UPLOAD KẾT QUẢ ====================
     print("📤 Uploading to Azure...")
     output = result.to_csv(index=False, encoding='utf-8-sig')
     output_path = f"{SEMESTER}/{SURVEY_FILE.replace('.csv', '_processed.csv')}"
@@ -200,7 +271,7 @@ try:
     
     processed_container.get_blob_client(output_path).upload_blob(output, overwrite=True)
     
-    # ==================== 9. KẾT QUẢ ====================
+    # ==================== 6. KẾT QUẢ ====================
     print(f"\n{'='*60}")
     print(f"✅ SUCCESS!")
     print(f"{'='*60}")

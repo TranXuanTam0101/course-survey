@@ -1,178 +1,190 @@
-# etl.py - ĐÃ FIX LỖI ENCODING
+# etl.py - SỬ DỤNG FTFY
 import os
 import sys
 from azure.storage.blob import BlobServiceClient
 import pandas as pd
 import io
 from datetime import datetime
+import ftfy  # Thư viện fix encoding
+import unicodedata
 
 print("🚀 Starting ETL Pipeline...")
-print(f"Python version: {sys.version}")
 
 # Lấy connection string từ environment variable
 CONNECTION_STRING = os.environ.get("CONNECTION_STRING")
 SEMESTER = os.environ.get("SEMESTER")
 SURVEY_FILE = os.environ.get("SURVEY_FILE")
 
-print(f"SEMESTER = {SEMESTER}")
-print(f"SURVEY_FILE = {SURVEY_FILE}")
-print(f"CONNECTION_STRING exists = {CONNECTION_STRING is not None}")
-
-if not CONNECTION_STRING:
-    print("❌ ERROR: Missing CONNECTION_STRING environment variable!")
+if not CONNECTION_STRING or not SEMESTER or not SURVEY_FILE:
+    print("❌ Missing required environment variables!")
     sys.exit(1)
 
-if not SEMESTER or not SURVEY_FILE:
-    print("❌ ERROR: Missing SEMESTER or SURVEY_FILE!")
-    sys.exit(1)
+def clean_text(text):
+    """Fix lỗi encoding tự động"""
+    if pd.isna(text) or text == 'NULL' or text == '':
+        return None
+    text = str(text)
+    # ftfy tự động sửa lỗi
+    text = ftfy.fix_text(text)
+    # Chuẩn hóa Unicode
+    text = unicodedata.normalize('NFC', text)
+    return text.strip()
+
+def parse_student_info(raw_text):
+    """Parse thông tin sinh viên"""
+    if pd.isna(raw_text):
+        return None, None, None, None
+    
+    parts = str(raw_text).split('\t')
+    if len(parts) >= 4:
+        maSV = parts[0].strip()
+        hoDem = clean_text(parts[1])
+        ten = clean_text(parts[2])
+        ngaySinh = parts[3].strip()
+        return maSV, hoDem, ten, ngaySinh
+    return None, None, None, None
+
+def fix_masv(masv):
+    """Chuyển đổi mã số sinh viên"""
+    if pd.isna(masv):
+        return None
+    try:
+        if 'E' in str(masv) or 'e' in str(masv):
+            num = float(masv)
+            result = str(int(num))
+            if len(result) == 11:
+                result = '1' + result
+            return result
+        return str(int(float(masv)))
+    except:
+        return masv
+
+def fix_lop(lop):
+    """Xử lý Lop: 45K05\t1 -> 45K05.1"""
+    if pd.isna(lop):
+        return None
+    parts = str(lop).split('\t')
+    if len(parts) >= 2:
+        return f"{parts[0].strip()}.{parts[1].strip()}"
+    return lop
 
 try:
     # Kết nối Azure
     print("📥 Connecting to Azure Storage...")
     blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
     raw_container = blob_service.get_container_client("rawdata")
-    print("✅ Connected to container: rawdata")
     
-    # Đường dẫn file
     blob_path = f"{SEMESTER}/{SURVEY_FILE}"
-    print(f"📄 Looking for file: {blob_path}")
+    print(f"📄 Reading: {blob_path}")
     
-    # Kiểm tra file tồn tại
     blob_client = raw_container.get_blob_client(blob_path)
-    if not blob_client.exists():
-        print(f"❌ File not found: {blob_path}")
-        sys.exit(1)
-    
-    # Đọc file
-    print("📥 Downloading file...")
     data = blob_client.download_blob().readall()
     print(f"✅ Downloaded {len(data)} bytes")
     
-    # ===== FIX ENCODING: THỬ NHIỀU ENCODING =====
-    print("📊 Parsing CSV with multiple encodings...")
+    # Đọc CSV với xử lý encoding
+    print("📊 Parsing CSV with encoding fix...")
     
-    encodings_to_try = ['cp1258', 'latin1', 'utf-8', 'iso-8859-1']
-    df = None
-    used_encoding = None
-    
-    for encoding in encodings_to_try:
+    # Thử decode với cp1258 trước
+    try:
+        text_content = data.decode('cp1258')
+    except:
         try:
-            print(f"   Trying encoding: {encoding}...")
-            df = pd.read_csv(
-                io.BytesIO(data), 
-                encoding=encoding, 
-                sep='\t', 
-                header=None,
-                dtype=str,
-                low_memory=False
-            )
-            used_encoding = encoding
-            print(f"   ✅ Success with encoding: {encoding}")
-            break
-        except UnicodeDecodeError as e:
-            print(f"   ❌ Failed with {encoding}: {str(e)[:50]}...")
-            continue
-        except Exception as e:
-            print(f"   ❌ Error with {encoding}: {str(e)[:50]}...")
-            continue
-    
-    if df is None:
-        print("❌ ERROR: Could not read file with any encoding!")
-        sys.exit(1)
-    
-    print(f"✅ Parsed {len(df)} rows using {used_encoding} encoding")
-    
-    # Gán tên cột
-    expected_cols = 17  # Số cột dự kiến
-    if len(df.columns) < expected_cols:
-        print(f"⚠️ Warning: Found {len(df.columns)} columns, expected {expected_cols}")
-        # Thêm cột thiếu
-        for i in range(len(df.columns), expected_cols):
-            df[i] = None
-    
-    df.columns = [
-        "Lop", "MaSV", "HoDem", "Ten", "NgaySinh", "MaHP", "TenHP",
-        "MaGV", "HoDemGV", "TenGV", "LopHP", "CauHoi", "DanhGia",
-        "FB1", "FB2", "FB3", "FB4"
-    ][:len(df.columns)]
-    
-    # Fix MaSV - Xử lý dòng có nhiều thông tin
-    def fix_masv_column(value):
-        if pd.isna(value):
-            return None
-        value_str = str(value).strip()
-        # Nếu có khoảng trắng, lấy phần đầu tiên
-        if ' ' in value_str:
-            value_str = value_str.split()[0]
-        try:
-            # Chuyển đổi số
-            if 'E' in value_str or 'e' in value_str:
-                return str(int(float(value_str)))
-            return str(int(float(value_str)))
+            text_content = data.decode('utf-8')
         except:
-            return value_str
+            text_content = data.decode('latin1')
     
-    df["MaSV"] = df["MaSV"].apply(fix_masv_column)
+    # Fix toàn bộ lỗi encoding
+    text_content = ftfy.fix_text(text_content)
     
-    # Xử lý tách họ tên nếu cần
-    # Nếu cột Ten bị null, thử tách từ MaSV
-    if 'Ten' in df.columns and df['Ten'].isna().all():
-        print("   ⚠️ Detected raw format, parsing additional fields...")
-        # Xử lý dòng đặc biệt: MaSV chứa nhiều thông tin
-        for idx, row in df.iterrows():
-            if pd.notna(row['MaSV']) and ' ' in str(row['MaSV']):
-                parts = str(row['MaSV']).split()
-                if len(parts) >= 4:
-                    df.at[idx, 'MaSV'] = fix_masv_column(parts[0])
-                    df.at[idx, 'HoDem'] = parts[1] if len(parts) > 1 else None
-                    df.at[idx, 'Ten'] = parts[2] if len(parts) > 2 else None
-                    df.at[idx, 'NgaySinh'] = parts[3] if len(parts) > 3 else None
+    # Đọc vào pandas
+    df_raw = pd.read_csv(
+        io.StringIO(text_content),
+        sep='\t',
+        header=None,
+        dtype=str,
+        low_memory=False
+    )
     
-    # Xử lý ngày sinh
-    df["NgaySinh"] = pd.to_datetime(df["NgaySinh"], errors='coerce', dayfirst=True)
+    print(f"✅ Read {len(df_raw)} rows, {len(df_raw.columns)} columns")
     
-    # Chuyển đổi số
-    df["CauHoi"] = pd.to_numeric(df["CauHoi"], errors='coerce')
-    df["DanhGia"] = pd.to_numeric(df["DanhGia"], errors='coerce')
+    # Xử lý từng dòng
+    print("🔄 Processing data...")
+    records = []
+    
+    for idx, row in df_raw.iterrows():
+        if idx % 10000 == 0:
+            print(f"   Progress: {idx:,}/{len(df_raw):,}")
+        
+        # Lấy dữ liệu từ các cột
+        raw_lop = row[0] if len(row) > 0 else None
+        raw_student = row[1] if len(row) > 1 else None
+        raw_ma_hp = row[5] if len(row) > 5 else None
+        raw_ten_hp = row[6] if len(row) > 6 else None
+        raw_ma_gv = row[7] if len(row) > 7 else None
+        raw_ho_dem_gv = row[8] if len(row) > 8 else None
+        raw_ten_gv = row[9] if len(row) > 9 else None
+        raw_lop_hp = row[10] if len(row) > 10 else None
+        raw_cau_hoi = row[11] if len(row) > 11 else None
+        raw_danh_gia = row[12] if len(row) > 12 else None
+        raw_fb1 = row[13] if len(row) > 13 else None
+        raw_fb2 = row[14] if len(row) > 14 else None
+        raw_fb3 = row[15] if len(row) > 15 else None
+        raw_fb4 = row[16] if len(row) > 16 else None
+        
+        # Parse thông tin
+        ma_sv, ho_dem, ten, ngay_sinh = parse_student_info(raw_student)
+        ma_sv = fix_masv(ma_sv)
+        lop = fix_lop(raw_lop)
+        
+        if ma_sv and raw_ma_hp:  # Chỉ giữ record hợp lệ
+            records.append({
+                'Lop': lop,
+                'MaSV': ma_sv,
+                'HoDem': ho_dem,
+                'Ten': ten,
+                'NgaySinh': ngay_sinh,
+                'MaHP': raw_ma_hp.strip() if raw_ma_hp else None,
+                'TenHP': clean_text(raw_ten_hp),
+                'MaGV': raw_ma_gv.strip() if raw_ma_gv else None,
+                'HoDemGV': clean_text(raw_ho_dem_gv),
+                'TenGV': clean_text(raw_ten_gv),
+                'LopHP': raw_lop_hp.strip() if raw_lop_hp else None,
+                'CauHoi': raw_cau_hoi,
+                'DanhGia': raw_danh_gia,
+                'FB1': raw_fb1 if raw_fb1 not in ['NULL', None] else None,
+                'FB2': raw_fb2 if raw_fb2 not in ['NULL', None] else None,
+                'FB3': raw_fb3 if raw_fb3 not in ['NULL', None] else None,
+                'FB4': raw_fb4 if raw_fb4 not in ['NULL', None] else None,
+            })
+    
+    df_result = pd.DataFrame(records)
+    print(f"✅ Processed {len(df_result)} valid records")
+    
+    # Chuyển đổi kiểu dữ liệu
+    df_result['CauHoi'] = pd.to_numeric(df_result['CauHoi'], errors='coerce')
+    df_result['DanhGia'] = pd.to_numeric(df_result['DanhGia'], errors='coerce')
+    df_result['NgaySinh'] = pd.to_datetime(df_result['NgaySinh'], errors='coerce', dayfirst=True)
     
     # Thêm metadata
-    df["HocKy"] = 2 if "252" in SURVEY_FILE else 1 if "251" in SURVEY_FILE else None
-    df["NamHoc"] = SEMESTER
-    df["ProcessedDate"] = datetime.now()
-    
-    # Lọc bỏ dòng null quan trọng
-    before_filter = len(df)
-    df = df.dropna(subset=['MaSV', 'MaHP', 'CauHoi'], how='all')
-    print(f"   Filtered out {before_filter - len(df)} invalid rows")
-    
-    if len(df) == 0:
-        print("❌ ERROR: No valid data after processing!")
-        sys.exit(1)
+    df_result['HocKy'] = 2 if "252" in SURVEY_FILE else 1
+    df_result['NamHoc'] = SEMESTER
+    df_result['ProcessedDate'] = datetime.now()
     
     # Upload kết quả
-    print("📤 Uploading processed data...")
-    output = df.to_csv(index=False, encoding='utf-8-sig')
+    print("📤 Uploading to Azure...")
+    output = df_result.to_csv(index=False, encoding='utf-8-sig')
     output_path = f"{SEMESTER}/{SURVEY_FILE.replace('.csv', '_processed.csv')}"
     
-    # Tạo processed container nếu chưa có
     processed_container = blob_service.get_container_client("processed-data")
     if not processed_container.exists():
         processed_container.create_container()
-        print("✅ Created container: processed-data")
     
     processed_container.get_blob_client(output_path).upload_blob(output, overwrite=True)
     
-    # In kết quả
     print(f"\n✅ SUCCESS!")
-    print(f"📊 Total records: {len(df):,}")
-    print(f"⭐ Average rating: {df['DanhGia'].mean():.2f}")
+    print(f"📊 Records: {len(df_result):,}")
+    print(f"⭐ Avg rating: {df_result['DanhGia'].mean():.2f}")
     print(f"📤 Uploaded to: processed-data/{output_path}")
-    
-    # Hiển thị mẫu dữ liệu
-    print(f"\n📋 Sample data (first 3 rows):")
-    sample_cols = ['Lop', 'MaSV', 'Ten', 'MaHP', 'CauHoi', 'DanhGia']
-    sample_cols = [c for c in sample_cols if c in df.columns]
-    print(df[sample_cols].head(3).to_string(index=False))
     
 except Exception as e:
     print(f"❌ ERROR: {str(e)}")

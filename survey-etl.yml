@@ -31,3 +31,4 @@ jobs:
         env:
           SEMESTER: ${{ github.event.inputs.semester }}
           SURVEY_FILE: ${{ github.event.inputs.survey_file }}
+          CONNECTION_STRING: ${{ secrets.AZURE_CONNECTION_STRING }}  # 👈 Lấy từ secret

@@ -32,6 +32,7 @@ jobs:
         run: |
           pip install pandas
           pip install azure-storage-blob
+          pip install ftfy
       
       - name: Run ETL
         run: python etl.py

@@ -1,4 +1,4 @@
-# etl.py - TIỀN XỬ LÝ DỮ LIỆU KHẢO SÁT
+# etl.py - TỐI ƯU TỐC ĐỘ CAO
 import os
 import sys
 from azure.storage.blob import BlobServiceClient
@@ -7,10 +7,10 @@ import io
 from datetime import datetime
 import ftfy
 import re
+import numpy as np
 
 print("🚀 Starting ETL Pipeline...")
 
-# Lấy environment variables
 CONNECTION_STRING = os.environ.get("CONNECTION_STRING")
 SEMESTER = os.environ.get("SEMESTER")
 SURVEY_FILE = os.environ.get("SURVEY_FILE")
@@ -19,94 +19,43 @@ if not CONNECTION_STRING or not SEMESTER or not SURVEY_FILE:
     print("❌ Missing required environment variables!")
     sys.exit(1)
 
-def clean_vietnamese(text):
-    """Sửa lỗi encoding tiếng Việt"""
-    if pd.isna(text) or text == 'NULL' or text == '':
-        return None
-    text = str(text)
-    # Dùng ftfy để sửa lỗi encoding
-    text = ftfy.fix_text(text)
-    # Loại bỏ khoảng trắng thừa
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text if text else None
+def clean_text_vectorized(series):
+    """Clean text nhanh bằng vectorized operations"""
+    if series is None or len(series) == 0:
+        return series
+    series = series.fillna('').astype(str)
+    mask = (series != '') & (series != 'NULL')
+    if mask.any():
+        unique_vals = series[mask].unique()
+        clean_map = {v: ftfy.fix_text(v).strip() for v in unique_vals}
+        return series.map(lambda x: clean_map.get(x, x) if x != '' and x != 'NULL' else None)
+    return series.replace('', None).replace('NULL', None)
 
-def convert_masv(value):
-    """
-    Chuyển đổi MaSV từ dạng 91122E+11 thành số bình thường
-    91122E+11 = 91122 * 10^11 = 9112200000000000
-    """
-    if pd.isna(value) or value == '':
-        return None
-    
-    value_str = str(value).strip()
-    
-    try:
-        # Nếu có dạng E+ (khoa học)
-        if 'E' in value_str.upper():
-            # Chuyển thành số float rồi thành int
-            num = float(value_str)
-            # Chuyển thành số nguyên không có dấu thập phân
-            result = str(int(num))
-            return result
-        else:
-            # Nếu đã là số bình thường
-            return str(int(float(value_str)))
-    except:
-        # Nếu không chuyển được, giữ nguyên
-        return value_str
+def convert_masv_vectorized(series):
+    """Chuyển đổi MaSV từ dạng E+ sang số - vectorized"""
+    def convert_one(x):
+        if pd.isna(x) or x == '':
+            return None
+        try:
+            if 'E' in str(x).upper():
+                return str(int(float(x)))
+            return str(int(float(x)))
+        except:
+            return x
+    return series.apply(convert_one)
 
-def parse_lop(value):
-    """
-    Xử lý cột Lop: "45K05\t1" -> "45K05"
-    Chỉ lấy phần trước dấu cách hoặc tab
-    """
-    if pd.isna(value) or value == '':
-        return None
-    
-    value_str = str(value).strip()
-    
-    # Nếu có tab, lấy phần đầu
-    if '\t' in value_str:
-        return value_str.split('\t')[0]
-    # Nếu có space, lấy phần đầu
-    if ' ' in value_str:
-        return value_str.split(' ')[0]
-    
-    return value_str
-
-def parse_student_info(value):
-    """
-    Parse cột thông tin sinh viên
-    Input: "91122E+11 Hoàng Quýc 1/5/2001"
-    Output: (maSV, hoDem, ten, ngaySinh)
-    """
-    if pd.isna(value) or value == '':
-        return None, None, None, None
-    
-    value_str = str(value).strip()
-    parts = value_str.split()
-    
-    maSV = None
-    hoDem = None
-    ten = None
-    ngaySinh = None
-    
-    if len(parts) >= 4:
-        # 91122E+11 Hoàng Quýc 1/5/2001
-        maSV = convert_masv(parts[0])
-        hoDem = clean_vietnamese(parts[1])
-        ten = clean_vietnamese(parts[2])
-        ngaySinh = parts[3]
-    elif len(parts) >= 3:
-        maSV = convert_masv(parts[0])
-        hoDem = clean_vietnamese(parts[1])
-        ten = None
-        ngaySinh = parts[2] if len(parts) > 2 else None
-    elif len(parts) >= 2:
-        maSV = convert_masv(parts[0])
-        ten = clean_vietnamese(parts[1])
-    
-    return maSV, hoDem, ten, ngaySinh
+def parse_lop_vectorized(series):
+    """Lấy phần trước dấu cách hoặc tab"""
+    def parse_one(x):
+        if pd.isna(x):
+            return None
+        x_str = str(x).strip()
+        if '\t' in x_str:
+            return x_str.split('\t')[0]
+        if ' ' in x_str:
+            return x_str.split(' ')[0]
+        return x_str
+    return series.apply(parse_one)
 
 try:
     # ==================== 1. ĐỌC FILE ====================
@@ -121,95 +70,136 @@ try:
     data = blob_client.download_blob().readall()
     print(f"✅ Downloaded {len(data) / 1024 / 1024:.2f} MB")
     
-    # ==================== 2. GIẢI MÃ ENCODING ====================
+    # ==================== 2. GIẢI MÃ ====================
     print("📊 Decoding file...")
     try:
         text_content = data.decode('cp1258')
-        print("   Using encoding: cp1258")
     except:
         try:
             text_content = data.decode('utf-8')
-            print("   Using encoding: utf-8")
         except:
             text_content = data.decode('latin1')
-            print("   Using encoding: latin1")
     
-    # ==================== 3. ĐỌC CSV ====================
+    # Fix encoding toàn bộ 1 lần
+    text_content = ftfy.fix_text(text_content)
+    
+    # ==================== 3. ĐỌC CSV (CHỈ 2 CỘT) ====================
     print("📊 Reading CSV...")
+    # Đọc chỉ 2 cột A và B
     df = pd.read_csv(
         io.StringIO(text_content),
         sep='\t',
         header=None,
         dtype=str,
-        low_memory=False
+        low_memory=False,
+        usecols=[0, 1]  # Chỉ đọc 2 cột đầu
     )
     
-    print(f"✅ Read {len(df):,} rows, {len(df.columns)} columns")
+    print(f"✅ Read {len(df):,} rows")
     
-    # ==================== 4. TẠO DATAFRAME KẾT QUẢ ====================
-    result_df = pd.DataFrame()
+    # Đặt tên cột
+    df.columns = ['Lop_raw', 'StudentData_raw']
     
-    # Cột 0: Lop - Chỉ lấy phần trước dấu cách/tab
-    print("🔄 Processing Lop column...")
-    result_df['Lop'] = df[0].apply(parse_lop)
+    # ==================== 4. XỬ LÝ CỘT A (LOP) ====================
+    print("🔄 Processing Lop...")
+    df['Lop'] = parse_lop_vectorized(df['Lop_raw'])
     
-    # Cột 1: Thông tin sinh viên (tách thành MaSV, HoDem, Ten, NgaySinh)
-    print("🔄 Processing student info...")
-    student_info = df[1].apply(parse_student_info)
-    result_df['MaSV'] = student_info.apply(lambda x: x[0])
-    result_df['HoDem'] = student_info.apply(lambda x: x[1])
-    result_df['Ten'] = student_info.apply(lambda x: x[2])
-    result_df['NgaySinh'] = student_info.apply(lambda x: x[3])
+    # ==================== 5. XỬ LÝ CỘT B (TÁCH CÁC TRƯỜNG) ====================
+    print("🔄 Splitting column B...")
     
-    # Chuyển đổi NgaySinh thành datetime
-    result_df['NgaySinh'] = pd.to_datetime(result_df['NgaySinh'], errors='coerce', dayfirst=True)
+    # Tách cột B thành các phần bằng dấu cách
+    # Dùng expand=True để tạo nhiều cột cùng lúc (rất nhanh)
+    split_cols = df['StudentData_raw'].str.split(expand=True)
     
-    # Các cột từ vị trí 5 đến 17
-    print("🔄 Processing course and evaluation data...")
+    # ===== MAP CÁC CỘT THEO ĐÚNG VỊ TRÍ =====
+    # Dựa trên cấu trúc file raw:
+    # 0: MaSV, 1: HoDem, 2: Ten, 3: NgaySinh, 
+    # 4: MaHP? (có thể bỏ qua), 5: MaHP, 6: TenHP, 7: MaGV, 
+    # 8: HoDemGV, 9: TenGV, 10: LopHP, 11: CauHoi, 12: DanhGia, 
+    # 13: NULL, 14: FB1, 15: FB2, 16: FB3, 17: FB4
     
-    # Cột 5: MaHP
-    result_df['MaHP'] = df[5] if 5 in df.columns else None
+    # Khởi tạo dataframe kết quả
+    result_df = pd.DataFrame(index=df.index)
     
-    # Cột 6: TenHP
-    result_df['TenHP'] = df[6].apply(clean_vietnamese) if 6 in df.columns else None
+    # MaSV (vị trí 0)
+    if split_cols.shape[1] > 0:
+        result_df['MaSV'] = convert_masv_vectorized(split_cols[0])
     
-    # Cột 7: MaGV
-    result_df['MaGV'] = df[7] if 7 in df.columns else None
+    # HoDem (vị trí 1)
+    if split_cols.shape[1] > 1:
+        result_df['HoDem'] = split_cols[1]
     
-    # Cột 8: HoDemGV
-    result_df['HoDemGV'] = df[8].apply(clean_vietnamese) if 8 in df.columns else None
+    # Ten (vị trí 2)
+    if split_cols.shape[1] > 2:
+        result_df['Ten'] = split_cols[2]
     
-    # Cột 9: TenGV
-    result_df['TenGV'] = df[9].apply(clean_vietnamese) if 9 in df.columns else None
+    # NgaySinh (vị trí 3)
+    if split_cols.shape[1] > 3:
+        result_df['NgaySinh_raw'] = split_cols[3]
+        result_df['NgaySinh'] = pd.to_datetime(split_cols[3], errors='coerce', dayfirst=True)
     
-    # Cột 10: LopHP
-    result_df['LopHP'] = df[10] if 10 in df.columns else None
+    # MaHP (vị trí 5)
+    if split_cols.shape[1] > 5:
+        result_df['MaHP'] = split_cols[5]
     
-    # Cột 11: CauHoi
-    result_df['CauHoi'] = pd.to_numeric(df[11], errors='coerce') if 11 in df.columns else None
+    # TenHP (vị trí 6)
+    if split_cols.shape[1] > 6:
+        result_df['TenHP'] = split_cols[6]
     
-    # Cột 12: DanhGia
-    result_df['DanhGia'] = pd.to_numeric(df[12], errors='coerce') if 12 in df.columns else None
+    # MaGV (vị trí 7)
+    if split_cols.shape[1] > 7:
+        result_df['MaGV'] = split_cols[7]
     
-    # Cột 13: NULL - Bỏ qua (không lấy)
+    # HoDemGV (vị trí 8)
+    if split_cols.shape[1] > 8:
+        result_df['HoDemGV'] = split_cols[8]
     
-    # Cột 14: FB1
-    result_df['FB1'] = df[14].apply(clean_vietnamese) if 14 in df.columns else None
+    # TenGV (vị trí 9)
+    if split_cols.shape[1] > 9:
+        result_df['TenGV'] = split_cols[9]
     
-    # Cột 15: FB2
-    result_df['FB2'] = df[15].apply(clean_vietnamese) if 15 in df.columns else None
+    # LopHP (vị trí 10)
+    if split_cols.shape[1] > 10:
+        result_df['LopHP'] = split_cols[10]
     
-    # Cột 16: FB3
-    result_df['FB3'] = df[16].apply(clean_vietnamese) if 16 in df.columns else None
+    # CauHoi (vị trí 11)
+    if split_cols.shape[1] > 11:
+        result_df['CauHoi'] = pd.to_numeric(split_cols[11], errors='coerce')
     
-    # Cột 17: FB4
-    result_df['FB4'] = df[17].apply(clean_vietnamese) if 17 in df.columns else None
+    # DanhGia (vị trí 12)
+    if split_cols.shape[1] > 12:
+        result_df['DanhGia'] = pd.to_numeric(split_cols[12], errors='coerce')
     
-    # ==================== 5. LỌC DỮ LIỆU ====================
+    # Bỏ qua vị trí 13 (NULL)
+    
+    # FB1 (vị trí 14)
+    if split_cols.shape[1] > 14:
+        result_df['FB1'] = split_cols[14]
+    
+    # FB2 (vị trí 15)
+    if split_cols.shape[1] > 15:
+        result_df['FB2'] = split_cols[15]
+    
+    # FB3 (vị trí 16)
+    if split_cols.shape[1] > 16:
+        result_df['FB3'] = split_cols[16]
+    
+    # FB4 (vị trí 17)
+    if split_cols.shape[1] > 17:
+        result_df['FB4'] = split_cols[17]
+    
+    # ==================== 6. CLEAN TEXT (CHỈ CÁC CỘT CẦN) ====================
+    print("🔄 Cleaning Vietnamese text...")
+    
+    text_columns = ['HoDem', 'Ten', 'TenHP', 'HoDemGV', 'TenGV', 'FB1', 'FB2', 'FB3', 'FB4']
+    for col in text_columns:
+        if col in result_df.columns:
+            result_df[col] = clean_text_vectorized(result_df[col])
+    
+    # ==================== 7. LỌC DỮ LIỆU ====================
     print("🔄 Filtering valid records...")
     before = len(result_df)
     
-    # Chỉ giữ các dòng có MaSV, MaHP, CauHoi
     valid_mask = (
         result_df['MaSV'].notna() & 
         result_df['MaHP'].notna() & 
@@ -223,24 +213,26 @@ try:
         print("❌ ERROR: No valid records found!")
         sys.exit(1)
     
-    # ==================== 6. THÊM METADATA ====================
+    # ==================== 8. THÊM METADATA ====================
+    result_df['Lop'] = df.loc[result_df.index, 'Lop']
     result_df['HocKy'] = 2 if "252" in SURVEY_FILE else 1 if "251" in SURVEY_FILE else None
     result_df['NamHoc'] = SEMESTER
     result_df['ProcessedDate'] = datetime.now()
     
-    # ==================== 7. SẮP XẾP CỘT ====================
+    # ==================== 9. SẮP XẾP CỘT ====================
     final_columns = [
         'Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
         'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 'CauHoi', 'DanhGia',
         'FB1', 'FB2', 'FB3', 'FB4', 'HocKy', 'NamHoc', 'ProcessedDate'
     ]
     
-    result_df = result_df[final_columns]
+    existing_columns = [col for col in final_columns if col in result_df.columns]
+    result_df = result_df[existing_columns]
     
-    # Sắp xếp theo MaSV, MaHP, CauHoi
+    # Sắp xếp
     result_df = result_df.sort_values(['MaSV', 'MaHP', 'CauHoi'])
     
-    # ==================== 8. UPLOAD KẾT QUẢ ====================
+    # ==================== 10. UPLOAD ====================
     print("📤 Uploading to Azure...")
     output = result_df.to_csv(index=False, encoding='utf-8-sig')
     output_path = f"{SEMESTER}/{SURVEY_FILE.replace('.csv', '_processed.csv')}"
@@ -248,11 +240,10 @@ try:
     processed_container = blob_service.get_container_client("processed-data")
     if not processed_container.exists():
         processed_container.create_container()
-        print("   Created container: processed-data")
     
     processed_container.get_blob_client(output_path).upload_blob(output, overwrite=True)
     
-    # ==================== 9. KẾT QUẢ ====================
+    # ==================== 11. KẾT QUẢ ====================
     print(f"\n{'='*60}")
     print(f"✅ SUCCESS!")
     print(f"{'='*60}")
@@ -262,25 +253,10 @@ try:
     print(f"⭐ Average rating: {result_df['DanhGia'].mean():.2f}/5")
     print(f"📤 Uploaded to: processed-data/{output_path}")
     
-    # Hiển thị mẫu dữ liệu
     print(f"\n📋 Sample data (first 5 rows):")
-    sample_cols = ['Lop', 'MaSV', 'HoDem', 'Ten', 'MaHP', 'CauHoi', 'DanhGia']
+    sample_cols = ['Lop', 'MaSV', 'Ten', 'MaHP', 'CauHoi', 'DanhGia']
+    sample_cols = [c for c in sample_cols if c in result_df.columns]
     print(result_df[sample_cols].head(5).to_string(index=False))
-    
-    # Thống kê theo câu hỏi
-    print(f"\n📊 Rating by question:")
-    question_stats = result_df.groupby('CauHoi')['DanhGia'].agg(['mean', 'count'])
-    for q in sorted(question_stats.index):
-        if q <= 12:
-            mean_val = question_stats.loc[q, 'mean']
-            count_val = question_stats.loc[q, 'count']
-            print(f"   Question {int(q):2d}: {mean_val:.2f}/5 ({count_val:,} responses)")
-    
-    # Kiểm tra MaSV
-    print(f"\n📋 Sample MaSV values (converted from E+):")
-    sample_masv = result_df['MaSV'].dropna().unique()[:5]
-    for sv in sample_masv:
-        print(f"   {sv}")
     
 except Exception as e:
     print(f"❌ ERROR: {str(e)}")

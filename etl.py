@@ -1,4 +1,4 @@
-# etl.py - TỐI ƯU, NHANH, GỌN
+# etl.py - TỐI ƯU VECTORIZED (CHẠY NHANH)
 import os
 import sys
 from azure.storage.blob import BlobServiceClient
@@ -18,165 +18,160 @@ if not CONNECTION_STRING or not SEMESTER or not SURVEY_FILE:
     print("❌ Missing required environment variables!")
     sys.exit(1)
 
-def clean_text(text):
-    if pd.isna(text) or text == 'NULL' or text == '':
-        return None
-    text = str(text)
-    if '?' in text:
-        text = ftfy.fix_text(text)
-    return text.strip()
-
-def convert_masv(value):
-    if pd.isna(value) or value == '':
-        return None
-    try:
-        return str(int(float(str(value))))
-    except:
-        return value
-
-def extract_hodem_ten(full_name):
-    if pd.isna(full_name) or full_name == '':
-        return None, None
-    parts = str(full_name).split()
-    if len(parts) == 0:
-        return None, None
-    elif len(parts) == 1:
-        return None, clean_text(parts[0])
-    else:
-        return clean_text(' '.join(parts[:-1])), clean_text(parts[-1])
-
-def parse_row(fields):
-    """Parse một dòng dữ liệu"""
-    if len(fields) < 17:
-        return None
-    
-    result = {}
-    
-    # Lop
-    lop_raw = fields[0].strip()
-    result['Lop'] = lop_raw.split(' ')[0] if ' ' in lop_raw else lop_raw.split('\t')[0] if '\t' in lop_raw else lop_raw
-    
-    # MaSV
-    result['MaSV'] = convert_masv(fields[1].strip() if len(fields) > 1 else '')
-    
-    # Tìm NgaySinh
-    ngaysinh_index = -1
-    for i, field in enumerate(fields):
-        if re.match(r'\d{1,2}/\d{1,2}/\d{4}', field.strip()):
-            ngaysinh_index = i
-            break
-    
-    if ngaysinh_index == -1:
-        return None
-    
-    result['NgaySinh'] = pd.to_datetime(fields[ngaysinh_index].strip(), errors='coerce', dayfirst=True)
-    
-    # HoDem & Ten
-    if ngaysinh_index > 1:
-        hodem, ten = extract_hodem_ten(' '.join(fields[2:ngaysinh_index]))
-        result['HoDem'] = hodem
-        result['Ten'] = ten
-    else:
-        result['HoDem'] = result['Ten'] = None
-    
-    # MaHP
-    result['MaHP'] = fields[ngaysinh_index + 1].strip() if ngaysinh_index + 1 < len(fields) else None
-    
-    # Tìm MaGV
-    magv_index = -1
-    for i in range(ngaysinh_index + 2, min(ngaysinh_index + 10, len(fields))):
-        if re.match(r'^\d+$', fields[i].strip()):
-            magv_index = i
-            break
-    
-    # TenHP
-    if magv_index > ngaysinh_index + 1:
-        result['TenHP'] = clean_text(' '.join(fields[ngaysinh_index + 2:magv_index]))
-    else:
-        result['TenHP'] = None
-    
-    # MaGV
-    result['MaGV'] = fields[magv_index].strip() if magv_index != -1 else None
-    
-    # Tìm LopHP
-    lophp_index = -1
-    for i in range(magv_index + 1, min(magv_index + 10, len(fields))):
-        if '_' in fields[i] or re.match(r'^[A-Z0-9_]+$', fields[i].strip()):
-            lophp_index = i
-            break
-    
-    # HoDemGV & TenGV
-    if lophp_index > magv_index + 1:
-        hodem_gv, ten_gv = extract_hodem_ten(' '.join(fields[magv_index + 1:lophp_index]))
-        result['HoDemGV'] = hodem_gv
-        result['TenGV'] = ten_gv
-    else:
-        result['HoDemGV'] = result['TenGV'] = None
-    
-    # LopHP
-    result['LopHP'] = fields[lophp_index].strip() if lophp_index != -1 else None
-    
-    # CauHoi, DanhGia
-    result['CauHoi'] = pd.to_numeric(fields[lophp_index + 1], errors='coerce') if lophp_index + 1 < len(fields) else None
-    result['DanhGia'] = pd.to_numeric(fields[lophp_index + 2], errors='coerce') if lophp_index + 2 < len(fields) else None
-    
-    # FB1-FB4
-    fb_start = lophp_index + 3
-    while fb_start < len(fields) and fields[fb_start].strip() == 'NULL':
-        fb_start += 1
-    
-    result['FB1'] = clean_text(fields[fb_start]) if fb_start < len(fields) else None
-    result['FB2'] = clean_text(fields[fb_start + 1]) if fb_start + 1 < len(fields) else None
-    result['FB3'] = clean_text(fields[fb_start + 2]) if fb_start + 2 < len(fields) else None
-    result['FB4'] = clean_text(fields[fb_start + 3]) if fb_start + 3 < len(fields) else None
-    
-    return result
+def fast_clean_text(series):
+    """Clean text nhanh trên toàn bộ series"""
+    if series is None:
+        return series
+    series = series.fillna('').astype(str)
+    series = series.replace('NULL', '')
+    # Chỉ xử lý các giá trị có dấu hiệu lỗi
+    mask = series.str.contains('\?', na=False)
+    if mask.any():
+        unique_vals = series[mask].unique()
+        clean_map = {v: ftfy.fix_text(v).strip() for v in unique_vals}
+        series = series.map(lambda x: clean_map.get(x, x))
+    return series.replace('', None)
 
 try:
-    # Đọc file
-    print("📥 Connecting to Azure...")
+    # ==================== 1. ĐỌC FILE ====================
+    print("📥 Reading from Azure...")
     blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
     blob_client = blob_service.get_container_client("rawdata").get_blob_client(f"{SEMESTER}/{SURVEY_FILE}")
-    
     data = blob_client.download_blob().readall()
     print(f"✅ Downloaded {len(data) / 1024 / 1024:.2f} MB")
     
-    # Giải mã và xử lý
-    print("📊 Processing...")
-    text = ftfy.fix_text(data.decode('cp1258'))
-    lines = text.split('\n')
+    # ==================== 2. ĐỌC CSV ====================
+    print("📊 Reading CSV...")
+    df = pd.read_csv(
+        io.BytesIO(data),
+        sep='\t',
+        header=None,
+        dtype=str,
+        encoding='cp1258',
+        low_memory=False
+    )
+    print(f"✅ Read {len(df):,} rows, {len(df.columns)} columns")
     
-    records = []
-    for i, line in enumerate(lines):
-        if i % 50000 == 0 and i > 0:
-            print(f"   Processed {i:,}/{len(lines):,} lines")
-        if line.strip():
-            fields = line.split('\t')
-            record = parse_row(fields)
-            if record and record.get('MaSV') and record.get('MaHP') and record.get('CauHoi'):
-                records.append(record)
+    # ==================== 3. XỬ LÝ LOP ====================
+    df['Lop'] = df[0].str.split(r'[ \t]', expand=True)[0]
     
-    print(f"✅ Parsed {len(records):,} records")
+    # ==================== 4. XỬ LÝ MASV ====================
+    df['MaSV_raw'] = df[1]
+    df['MaSV'] = pd.to_numeric(df[1], errors='coerce').fillna(0).astype('int64').astype(str)
+    df['MaSV'] = df['MaSV'].apply(lambda x: '1' + x if len(x) == 11 else x)
     
-    if not records:
+    # ==================== 5. TÌM NGAY SINH ====================
+    # Tìm cột chứa ngày sinh (định dạng dd/mm/yyyy)
+    date_pattern = r'\d{1,2}/\d{1,2}/\d{4}'
+    for col in range(2, min(8, len(df.columns))):
+        if df[col].str.match(date_pattern).any():
+            df['NgaySinh'] = pd.to_datetime(df[col], errors='coerce', dayfirst=True)
+            ngaysinh_col = col
+            break
+    else:
+        df['NgaySinh'] = None
+        ngaysinh_col = 4
+    
+    # ==================== 6. TÁCH HỌ TÊN SINH VIÊN ====================
+    # Lấy các cột từ 2 đến ngaysinh_col
+    name_cols = [str(i) for i in range(2, ngaysinh_col)]
+    if name_cols:
+        df['HoTenSV'] = df[name_cols].apply(lambda row: ' '.join(row.dropna().astype(str)), axis=1)
+        # Tách họ đệm và tên
+        df['Ten'] = df['HoTenSV'].str.split().str[-1]
+        df['HoDem'] = df['HoTenSV'].str.split().str[:-1].apply(lambda x: ' '.join(x) if x else None)
+        df['HoDem'] = fast_clean_text(df['HoDem'])
+        df['Ten'] = fast_clean_text(df['Ten'])
+    else:
+        df['HoDem'] = None
+        df['Ten'] = None
+    
+    # ==================== 7. MÃ HỌC PHẦN ====================
+    maHP_col = ngaysinh_col + 1
+    df['MaHP'] = df[maHP_col] if maHP_col in df.columns else None
+    
+    # ==================== 8. TÌM MÃ GIẢNG VIÊN ====================
+    # Tìm cột chứa mã GV (toàn số)
+    magv_col = -1
+    for col in range(maHP_col + 1, min(maHP_col + 10, len(df.columns))):
+        if df[col].astype(str).str.match(r'^\d+$').all():
+            magv_col = col
+            break
+    
+    if magv_col > maHP_col + 1:
+        # Tên học phần ở giữa
+        tenhp_cols = [str(i) for i in range(maHP_col + 1, magv_col)]
+        if tenhp_cols:
+            df['TenHP'] = df[tenhp_cols].apply(lambda row: ' '.join(row.dropna().astype(str)), axis=1)
+            df['TenHP'] = fast_clean_text(df['TenHP'])
+    
+    df['MaGV'] = df[magv_col] if magv_col != -1 else None
+    
+    # ==================== 9. TÌM LỚP HỌC PHẦN ====================
+    lophp_col = -1
+    for col in range(magv_col + 1, min(magv_col + 10, len(df.columns))):
+        if df[col].astype(str).str.contains('_', na=False).any():
+            lophp_col = col
+            break
+    
+    if lophp_col > magv_col + 1:
+        # Tên giảng viên ở giữa
+        gv_cols = [str(i) for i in range(magv_col + 1, lophp_col)]
+        if gv_cols:
+            df['HoTenGV'] = df[gv_cols].apply(lambda row: ' '.join(row.dropna().astype(str)), axis=1)
+            df['TenGV'] = df['HoTenGV'].str.split().str[-1]
+            df['HoDemGV'] = df['HoTenGV'].str.split().str[:-1].apply(lambda x: ' '.join(x) if x else None)
+            df['HoDemGV'] = fast_clean_text(df['HoDemGV'])
+            df['TenGV'] = fast_clean_text(df['TenGV'])
+    
+    df['LopHP'] = df[lophp_col] if lophp_col != -1 else None
+    
+    # ==================== 10. CÂU HỎI VÀ ĐÁNH GIÁ ====================
+    df['CauHoi'] = pd.to_numeric(df[lophp_col + 1] if lophp_col + 1 in df.columns else None, errors='coerce')
+    df['DanhGia'] = pd.to_numeric(df[lophp_col + 2] if lophp_col + 2 in df.columns else None, errors='coerce')
+    
+    # ==================== 11. PHẢN HỒI FB1-FB4 ====================
+    fb_start = lophp_col + 3
+    # Bỏ qua cột NULL
+    while fb_start < len(df.columns) and df[fb_start].astype(str).str.strip().eq('NULL').all():
+        fb_start += 1
+    
+    df['FB1'] = df[fb_start] if fb_start < len(df.columns) else None
+    df['FB2'] = df[fb_start + 1] if fb_start + 1 < len(df.columns) else None
+    df['FB3'] = df[fb_start + 2] if fb_start + 2 < len(df.columns) else None
+    df['FB4'] = df[fb_start + 3] if fb_start + 3 < len(df.columns) else None
+    
+    # Clean FB columns
+    for col in ['FB1', 'FB2', 'FB3', 'FB4']:
+        if col in df.columns:
+            df[col] = fast_clean_text(df[col])
+    
+    # ==================== 12. LỌC DỮ LIỆU ====================
+    print("🔄 Filtering...")
+    valid = df['MaSV'].notna() & df['MaHP'].notna() & df['CauHoi'].notna()
+    result = df[valid].copy()
+    print(f"   Kept {len(result):,} / {len(df):,} rows")
+    
+    if len(result) == 0:
         print("❌ No valid records!")
         sys.exit(1)
     
-    # Tạo DataFrame
-    df = pd.DataFrame(records)
-    df['HocKy'] = 2 if "252" in SURVEY_FILE else 1
-    df['NamHoc'] = SEMESTER
-    df['ProcessedDate'] = datetime.now()
+    # ==================== 13. THÊM METADATA ====================
+    result['HocKy'] = 2 if "252" in SURVEY_FILE else 1
+    result['NamHoc'] = SEMESTER
+    result['ProcessedDate'] = datetime.now()
     
-    # Sắp xếp cột
-    cols = ['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
-            'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 'CauHoi', 'DanhGia',
-            'FB1', 'FB2', 'FB3', 'FB4', 'HocKy', 'NamHoc', 'ProcessedDate']
-    df = df[[c for c in cols if c in df.columns]].sort_values(['MaSV', 'MaHP', 'CauHoi'])
+    # ==================== 14. CHỌN CỘT ====================
+    final_cols = ['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
+                  'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 'CauHoi', 'DanhGia',
+                  'FB1', 'FB2', 'FB3', 'FB4', 'HocKy', 'NamHoc', 'ProcessedDate']
     
-    # Upload
+    result = result[[c for c in final_cols if c in result.columns]]
+    result = result.sort_values(['MaSV', 'MaHP', 'CauHoi'])
+    
+    # ==================== 15. UPLOAD ====================
     print("📤 Uploading...")
-    output = df.to_csv(index=False, encoding='utf-8-sig')
+    output = result.to_csv(index=False, encoding='utf-8-sig')
     output_path = f"{SEMESTER}/{SURVEY_FILE.replace('.csv', '_processed.csv')}"
     
     processed_container = blob_service.get_container_client("processed-data")
@@ -185,62 +180,18 @@ try:
     
     processed_container.get_blob_client(output_path).upload_blob(output, overwrite=True)
     
+    # ==================== 16. KẾT QUẢ ====================
+    print(f"\n{'='*50}")
+    print(f"✅ SUCCESS! ({len(result):,} records)")
+    print(f"👨‍🎓 Students: {result['MaSV'].nunique():,}")
+    print(f"⭐ Avg rating: {result['DanhGia'].mean():.2f}/5")
+    print(f"📤 Uploaded to: processed-data/{output_path}")
     
-    # Thống kê nhanh theo câu hỏi
-    print(f"\n📊 RATING BY QUESTION:")
-    q_stats = df.groupby('CauHoi')['DanhGia'].agg(['mean', 'count'])
-    for q in range(1, 13):
-        if q in q_stats.index:
-            print(f"   Q{q:2d}: {q_stats.loc[q, 'mean']:.2f}/5 ({q_stats.loc[q, 'count']:,})")
+    print(f"\n📋 Sample:")
+    print(result[['Lop', 'MaSV', 'Ten', 'MaHP', 'CauHoi', 'DanhGia']].head(5).to_string(index=False))
     
 except Exception as e:
     print(f"❌ ERROR: {str(e)}")
+    import traceback
+    traceback.print_exc()
     sys.exit(1)
-# insert_to_sql.py - Chèn dữ liệu vào SQL Azure
-import os
-import pandas as pd
-from sqlalchemy import create_engine, text
-import urllib
-
-# Cấu hình SQL Azure
-SQL_SERVER = "your-server.database.windows.net"
-SQL_DATABASE = "SurveyDB"
-SQL_USERNAME = "your_username"
-SQL_PASSWORD = "your_password"
-
-# Tạo connection string
-connection_string = (
-    f"Driver={{ODBC Driver 18 for SQL Server}};"
-    f"Server=tcp:{SQL_SERVER},1433;"
-    f"Database={SQL_DATABASE};"
-    f"Uid={SQL_USERNAME};"
-    f"Pwd={SQL_PASSWORD};"
-    f"Encrypt=yes;"
-    f"TrustServerCertificate=no;"
-    f"Connection Timeout=30;"
-)
-
-# Tạo engine
-params = urllib.parse.quote_plus(connection_string)
-engine = create_engine(f"mssql+pyodbc:///?odbc_connect={params}")
-
-# Đọc dữ liệu đã xử lý
-df = pd.read_csv("processed_data.csv", encoding='utf-8-sig')
-
-# Chuyển đổi kiểu dữ liệu
-df['NgaySinh'] = pd.to_datetime(df['NgaySinh'], errors='coerce')
-df['CauHoi'] = df['CauHoi'].astype(int)
-df['DanhGia'] = df['DanhGia'].astype(int)
-df['HocKy'] = df['HocKy'].astype(int)
-
-# Insert vào SQL Azure
-df.to_sql(
-    'survey_responses',
-    engine,
-    if_exists='append',  # 'append' để thêm, 'replace' để thay thế
-    index=False,
-    method='multi',
-    chunksize=1000
-)
-
-print(f"✅ Inserted {len(df)} records into SQL Azure")

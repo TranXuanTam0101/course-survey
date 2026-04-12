@@ -48,7 +48,7 @@ try:
     
     # ==================== 2. ĐỌC CSV ====================
     print("📊 Reading CSV...")
-    
+    text_content = ftfy.fix_text(text_content)
     df = pd.read_csv(
         io.BytesIO(data),
         sep='\t',

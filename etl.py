@@ -96,7 +96,7 @@ def parse_row_advanced(row_text):
     
     # 2. MaSV: Sau Lop, chuỗi số 12 ký tự (có thể ở dạng E+)
     masv_raw = fields[1].strip() if len(fields) > 1 else ''
-    result['MaSV'] = convert_masv(masmv_raw)
+    result['MaSV'] = convert_masv(masv_raw)
     
     # 3-5. Tìm NgaySinh để xác định vị trí
     ngaysinh_value = None

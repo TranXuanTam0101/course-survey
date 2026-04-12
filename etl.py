@@ -1,4 +1,4 @@
-# etl.py - XỬ LÝ NHANH FILE 2 CỘT
+# etl.py - FIX LỖI ENCODING
 import os
 import sys
 from azure.storage.blob import BlobServiceClient
@@ -24,7 +24,6 @@ def clean_text(text):
     if pd.isna(text) or text == 'NULL' or text == '':
         return None
     text = str(text)
-    # Chỉ áp dụng ftfy nếu có dấu hiệu lỗi
     if '?' in text or '??' in text:
         text = ftfy.fix_text(text)
     return text.strip()
@@ -43,7 +42,6 @@ def parse_lop(value):
     if pd.isna(value) or value == '':
         return None
     value_str = str(value).strip()
-    # Tách theo tab hoặc space
     if '\t' in value_str:
         return value_str.split('\t')[0]
     if ' ' in value_str:
@@ -51,7 +49,7 @@ def parse_lop(value):
     return value_str
 
 try:
-    # ==================== 1. ĐỌC FILE NHANH ====================
+    # ==================== 1. ĐỌC FILE ====================
     print("📥 Connecting to Azure Storage...")
     blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
     raw_container = blob_service.get_container_client("rawdata")
@@ -63,15 +61,40 @@ try:
     data = blob_client.download_blob().readall()
     print(f"✅ Downloaded {len(data) / 1024 / 1024:.2f} MB")
     
-    # ==================== 2. ĐỌC CSV (CHỈ 2 CỘT) ====================
-    print("📊 Reading CSV (2 columns)...")
+    # ==================== 2. GIẢI MÃ ENCODING ====================
+    print("📊 Decoding file...")
     
-    # Đọc toàn bộ file, chỉ 2 cột, không header
+    # Thử các encoding khác nhau
+    encodings = ['cp1258', 'latin1', 'utf-8', 'iso-8859-1']
+    text_content = None
+    used_encoding = None
+    
+    for encoding in encodings:
+        try:
+            text_content = data.decode(encoding)
+            used_encoding = encoding
+            print(f"   ✅ Success with encoding: {encoding}")
+            break
+        except UnicodeDecodeError as e:
+            print(f"   ❌ Failed with {encoding}: {str(e)[:50]}...")
+            continue
+    
+    if text_content is None:
+        print("❌ ERROR: Could not decode file with any encoding!")
+        sys.exit(1)
+    
+    # Fix encoding toàn bộ
+    print("📊 Fixing encoding issues...")
+    text_content = ftfy.fix_text(text_content)
+    
+    # ==================== 3. ĐỌC CSV ====================
+    print("📊 Reading CSV...")
+    
+    # Đọc từ string đã decode
     df_raw = pd.read_csv(
-        io.BytesIO(data),
+        io.StringIO(text_content),
         sep='\t',
         header=None,
-        nrows=None,  # Đọc toàn bộ
         dtype=str,
         low_memory=False
     )
@@ -80,44 +103,25 @@ try:
     
     # Kiểm tra số cột
     if len(df_raw.columns) < 2:
-        print(f"❌ Error: Expected 2 columns, found {len(df_raw.columns)}")
+        print(f"❌ Error: Expected at least 2 columns, found {len(df_raw.columns)}")
+        print(f"   This might be a delimiter issue. First row sample: {text_content[:200]}")
         sys.exit(1)
     
-    # ==================== 3. TÁCH CỘT B (CỘT THỨ 2) ====================
-    print("🔄 Splitting column B into multiple columns...")
+    # ==================== 4. TÁCH CỘT B ====================
+    print("🔄 Processing data...")
     
-    # Cột B là cột thứ 2 (index 1)
-    # Tách các giá trị trong cột B bằng tab
-    col_b_split = df_raw[1].str.split('\t', expand=True)
-    
-    print(f"   Split into {len(col_b_split.columns)} columns")
-    
-    # ==================== 4. TẠO DATAFRAME KẾT QUẢ ====================
-    print("🔄 Building result DataFrame...")
-    
+    # Tạo DataFrame kết quả
     result = pd.DataFrame()
     
-    # Cột A: Lop (chỉ lấy phần đầu)
+    # Cột 0: Lop
     result['Lop'] = df_raw[0].apply(parse_lop)
     
-    # Các cột từ cột B đã tách
-    # Dựa trên cấu trúc bạn cung cấp:
-    # Cột 0: MaSV, HoDem, Ten, NgaySinh (cần tách tiếp)
-    # Cột 4: MaHP
-    # Cột 5: TenHP
-    # Cột 6: MaGV
-    # Cột 7: HoDemGV
-    # Cột 8: TenGV
-    # Cột 9: LopHP
-    # Cột 10: CauHoi
-    # Cột 11: DanhGia
-    # Cột 12: NULL (bỏ qua)
-    # Cột 13: FB1
-    # Cột 14: FB2
-    # Cột 15: FB3
-    # Cột 16: FB4
+    # Cột 1 là cột chứa tất cả dữ liệu còn lại
+    # Tách cột 1 bằng tab
+    col_b_split = df_raw[1].str.split('\t', expand=True)
+    print(f"   Split column B into {len(col_b_split.columns)} columns")
     
-    # Xử lý cột 0 (thông tin sinh viên) - tách tiếp
+    # Xử lý cột 0 của B (thông tin sinh viên)
     if 0 in col_b_split.columns:
         student_info = col_b_split[0].str.split(' ', expand=True)
         if len(student_info.columns) >= 4:
@@ -141,7 +145,7 @@ try:
         result['Ten'] = None
         result['NgaySinh'] = None
     
-    # Các cột còn lại
+    # Mapping các cột từ B
     col_mapping = {
         4: 'MaHP',
         5: 'TenHP',
@@ -158,13 +162,13 @@ try:
     }
     
     for idx, col_name in col_mapping.items():
-        if idx in col_b_split.columns:
+        if idx < len(col_b_split.columns):
             if col_name in ['TenHP', 'HoDemGV', 'TenGV', 'FB1', 'FB2', 'FB3', 'FB4']:
                 result[col_name] = col_b_split[idx].apply(clean_text)
             elif col_name in ['CauHoi', 'DanhGia']:
                 result[col_name] = pd.to_numeric(col_b_split[idx], errors='coerce')
             else:
-                result[col_name] = col_b_split[idx]
+                result[col_name] = col_b_split[idx].apply(lambda x: x if x != 'NULL' else None)
         else:
             result[col_name] = None
     
@@ -183,6 +187,10 @@ try:
     
     if len(result) == 0:
         print("❌ ERROR: No valid records found!")
+        print("   Checking data sample...")
+        print(f"   MaSV non-null: {result['MaSV'].notna().sum()}")
+        print(f"   MaHP non-null: {result['MaHP'].notna().sum()}")
+        print(f"   CauHoi non-null: {result['CauHoi'].notna().sum()}")
         sys.exit(1)
     
     # ==================== 6. THÊM METADATA ====================
@@ -231,8 +239,13 @@ try:
     if 'CauHoi' in result.columns and 'DanhGia' in result.columns:
         question_stats = result.groupby('CauHoi')['DanhGia'].agg(['mean', 'count'])
         for q in sorted(question_stats.index):
-            if q <= 12:
+            if 1 <= q <= 12:
                 print(f"   Q{int(q):2d}: {question_stats.loc[q, 'mean']:.2f}/5 ({question_stats.loc[q, 'count']:,})")
+    
+    print(f"\n📋 Sample MaSV (converted from E+):")
+    sample_sv = result['MaSV'].dropna().unique()[:3]
+    for sv in sample_sv:
+        print(f"   {sv}")
     
 except Exception as e:
     print(f"❌ ERROR: {str(e)}")

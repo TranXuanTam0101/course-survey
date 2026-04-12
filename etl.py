@@ -1,4 +1,4 @@
-# etl.py - TỐI ƯU TỐC ĐỘ (CHẠY NHANH)
+# etl.py - TỐI ƯU TỐC ĐỘ (KHÔNG LỌC, KHÔNG SẮP XẾP)
 import os
 import sys
 from azure.storage.blob import BlobServiceClient
@@ -20,7 +20,7 @@ if not CONNECTION_STRING or not SEMESTER or not SURVEY_FILE:
     sys.exit(1)
 
 def clean_text(text):
-    """Sửa lỗi encoding tiếng Việt - Tối ưu"""
+    """Sửa lỗi encoding tiếng Việt"""
     if pd.isna(text) or text == 'NULL' or text == '':
         return None
     text = str(text)
@@ -29,7 +29,7 @@ def clean_text(text):
     return text.strip()
 
 def convert_masv(value):
-    """Chuyển 91122E+11 -> số - Tối ưu"""
+    """Chuyển 91122E+11 -> số"""
     if not value or value == '':
         return None
     try:
@@ -46,10 +46,9 @@ try:
     data = blob_client.download_blob().readall()
     print(f"✅ Downloaded {len(data) / 1024 / 1024:.2f} MB")
     
-    # ==================== 2. ĐỌC CSV TRỰC TIẾP ====================
+    # ==================== 2. ĐỌC CSV ====================
     print("📊 Reading CSV...")
     
-    # Đọc toàn bộ file 1 lần, không loop
     df = pd.read_csv(
         io.BytesIO(data),
         sep='\t',
@@ -68,42 +67,38 @@ try:
     df['MaSV'] = df[1].apply(convert_masv)
     
     # ==================== 5. TÌM NGÀY SINH ====================
-    # Tìm cột chứa ngày sinh (pattern dd/mm/yyyy)
     date_pattern = r'\d{1,2}/\d{1,2}/\d{4}'
+    ngaysinh_col = -1
     for col in range(2, min(10, len(df.columns))):
-        mask = df[col].astype(str).str.match(date_pattern, na=False)
-        if mask.any():
+        if df[col].astype(str).str.match(date_pattern, na=False).any():
             df['NgaySinh'] = pd.to_datetime(df[col], errors='coerce', dayfirst=True)
             ngaysinh_col = col
             break
-    else:
+    
+    if ngaysinh_col == -1:
         df['NgaySinh'] = None
-        ngaysinh_col = -1
     
     # ==================== 6. XỬ LÝ HỌ TÊN SINH VIÊN ====================
-    # Lấy các cột từ 2 đến trước ngày sinh
     if ngaysinh_col > 2:
         hoten_sv = df[list(range(2, ngaysinh_col))].astype(str).apply(lambda x: ' '.join(x), axis=1)
-        # Tách tên (từ cuối) và họ đệm
         df['Ten'] = hoten_sv.str.split().str[-1].apply(clean_text)
         df['HoDem'] = hoten_sv.str.split().str[:-1].apply(lambda x: ' '.join(x) if len(x) > 0 else None).apply(clean_text)
     else:
         df['Ten'] = None
         df['HoDem'] = None
     
-    # ==================== 7. LẤY MÃ HỌC PHẦN ====================
+    # ==================== 7. MÃ HỌC PHẦN ====================
     maHP_col = ngaysinh_col + 1 if ngaysinh_col > 0 else 5
     df['MaHP'] = df[maHP_col] if maHP_col < len(df.columns) else None
     
     # ==================== 8. TÌM MÃ GIẢNG VIÊN ====================
-    # Tìm cột chứa mã GV (toàn số)
     magv_col = -1
     for col in range(maHP_col + 1, min(maHP_col + 10, len(df.columns))):
         if df[col].astype(str).str.match(r'^\d+$', na=False).any():
             magv_col = col
             break
     
-    # Tên học phần (giữa MaHP và MaGV)
+    # Tên học phần
     if magv_col > maHP_col + 1:
         tenhp_cols = list(range(maHP_col + 1, magv_col))
         df['TenHP'] = df[tenhp_cols].astype(str).apply(lambda x: ' '.join(x), axis=1).apply(clean_text)
@@ -114,14 +109,13 @@ try:
     df['MaGV'] = df[magv_col] if magv_col > 0 else None
     
     # ==================== 9. TÌM LỚP HỌC PHẦN ====================
-    # Tìm cột có dấu _ hoặc format đặc biệt
     lophp_col = -1
     for col in range(magv_col + 1, min(magv_col + 10, len(df.columns))):
         if df[col].astype(str).str.contains('_', na=False).any():
             lophp_col = col
             break
     
-    # Tên giảng viên (giữa MaGV và LopHP)
+    # Tên giảng viên
     if lophp_col > magv_col + 1:
         hoten_gv_cols = list(range(magv_col + 1, lophp_col))
         hoten_gv = df[hoten_gv_cols].astype(str).apply(lambda x: ' '.join(x), axis=1)
@@ -143,7 +137,6 @@ try:
     
     # ==================== 11. PHẢN HỒI FB1-FB4 ====================
     fb_start = danhgia_col + 1
-    # Bỏ qua cột NULL
     while fb_start < len(df.columns) and df[fb_start].astype(str).str.strip().eq('NULL').all():
         fb_start += 1
     
@@ -152,31 +145,20 @@ try:
     df['FB3'] = df[fb_start + 2].apply(clean_text) if fb_start + 2 < len(df.columns) else None
     df['FB4'] = df[fb_start + 3].apply(clean_text) if fb_start + 3 < len(df.columns) else None
     
-    # ==================== 12. LỌC DỮ LIỆU ====================
-    print("🔄 Filtering...")
-    valid_mask = df['MaSV'].notna() & df['MaHP'].notna() & df['CauHoi'].notna()
-    df = df[valid_mask]
-    print(f"✅ Kept {len(df):,} records")
-    
-    if len(df) == 0:
-        print("❌ No valid records!")
-        sys.exit(1)
-    
-    # ==================== 13. THÊM METADATA ====================
+    # ==================== 12. THÊM METADATA ====================
     df['HocKy'] = 2 if "252" in SURVEY_FILE else 1
     df['NamHoc'] = SEMESTER
     df['ProcessedDate'] = datetime.now()
     
-    # ==================== 14. CHỌN CỘT ====================
+    # ==================== 13. CHỌN CỘT ====================
     final_cols = ['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
                   'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 'CauHoi', 'DanhGia',
                   'FB1', 'FB2', 'FB3', 'FB4', 'HocKy', 'NamHoc', 'ProcessedDate']
     
     df = df[[c for c in final_cols if c in df.columns]]
-    df = df.sort_values(['MaSV', 'MaHP', 'CauHoi'])
     
-    # ==================== 15. UPLOAD ====================
-    print("📤 Uploading...")
+    # ==================== 14. UPLOAD ====================
+    print("📤 Uploading to Azure...")
     output = df.to_csv(index=False, encoding='utf-8-sig')
     output_path = f"{SEMESTER}/{SURVEY_FILE.replace('.csv', '_processed.csv')}"
     
@@ -186,16 +168,16 @@ try:
     
     processed_container.get_blob_client(output_path).upload_blob(output, overwrite=True)
     
-    # ==================== 16. KẾT QUẢ ====================
+    # ==================== 15. KẾT QUẢ ====================
     print(f"\n{'='*50}")
     print(f"✅ SUCCESS!")
-    print(f"📊 Total: {len(df):,} responses")
-    print(f"👨‍🎓 Students: {df['MaSV'].nunique():,}")
-    print(f"⭐ Avg rating: {df['DanhGia'].mean():.2f}/5")
+    print(f"📊 Total rows: {len(df):,}")
     print(f"📤 Uploaded to: processed-data/{output_path}")
     
     print(f"\n📋 Sample (first 3 rows):")
-    print(df[['Lop', 'MaSV', 'Ten', 'MaHP', 'CauHoi', 'DanhGia']].head(3).to_string(index=False))
+    sample_cols = ['Lop', 'MaSV', 'Ten', 'MaHP', 'CauHoi', 'DanhGia']
+    sample_cols = [c for c in sample_cols if c in df.columns]
+    print(df[sample_cols].head(3).to_string(index=False))
     
 except Exception as e:
     print(f"❌ ERROR: {str(e)}")

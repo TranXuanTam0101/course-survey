@@ -36,13 +36,6 @@ def load_to_azure_sql():
         with engine.connect() as conn:
             # Dùng transaction để xóa và nạp mới hoàn toàn
             with conn.begin():
-                print("🧹 Cleaning old data from all tables...")
-                # Xóa theo thứ tự ngược của khóa ngoại
-                conn.execute(sa.text("DELETE FROM PHIEU_KHAO_SAT"))
-                conn.execute(sa.text("DELETE FROM LOP_HOC_PHAN"))
-                conn.execute(sa.text("DELETE FROM SINH_VIEN"))
-                conn.execute(sa.text("DELETE FROM HOC_PHAN"))
-                conn.execute(sa.text("DELETE FROM GIANG_VIEN"))
 
                 # 1. NẠP SINH_VIEN
                 print("   - Inserting: SINH_VIEN...")
@@ -59,9 +52,37 @@ def load_to_azure_sql():
                 # 3. NẠP GIANG_VIEN (Sửa lỗi truncation)
                 print("   - Inserting: GIANG_VIEN...")
                 df_gv = df[['MaGV', 'HoDemGV', 'TenGV']].drop_duplicates(subset=['MaGV']).dropna(subset=['MaGV'])
-                # Cắt ngắn dữ liệu nếu vượt quá 100/200 ký tự để tránh lỗi truncation
-                df_gv['HoDemGV'] = df_gv['HoDemGV'].astype(str).str[:199]
-                df_gv['TenGV'] = df_gv['TenGV'].astype(str).str[:99]
+                
+                # Xử lý giá trị NaN thành None (NULL trong SQL)
+                df_gv['HoDemGV'] = df_gv['HoDemGV'].where(pd.notna(df_gv['HoDemGV']), None)
+                df_gv['TenGV'] = df_gv['TenGV'].where(pd.notna(df_gv['TenGV']), None)
+                
+                # Chuyển đổi sang string và cắt ngắn theo độ dài cột trong DB
+                # Giả sử: HoDemGV là NVARCHAR(100), TenGV là NVARCHAR(50)
+                MAX_HODEM_LEN = 100
+                MAX_TEN_LEN = 50
+                
+                # Chỉ xử lý các giá trị không phải None
+                df_gv['HoDemGV'] = df_gv['HoDemGV'].apply(
+                    lambda x: str(x)[:MAX_HODEM_LEN] if x is not None else None
+                )
+                df_gv['TenGV'] = df_gv['TenGV'].apply(
+                    lambda x: str(x)[:MAX_TEN_LEN] if x is not None else None
+                )
+                
+                # Thay thế 'nan' string thành None nếu có
+                df_gv['HoDemGV'] = df_gv['HoDemGV'].apply(
+                    lambda x: None if x == 'nan' else x
+                )
+                df_gv['TenGV'] = df_gv['TenGV'].apply(
+                    lambda x: None if x == 'nan' else x
+                )
+                
+                # In thử 5 dòng đầu để kiểm tra
+                print("   Sample data after processing:")
+                print(df_gv.head())
+                
+                # Chèn vào database
                 df_gv.to_sql('GIANG_VIEN', conn, if_exists='append', index=False)
 
                 # 4. NẠP LOP_HOC_PHAN

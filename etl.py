@@ -8,7 +8,7 @@ import ftfy
 import sqlalchemy as sa
 import urllib
 
-print("🚀 Starting Optimized ETL Pipeline + SQL Load (Fast & Stable Version)...")
+print("🚀 Starting Optimized ETL Pipeline + SQL Load (Fixed Date Error)...")
 
 # ==================== ENVIRONMENT VARIABLES ====================
 CONNECTION_STRING = os.environ.get("CONNECTION_STRING")
@@ -19,11 +19,10 @@ if not CONNECTION_STRING or not SEMESTER or not SURVEY_FILE:
     print("❌ Missing required environment variables!")
     sys.exit(1)
 
-# ==================== HÀM LÀM SẠCH (Vectorized) ====================
+# ==================== HÀM LÀM SẠCH ====================
 def clean_text_vectorized(series, max_len=None):
     series = series.astype(str).str.strip()
     series = series.replace(['NULL', 'nan', ''], None)
-    # Sửa encoding
     series = series.apply(lambda x: ftfy.fix_text(str(x)) if pd.notna(x) and '?' in str(x) else x)
     series = series.str.strip()
     if max_len:
@@ -72,7 +71,7 @@ print("🧹 Cleaning data...")
 df['Lop']      = clean_text_vectorized(df['Lop'])
 df['HoDem']    = clean_text_vectorized(df['HoDem'])
 df['Ten']      = clean_text_vectorized(df['Ten'])
-df['NgaySinh'] = clean_text_vectorized(df['NgaySinh'])
+df['NgaySinh'] = clean_text_vectorized(df['NgaySinh'])   # giữ string trước
 df['MaHP']     = clean_text_vectorized(df['MaHP'])
 df['TenHP']    = clean_text_vectorized(df['TenHP'])
 df['MaGV']     = clean_text_vectorized(df['MaGV'])
@@ -133,6 +132,10 @@ final_cols = ['ID', 'Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh',
 df_final = df_final[[c for c in final_cols if c in df_final.columns]].copy()
 df_final = df_final.sort_values('ID').reset_index(drop=True)
 
+# ==================== SỬA NGÀY SINH (QUAN TRỌNG) ====================
+print("📅 Converting NgaySinh to datetime...")
+df_final['NgaySinh'] = pd.to_datetime(df_final['NgaySinh'], format='%d/%m/%Y', errors='coerce')
+
 print(f"\n🎉 Final dataset: {len(df_final):,} sinh viên, {len(df_final.columns)} cột")
 
 # ==================== SAVE & UPLOAD ====================
@@ -151,7 +154,7 @@ processed_container.get_blob_client(output_path).upload_blob(
 )
 print(f"✅ Uploaded to: processed-data/{output_path}")
 
-# ==================== LOAD INTO SQL (SỬA LỖI) ====================
+# ==================== LOAD VÀO SQL (fast_executemany giữ nguyên) ====================
 print("\n🔄 Loading data into Azure SQL...")
 
 sql_server = "course-survey.database.windows.net"
@@ -166,7 +169,6 @@ params = urllib.parse.quote_plus(
     "Encrypt=yes;TrustServerCertificate=no;Connection Timeout=60;"
 )
 
-# Quan trọng: fast_executemany=True + KHÔNG dùng method='multi'
 engine = sa.create_engine(f"mssql+pyodbc:///?odbc_connect={params}", fast_executemany=True)
 
 try:
@@ -176,7 +178,7 @@ try:
             print("   - Inserting SINH_VIEN...")
             sv_cols = ['ID', 'MaSV', 'Lop', 'HoDem', 'Ten', 'NgaySinh']
             df_sv = df_final[[c for c in sv_cols if c in df_final.columns]].drop_duplicates(subset=['ID'])
-            df_sv.to_sql('SINH_VIEN', conn, if_exists='append', index=False, chunksize=3000)   # bỏ method='multi'
+            df_sv.to_sql('SINH_VIEN', conn, if_exists='append', index=False, chunksize=4000)
 
             print("   - Inserting HOC_PHAN...")
             df_hp = df_final[['MaHP', 'TenHP']].drop_duplicates(subset=['MaHP']).dropna(subset=['MaHP'])
@@ -191,7 +193,7 @@ try:
             lhp = lhp.rename(columns={'LopHP': 'MaLopHP'})
             lhp['TenLopHP'] = lhp['MaLopHP']
             lhp = lhp.drop_duplicates(subset=['MaLopHP']).dropna(subset=['MaLopHP'])
-            lhp.to_sql('LOP_HOC_PHAN', conn, if_exists='append', index=False, chunksize=3000)
+            lhp.to_sql('LOP_HOC_PHAN', conn, if_exists='append', index=False, chunksize=4000)
 
             print("   - Inserting PHIEU_KHAO_SAT...")
             fact_cols = ['ID', 'LopHP', 'HocKy', 'NamHoc']
@@ -201,7 +203,7 @@ try:
                     fact_cols.append(q)
             df_fact = df_final[fact_cols].copy()
             df_fact = df_fact.rename(columns={'ID': 'ID_SV', 'LopHP': 'MaLopHP'})
-            df_fact.to_sql('PHIEU_KHAO_SAT', conn, if_exists='append', index=False, chunksize=3000)
+            df_fact.to_sql('PHIEU_KHAO_SAT', conn, if_exists='append', index=False, chunksize=4000)
 
     print("✅ All data successfully loaded into Azure SQL Database!")
 

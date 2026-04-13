@@ -38,19 +38,30 @@ try:
     data = blob_client.download_blob().readall()
     
     # 2. ĐỌC DỮ LIỆU (Mô phỏng thao tác Click)
-    # sep='\t' -> Delimiter: Tab
-    # encoding='utf-8-sig' -> File Origin: 65001
-    # dtype=str -> Data Type Detection: Do not detect
-    df_raw = pd.read_csv(
-        io.BytesIO(data),
-        sep='\t',
-        header=None,
-        dtype=str,
-        encoding='utf-8-sig',
-        engine='python'
-    )
-    print(f"✅ Loaded {len(df_raw)} rows with {len(df_raw.columns)} columns.")
+    print("📊 Reading Data...")
+    try:
+        # Thử đọc bằng UTF-8 (65001) như bạn mong muốn
+        df_raw = pd.read_csv(
+            io.BytesIO(data),
+            sep='\t',
+            header=None,
+            dtype=str,
+            encoding='utf-8-sig',
+            engine='python'
+        )
+    except UnicodeDecodeError:
+        print("⚠️ UTF-8 decoding failed, trying 'cp1258' (Vietnamese Windows)...")
+        # Nếu UTF-8 lỗi, thử dùng encoding Tiếng Việt của Windows
+        df_raw = pd.read_csv(
+            io.BytesIO(data),
+            sep='\t',
+            header=None,
+            dtype=str,
+            encoding='cp1258',
+            engine='python'
+        )
 
+    print(f"✅ Successfully loaded {len(df_raw)} rows.")
     # 3. XỬ LÝ TÁCH CỘT THÔNG MINH
     # Vì file dùng Tab làm phân cách, đôi khi Họ Tên bị nhảy cột. 
     # Ta dùng logic tìm cột Ngày Sinh (chứa ký tự '/') để làm mốc neo.

@@ -231,6 +231,8 @@ try:
     final_cols_existing = [c for c in final_cols if c in df_final.columns]
     df_final = df_final[final_cols_existing]
     
+    # Sắp xếp theo ID
+    df_final = df_final.sort_values('ID').reset_index(drop=True)
     
     # ==================== 15. UPLOAD ====================
     print("📤 Uploading to Azure...")

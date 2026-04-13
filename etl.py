@@ -1,4 +1,8 @@
-# etl.py - XỬ LÝ MỖI SINH VIÊN 1 DÒNG (Q1-Q12)
+từ đoạn code dưới của tôi hãy xử lý dữ liệu, mỗi sinh viên sẽ có 1 dòng dữ liệu gồm 'Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
+                  'MaGV', 'HoDemGV', 'TenGV', 'LopHP', Q1;Q2;Q3;Q4;Q5;Q6;Q7;Q8;Q9;Q10;Q11;Q12; Q13; Q14; Q15; Q16, HocKy', 'NamHoc', 'ProcessedDate'
+BIẾT TỪ q1->q12 là giá trị của cột DanhGia  tương ứng với cột CauHoi, Q13->Q16 là FB1->FB4
+
+# etl.py - ĐÃ CHỈNH SỬA LOGIC LOP VÀ MASV
 import os
 import sys
 from azure.storage.blob import BlobServiceClient
@@ -61,9 +65,11 @@ try:
     print(f"✅ Read {len(df):,} rows, {len(df.columns)} columns")
     
     # ==================== 3. XỬ LÝ LOP ====================
+    # Lop là cụm đầu tiên trước dấu cách
     df['Lop'] = df[0].astype(str).str.split(' ').str[0]
     
     # ==================== 4. XỬ LÝ MASV ====================
+    # MaSV là cụm chuỗi số sau dấu cách đầu tiên trong cột 1
     df['MaSV_raw'] = df[1].astype(str).str.split(' ').str[0]
     df['MaSV'] = df['MaSV_raw'].apply(convert_masv)
     
@@ -144,61 +150,21 @@ try:
     df['FB3'] = df[fb_start + 2].apply(clean_text) if fb_start + 2 < len(df.columns) else None
     df['FB4'] = df[fb_start + 3].apply(clean_text) if fb_start + 3 < len(df.columns) else None
     
-    # ==================== 12. TẠO KHÓA NHÓM ====================
-    # Tạo mã nhóm để gom các dòng của cùng 1 sinh viên, 1 môn học
-    df['GroupKey'] = df['MaSV'].astype(str) + '_' + df['MaHP'].astype(str)
+    # ==================== 12. THÊM METADATA ====================
+    df['HocKy'] = 2 if "252" in SURVEY_FILE else 1
+    df['NamHoc'] = SEMESTER
+    df['ProcessedDate'] = datetime.now()
     
-    # ==================== 13. PIVOT: CHUYỂN 12 DÒNG -> 1 DÒNG ====================
-    print("🔄 Pivoting data: 12 rows per student -> 1 row...")
-    
-    # Lấy các cột cố định (không thay đổi theo CauHoi)
-    fixed_cols = ['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
-                  'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 'FB1', 'FB2', 'FB3', 'FB4']
-    
-    # Lấy các cột cố định cho từng nhóm (giữ nguyên giá trị đầu tiên)
-    df_fixed = df.groupby('GroupKey')[fixed_cols].first().reset_index()
-    
-    # Pivot: Chuyển CauHoi thành các cột Q1-Q12 với giá trị là DanhGia
-    df_pivot = df.pivot_table(
-        index='GroupKey',
-        columns='CauHoi',
-        values='DanhGia',
-        aggfunc='first'
-    ).reset_index()
-    
-    # Đổi tên cột từ 1,2,3... thành Q1, Q2, Q3...
-    df_pivot.columns = ['GroupKey'] + [f'Q{int(col)}' for col in df_pivot.columns if col != 'GroupKey']
-    
-    # Đảm bảo có đủ 12 cột Q1-Q12
-    for i in range(1, 13):
-        if f'Q{i}' not in df_pivot.columns:
-            df_pivot[f'Q{i}'] = None
-    
-    # Sắp xếp cột Q theo thứ tự
-    q_cols = [f'Q{i}' for i in range(1, 13)]
-    df_pivot = df_pivot[['GroupKey'] + q_cols]
-    
-    # ==================== 14. GỘP DỮ LIỆU ====================
-    # Ghép cột cố định với cột Q
-    result = df_fixed.merge(df_pivot, on='GroupKey', how='left')
-    result = result.drop(columns=['GroupKey'])
-    
-    # ==================== 15. THÊM METADATA ====================
-    result['HocKy'] = 2 if "252" in SURVEY_FILE else 1
-    result['NamHoc'] = SEMESTER
-    result['ProcessedDate'] = datetime.now()
-    
-    # ==================== 16. CHỌN CỘT ====================
+    # ==================== 13. CHỌN CỘT ====================
     final_cols = ['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
-                  'MaGV', 'HoDemGV', 'TenGV', 'LopHP',
-                  'Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'Q6', 'Q7', 'Q8', 'Q9', 'Q10', 'Q11', 'Q12',
+                  'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 'CauHoi', 'DanhGia',
                   'FB1', 'FB2', 'FB3', 'FB4', 'HocKy', 'NamHoc', 'ProcessedDate']
     
-    result = result[[c for c in final_cols if c in result.columns]]
+    df = df[[c for c in final_cols if c in df.columns]]
     
-    # ==================== 17. UPLOAD ====================
+    # ==================== 14. UPLOAD ====================
     print("📤 Uploading to Azure...")
-    output = result.to_csv(index=False, encoding='utf-8-sig')
+    output = df.to_csv(index=False, encoding='utf-8-sig')
     output_path = f"{SEMESTER}/{SURVEY_FILE.replace('.csv', '_processed.csv')}"
     
     processed_container = blob_service.get_container_client("processed-data")
@@ -207,33 +173,19 @@ try:
     
     processed_container.get_blob_client(output_path).upload_blob(output, overwrite=True)
     
-    # ==================== 18. KẾT QUẢ ====================
+    # ==================== 15. KẾT QUẢ ====================
     print(f"\n{'='*50}")
     print(f"✅ SUCCESS!")
-    print(f"📊 Total rows (before pivot): {len(df):,}")
-    print(f"📊 Total rows (after pivot - 1 per student): {len(result):,}")
+    print(f"📊 Total rows: {len(df):,}")
     print(f"📤 Uploaded to: processed-data/{output_path}")
     
     print(f"\n📋 Sample (first 3 rows):")
-    sample_cols = ['Lop', 'MaSV', 'HoDem', 'Ten', 'MaHP', 'TenHP', 'Q1', 'Q2', 'Q3', 'Q4', 'Q5']
-    sample_cols = [c for c in sample_cols if c in result.columns]
-    print(result[sample_cols].head(3).to_string(index=False))
-    
-    # Kiểm tra số lượng câu hỏi
-    print(f"\n📊 Statistics:")
-    print(f"   Total students: {result['MaSV'].nunique():,}")
-    print(f"   Total courses: {result['MaHP'].nunique():,}")
-    
-    # Tính điểm trung bình cho từng câu hỏi
-    print(f"\n📊 Average rating by question:")
-    for i in range(1, 13):
-        col = f'Q{i}'
-        if col in result.columns:
-            avg = result[col].mean()
-            print(f"   {col}: {avg:.2f}/5")
+    sample_cols = ['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
+    'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 'CauHoi', 'DanhGia',
+    'FB1', 'FB2', 'FB3', 'FB4']
+    sample_cols = [c for c in sample_cols if c in df.columns]
+    print(df[sample_cols].head(3).to_string(index=False))
     
 except Exception as e:
     print(f"❌ ERROR: {str(e)}")
-    import traceback
-    traceback.print_exc()
     sys.exit(1)

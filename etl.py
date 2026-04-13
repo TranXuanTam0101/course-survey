@@ -8,7 +8,7 @@ import ftfy
 import sqlalchemy as sa
 import urllib
 
-print("🚀 Starting Optimized ETL Pipeline + SQL Load (Fixed Truncation Error)...")
+print("🚀 Starting ETL Pipeline + SQL Load (Fixed Truncation + Safe Mode)...")
 
 # ==================== ENVIRONMENT VARIABLES ====================
 CONNECTION_STRING = os.environ.get("CONNECTION_STRING")
@@ -19,15 +19,15 @@ if not CONNECTION_STRING or not SEMESTER or not SURVEY_FILE:
     print("❌ Missing required environment variables!")
     sys.exit(1)
 
-# ==================== HÀM LÀM SẠCH (Cải tiến) ====================
-def clean_text_vectorized(series, max_len=500):
+# ==================== HÀM LÀM SẠCH (Giới hạn chặt chẽ hơn) ====================
+def clean_text_vectorized(series, max_len=100):
+    """Giới hạn độ dài an toàn cho cột nvarchar(100)"""
     series = series.astype(str).str.strip()
     series = series.replace(['NULL', 'nan', ''], None)
-    # Sửa encoding
     series = series.apply(lambda x: ftfy.fix_text(str(x)) if pd.notna(x) else x)
     series = series.str.strip()
     if max_len:
-        series = series.str[:max_len]   # Giới hạn độ dài
+        series = series.str[:max_len]          # Cắt cứng ở max_len
     return series.where(series.notna() & (series != ''), None)
 
 def convert_masv_vectorized(series):
@@ -67,17 +67,17 @@ df.columns = [
     'Col28','Col29','Col30','Col31'
 ]
 
-# ==================== CLEANING (Giới hạn độ dài tên GV) ====================
-print("🧹 Cleaning data...")
+# ==================== CLEANING ====================
+print("🧹 Cleaning data with strict length limit...")
 df['Lop']      = clean_text_vectorized(df['Lop'], 50)
 df['HoDem']    = clean_text_vectorized(df['HoDem'], 100)
 df['Ten']      = clean_text_vectorized(df['Ten'], 50)
-df['NgaySinh'] = clean_text_vectorized(df['NgaySinh'])
+df['NgaySinh'] = clean_text_vectorized(df['NgaySinh'], 20)
 df['MaHP']     = clean_text_vectorized(df['MaHP'], 50)
 df['TenHP']    = clean_text_vectorized(df['TenHP'], 200)
 df['MaGV']     = clean_text_vectorized(df['MaGV'], 50)
-df['HoDemGV']  = clean_text_vectorized(df['HoDemGV'], 100)   # Giới hạn 100 ký tự
-df['TenGV']    = clean_text_vectorized(df['TenGV'], 100)     # Giới hạn 100 ký tự
+df['HoDemGV']  = clean_text_vectorized(df['HoDemGV'], 100)   # Giới hạn 100
+df['TenGV']    = clean_text_vectorized(df['TenGV'], 100)     # Giới hạn 100
 df['LopHP']    = clean_text_vectorized(df['LopHP'], 100)
 
 df['MaSV'] = convert_masv_vectorized(df['MaSV'])
@@ -133,8 +133,6 @@ final_cols = ['ID', 'Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh',
 df_final = df_final[[c for c in final_cols if c in df_final.columns]].copy()
 df_final = df_final.sort_values('ID').reset_index(drop=True)
 
-# Chuyển ngày sinh
-print("📅 Converting NgaySinh to datetime...")
 df_final['NgaySinh'] = pd.to_datetime(df_final['NgaySinh'], format='%d/%m/%Y', errors='coerce')
 
 print(f"\n🎉 Final dataset: {len(df_final):,} sinh viên, {len(df_final.columns)} cột")
@@ -153,9 +151,9 @@ if not processed_container.exists():
 processed_container.get_blob_client(output_path).upload_blob(
     df_final.to_csv(index=False, encoding='utf-8-sig'), overwrite=True
 )
-print(f"✅ Uploaded to: processed-data/{output_path}")
+print(f"✅ Uploaded successfully!")
 
-# ==================== LOAD VÀO SQL ====================
+# ==================== LOAD VÀO SQL (Safe mode) ====================
 print("\n🔄 Loading data into Azure SQL...")
 
 sql_server = "course-survey.database.windows.net"
@@ -170,7 +168,7 @@ params = urllib.parse.quote_plus(
     "Encrypt=yes;TrustServerCertificate=no;Connection Timeout=60;"
 )
 
-# Tắt fast_executemany tạm thời để tránh buffer issue (có thể bật lại sau khi sửa schema)
+# Tắt fast_executemany để tránh buffer issue
 engine = sa.create_engine(f"mssql+pyodbc:///?odbc_connect={params}", fast_executemany=False)
 
 try:
@@ -178,15 +176,14 @@ try:
         with conn.begin():
             
             print("   - Inserting SINH_VIEN...")
-            sv_cols = ['ID', 'MaSV', 'Lop', 'HoDem', 'Ten', 'NgaySinh']
-            df_sv = df_final[[c for c in sv_cols if c in df_final.columns]].drop_duplicates(subset=['ID'])
+            df_sv = df_final[['ID', 'MaSV', 'Lop', 'HoDem', 'Ten', 'NgaySinh']].drop_duplicates(subset=['ID'])
             df_sv.to_sql('SINH_VIEN', conn, if_exists='append', index=False, chunksize=4000)
 
             print("   - Inserting HOC_PHAN...")
             df_hp = df_final[['MaHP', 'TenHP']].drop_duplicates(subset=['MaHP']).dropna(subset=['MaHP'])
             df_hp.to_sql('HOC_PHAN', conn, if_exists='append', index=False, chunksize=1000)
 
-            print("   - Inserting GIANG_VIEN...")   # Đây là chỗ lỗi trước
+            print("   - Inserting GIANG_VIEN...")
             df_gv = df_final[['MaGV', 'HoDemGV', 'TenGV']].drop_duplicates(subset=['MaGV']).dropna(subset=['MaGV'])
             df_gv.to_sql('GIANG_VIEN', conn, if_exists='append', index=False, chunksize=500)
 

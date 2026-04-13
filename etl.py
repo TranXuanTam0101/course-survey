@@ -139,9 +139,7 @@ try:
     df['DanhGia'] = pd.to_numeric(df[danhgia_col], errors='coerce') if danhgia_col < len(df.columns) else None
     
     # ==================== 11. PHẢN HỒI FB1-FB4 ====================
-    fb_start = danhgia_col + 1
-    while fb_start < len(df.columns) and df[fb_start].astype(str).str.strip().eq('NULL').all():
-        fb_start += 1
+    fb_start = 14
     
     df['FB1'] = df[fb_start].apply(clean_text) if fb_start < len(df.columns) else None
     df['FB2'] = df[fb_start + 1].apply(clean_text) if fb_start + 1 < len(df.columns) else None

@@ -117,9 +117,13 @@ try:
     # Tìm LopHP
     lophp_col = None
     if magv_col is not None:
-        for col in range(magv_col + 1, min(magv_col + 10, len(df.columns))):
-            if df[col].astype(str).str.contains('_', na=False).any():
-                lophp_col = col
+        # Bắt đầu từ cột sau magv_col
+        for col in range(magv_col + 1, min(magv_col + 20, len(df.columns))):
+            # Kiểm tra nếu cột này có tất cả các giá trị đều NULL/NaN
+            if df[col].isna().all() or (df[col].astype(str).str.strip().isin(['', 'NULL', 'nan', 'None']).all()):
+                # Cột LopHP là cột ngay trước cột NULL này
+                lophp_col = col - 1
+                print(f"   ℹ️ Found NULL column at position {col}, using LopHP from column {lophp_col}")
                 break
     
     # Tên GV

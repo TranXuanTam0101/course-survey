@@ -156,53 +156,43 @@ try:
                   'FB1', 'FB2', 'FB3', 'FB4', 'HocKy', 'NamHoc', 'ProcessedDate']
     
     df = df[[c for c in final_cols if c in df.columns]]
-    # ==================== 13.5. GỘP DỮ LIỆU - GIỮ NGUYÊN TOÀN BỘ ====================
-    print("🔄 Merging Q1-Q12 into single row per student...")
+        # ==================== 13.5. GIỮ NGUYÊN DỮ LIỆU - THÊM CỘT Q1-Q12 ====================
+    print("🔄 Adding Q1-Q12 columns while keeping all rows...")
     
-    # Lấy danh sách các cột cố định
-    fixed_cols = ['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
-                  'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 'HocKy', 'NamHoc', 'ProcessedDate']
+    # Tạo mapping từ CauHoi sang tên cột Q
+    df['Question_Col'] = df['CauHoi'].apply(lambda x: f'Q{int(x)}' if pd.notna(x) else None)
     
-    # Tạo dataframe kết quả từ các cột cố định (bỏ duplicate)
-    df_result = df[fixed_cols].drop_duplicates(subset=['MaSV', 'MaHP']).copy()
+    # Pivot để lấy giá trị DanhGia theo từng câu hỏi
+    df_pivot = df.pivot_table(
+        index=df.index,
+        columns='Question_Col',
+        values='DanhGia',
+        aggfunc='first'
+    ).reset_index(drop=True)
     
-    # Khởi tạo các cột Q1-Q12 với giá trị mặc định là None
+    # Ghép các cột Q vào df gốc
     for i in range(1, 13):
-        df_result[f'Q{i}'] = None
+        col_name = f'Q{i}'
+        if col_name in df_pivot.columns:
+            df[col_name] = df_pivot[col_name]
+        else:
+            df[col_name] = None
     
-    # Duyệt từng dòng trong df gốc để điền giá trị vào Q1-Q12
-    # Sử dụng groupby để tối ưu tốc độ thay vì loop từng dòng
-    for (masv, mahp), group in df.groupby(['MaSV', 'MaHP']):
-        mask = (df_result['MaSV'] == masv) & (df_result['MaHP'] == mahp)
-        for _, row in group.iterrows():
-            if pd.notna(row['CauHoi']):
-                cauhoi = int(row['CauHoi'])
-                if 1 <= cauhoi <= 12:
-                    df_result.loc[mask, f'Q{cauhoi}'] = row['DanhGia']
+    # Xóa cột tạm thời
+    df = df.drop(columns=['Question_Col'])
     
-    # Thêm các cột Q13-Q16 (FB1-FB4)
-    df_fb = df[['MaSV', 'MaHP', 'FB1', 'FB2', 'FB3', 'FB4']].drop_duplicates(subset=['MaSV', 'MaHP'])
-    df_fb = df_fb.rename(columns={'FB1': 'Q13', 'FB2': 'Q14', 'FB3': 'Q15', 'FB4': 'Q16'})
+    print(f"✅ Added Q1-Q12 columns to {len(df):,} rows")
+    print(f"   Each row still represents one question response")
+    print(f"   Q1-Q12 columns show the rating for that specific question")
     
-    df_result = df_result.merge(df_fb, on=['MaSV', 'MaHP'], how='left')
+    # Sắp xếp lại cột
+    final_cols = ['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
+                  'MaGV', 'HoDemGV', 'TenGV', 'LopHP',
+                  'Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'Q6', 'Q7', 'Q8', 'Q9', 'Q10', 'Q11', 'Q12',
+                  'CauHoi', 'DanhGia', 'FB1', 'FB2', 'FB3', 'FB4',
+                  'HocKy', 'NamHoc', 'ProcessedDate']
     
-    # Sắp xếp cột theo thứ tự yêu cầu
-    final_cols_pivot = ['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
-                        'MaGV', 'HoDemGV', 'TenGV', 'LopHP',
-                        'Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'Q6', 'Q7', 'Q8', 'Q9', 'Q10', 'Q11', 'Q12',
-                        'Q13', 'Q14', 'Q15', 'Q16',
-                        'HocKy', 'NamHoc', 'ProcessedDate']
-    
-    df_result = df_result[[c for c in final_cols_pivot if c in df_result.columns]]
-    
-    # Thống kê số lượng sinh viên có đủ 12 câu hỏi
-    full_questions = df_result[[f'Q{i}' for i in range(1, 13)]].notna().all(axis=1).sum()
-    print(f"✅ Grouping completed: {len(df_result):,} rows")
-    print(f"   Students with full 12 questions: {full_questions:,}")
-    print(f"   Students with missing questions: {len(df_result) - full_questions:,}")
-    
-    # Gán lại df
-    df = df_result
+    df = df[[c for c in final_cols if c in df.columns]]
     # ==================== 14. UPLOAD ====================
     print("📤 Uploading to Azure...")
     output = df.to_csv(index=False, encoding='utf-8-sig')

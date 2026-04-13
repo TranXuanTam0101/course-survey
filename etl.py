@@ -1,3 +1,4 @@
+# etl.py - XỬ LÝ VÀ PIVOT (MỖI SINH VIÊN 1 DÒNG)
 import os
 import sys
 from azure.storage.blob import BlobServiceClient
@@ -60,11 +61,9 @@ try:
     print(f"✅ Read {len(df):,} rows, {len(df.columns)} columns")
     
     # ==================== 3. XỬ LÝ LOP ====================
-    # Lop là cụm đầu tiên trước dấu cách
     df['Lop'] = df[0].astype(str).str.split(' ').str[0]
     
     # ==================== 4. XỬ LÝ MASV ====================
-    # MaSV là cụm chuỗi số sau dấu cách đầu tiên trong cột 1
     df['MaSV_raw'] = df[1].astype(str).str.split(' ').str[0]
     df['MaSV'] = df['MaSV_raw'].apply(convert_masv)
     
@@ -150,16 +149,59 @@ try:
     df['NamHoc'] = SEMESTER
     df['ProcessedDate'] = datetime.now()
     
-    # ==================== 13. CHỌN CỘT ====================
-    final_cols = ['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
-                  'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 'CauHoi', 'DanhGia',
-                  'FB1', 'FB2', 'FB3', 'FB4', 'HocKy', 'NamHoc', 'ProcessedDate']
+    # ==================== 13. PIVOT DỮ LIỆU: MỖI SINH VIÊN 1 DÒNG ====================
+    print("🔄 Pivoting data: 12 rows per student -> 1 row per student...")
     
-    df = df[[c for c in final_cols if c in df.columns]]
+    # Chỉ lấy các câu hỏi từ 1-12
+    df_questions = df[df['CauHoi'].between(1, 12)].copy()
+    
+    # Pivot câu hỏi
+    question_pivot = df_questions.pivot_table(
+        index=['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP', 
+               'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 'HocKy', 'NamHoc', 'ProcessedDate'],
+        columns='CauHoi',
+        values='DanhGia',
+        aggfunc='first'
+    ).reset_index()
+    
+    # Đổi tên cột Q1-Q12
+    question_pivot.columns = ['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP', 
+                               'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 'HocKy', 'NamHoc', 'ProcessedDate'] + \
+                              [f'Q{i}' for i in range(1, 13)]
+    
+    # Lấy phản hồi FB (chỉ 1 dòng mỗi sinh viên)
+    feedback_df = df[['Lop', 'MaSV', 'MaHP', 'FB1', 'FB2', 'FB3', 'FB4']].drop_duplicates(
+        subset=['Lop', 'MaSV', 'MaHP']
+    )
+    
+    # Merge
+    result_df = question_pivot.merge(
+        feedback_df[['Lop', 'MaSV', 'MaHP', 'FB1', 'FB2', 'FB3', 'FB4']],
+        on=['Lop', 'MaSV', 'MaHP'],
+        how='left'
+    )
+    
+    # Đổi tên FB thành Q13-Q16
+    result_df = result_df.rename(columns={
+        'FB1': 'Q13',
+        'FB2': 'Q14',
+        'FB3': 'Q15',
+        'FB4': 'Q16'
+    })
+    
+    # Sắp xếp cột
+    final_columns = ['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
+                     'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 
+                     'Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'Q6', 'Q7', 'Q8', 'Q9', 'Q10', 'Q11', 'Q12',
+                     'Q13', 'Q14', 'Q15', 'Q16', 'HocKy', 'NamHoc', 'ProcessedDate']
+    
+    result_df = result_df[[c for c in final_columns if c in result_df.columns]]
+    
+    print(f"✅ After pivot: {len(result_df):,} rows (each row = 1 student)")
     
     # ==================== 14. UPLOAD ====================
     print("📤 Uploading to Azure...")
-    output = df.to_csv(index=False, encoding='utf-8-sig')
+    output = result_df.to_csv(index=False, encoding='utf-8-sig')
     output_path = f"{SEMESTER}/{SURVEY_FILE.replace('.csv', '_processed.csv')}"
     
     processed_container = blob_service.get_container_client("processed-data")
@@ -171,16 +213,19 @@ try:
     # ==================== 15. KẾT QUẢ ====================
     print(f"\n{'='*50}")
     print(f"✅ SUCCESS!")
-    print(f"📊 Total rows: {len(df):,}")
+    print(f"📊 Before pivot: {len(df):,} rows (12 rows per student)")
+    print(f"📊 After pivot: {len(result_df):,} rows (1 row per student)")
     print(f"📤 Uploaded to: processed-data/{output_path}")
     
     print(f"\n📋 Sample (first 3 rows):")
-    sample_cols = ['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
-    'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 'CauHoi', 'DanhGia',
-    'FB1', 'FB2', 'FB3', 'FB4']
-    sample_cols = [c for c in sample_cols if c in df.columns]
-    print(df[sample_cols].head(3).to_string(index=False))
+    sample_cols = ['Lop', 'MaSV', 'HoDem', 'Ten', 'MaHP', 'TenHP', 
+                   'Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'Q6', 'Q7', 'Q8', 'Q9', 'Q10', 'Q11', 'Q12',
+                   'Q13', 'Q14', 'Q15', 'Q16']
+    sample_cols = [c for c in sample_cols if c in result_df.columns]
+    print(result_df[sample_cols].head(3).to_string(index=False))
     
 except Exception as e:
     print(f"❌ ERROR: {str(e)}")
+    import traceback
+    traceback.print_exc()
     sys.exit(1)

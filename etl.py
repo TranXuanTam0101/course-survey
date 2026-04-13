@@ -1,4 +1,3 @@
-# etl.py - ĐÃ SỬA PHẦN Q1-Q12 LẤY THEO CauHoi
 import os
 import sys
 from azure.storage.blob import BlobServiceClient
@@ -61,9 +60,11 @@ try:
     print(f"✅ Read {len(df):,} rows, {len(df.columns)} columns")
     
     # ==================== 3. XỬ LÝ LOP ====================
+    # Lop là cụm đầu tiên trước dấu cách
     df['Lop'] = df[0].astype(str).str.split(' ').str[0]
     
     # ==================== 4. XỬ LÝ MASV ====================
+    # MaSV là cụm chuỗi số sau dấu cách đầu tiên trong cột 1
     df['MaSV_raw'] = df[1].astype(str).str.split(' ').str[0]
     df['MaSV'] = df['MaSV_raw'].apply(convert_masv)
     
@@ -149,44 +150,10 @@ try:
     df['NamHoc'] = SEMESTER
     df['ProcessedDate'] = datetime.now()
     
-    # ==================== 12.5. TẠO CÁC CỘT Q1-Q12 TỪ CauHoi VÀ DanhGia ====================
-    # Pivot: chuyển từ dạng dài (12 dòng/sinh viên) sang dạng rộng (1 dòng/sinh viên)
-    pivot_df = df.pivot_table(
-        index=['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
-               'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 'HocKy', 'NamHoc', 'ProcessedDate'],
-        columns='CauHoi',
-        values='DanhGia'
-    ).reset_index()
-    
-    # Đổi tên cột CauHoi thành Q1-Q12
-    pivot_df.columns.name = None
-    for i in range(1, 13):
-        if i in pivot_df.columns:
-            pivot_df = pivot_df.rename(columns={i: f'Q{i}'})
-        else:
-            pivot_df[f'Q{i}'] = None
-    
-    # Lấy FB1-FB4 từ dòng đầu tiên của mỗi nhóm (vì FB giống nhau cho cả 12 câu)
-    fb_cols = ['FB1', 'FB2', 'FB3', 'FB4']
-    fb_group = df.groupby(['Lop', 'MaSV', 'MaHP'])[fb_cols].first().reset_index()
-    
-    # Merge FB vào pivot_df
-    pivot_df = pivot_df.merge(fb_group[['MaSV', 'MaHP', 'FB1', 'FB2', 'FB3', 'FB4']], on=['MaSV', 'MaHP'], how='left')
-    
-    # Đổi tên FB1->FB4 thành Q13->Q16
-    pivot_df['Q13'] = pivot_df['FB1']
-    pivot_df['Q14'] = pivot_df['FB2']
-    pivot_df['Q15'] = pivot_df['FB3']
-    pivot_df['Q16'] = pivot_df['FB4']
-    
-    # Gán lại df
-    df = pivot_df
-    
     # ==================== 13. CHỌN CỘT ====================
     final_cols = ['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
-                  'MaGV', 'HoDemGV', 'TenGV', 'LopHP',
-                  'Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'Q6', 'Q7', 'Q8', 'Q9', 'Q10', 'Q11', 'Q12',
-                  'Q13', 'Q14', 'Q15', 'Q16', 'HocKy', 'NamHoc', 'ProcessedDate']
+                  'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 'CauHoi', 'DanhGia',
+                  'FB1', 'FB2', 'FB3', 'FB4', 'HocKy', 'NamHoc', 'ProcessedDate']
     
     df = df[[c for c in final_cols if c in df.columns]]
     
@@ -204,11 +171,13 @@ try:
     # ==================== 15. KẾT QUẢ ====================
     print(f"\n{'='*50}")
     print(f"✅ SUCCESS!")
-    print(f"📊 Total rows after pivot: {len(df):,}")
+    print(f"📊 Total rows: {len(df):,}")
     print(f"📤 Uploaded to: processed-data/{output_path}")
     
     print(f"\n📋 Sample (first 3 rows):")
-    sample_cols = ['Lop', 'MaSV', 'HoDem', 'Ten', 'MaHP', 'Q1', 'Q2', 'Q3', 'Q13', 'Q14']
+    sample_cols = ['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
+    'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 'CauHoi', 'DanhGia',
+    'FB1', 'FB2', 'FB3', 'FB4']
     sample_cols = [c for c in sample_cols if c in df.columns]
     print(df[sample_cols].head(3).to_string(index=False))
     

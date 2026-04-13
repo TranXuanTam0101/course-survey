@@ -47,19 +47,34 @@ try:
     
     # ==================== 2. ĐỌC CSV ====================
     print("📊 Reading CSV...")
-    print("   - Encoding: UTF-8 (65001)")
+    print("   - Encoding: cp1258 (Windows-1258)")
     print("   - Delimiter: Tab (\\t)")
     print("   - Data type detection: Disabled (all columns as string)")
     
-    # Đọc với UTF-8 encoding và không tự động phát hiện kiểu dữ liệu
-    df = pd.read_csv(
-        io.BytesIO(data),
-        sep='\t',                    # Delimiter là Tab
-        header=None,                 # File không có header
-        dtype=str,                   # Không tự động phát hiện kiểu dữ liệu
-        encoding='utf-8',            # Đổi từ cp1258 sang utf-8 (65001)
-        low_memory=False             # Đọc toàn bộ vào memory
-    )
+    # Thử đọc với encoding cp1258 trước
+    try:
+        df = pd.read_csv(
+            io.BytesIO(data),
+            sep='\t',                    # Delimiter là Tab
+            header=None,                 # File không có header
+            dtype=str,                   # Không tự động phát hiện kiểu dữ liệu
+            encoding='cp1258',           # Dùng cp1258 như gốc
+            low_memory=False             # Đọc toàn bộ vào memory
+        )
+        print("   ✓ Successfully read with cp1258 encoding")
+    except UnicodeDecodeError:
+        # Nếu fail, thử với utf-8
+        print("   ⚠ cp1258 failed, trying utf-8...")
+        df = pd.read_csv(
+            io.BytesIO(data),
+            sep='\t',
+            header=None,
+            dtype=str,
+            encoding='utf-8',
+            low_memory=False,
+            errors='ignore'  # Bỏ qua lỗi encoding
+        )
+        print("   ✓ Successfully read with utf-8 (ignoring errors)")
     
     print(f"✅ Read {len(df):,} rows, {len(df.columns)} columns")
     

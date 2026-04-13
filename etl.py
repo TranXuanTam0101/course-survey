@@ -157,45 +157,6 @@ try:
     
     df = df[[c for c in final_cols if c in df.columns]]
     
-    # ==================== 13.1. PIVOT DỮ LIỆU (MỖI SINH VIÊN 1 DÒNG) ====================
-    print("🔄 Pivoting data - each student becomes one row...")
-    
-    # Tạo cột Q1-Q12 từ DanhGia theo CauHoi
-    pivot_questions = df.pivot_table(
-        index=['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
-               'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 'HocKy', 'NamHoc', 'ProcessedDate'],
-        columns='CauHoi',
-        values='DanhGia'
-    ).reset_index()
-    
-    # Đổi tên cột Q1-Q12
-    pivot_questions.columns.name = None
-    for i in range(1, 13):
-        if i in pivot_questions.columns:
-            pivot_questions.rename(columns={i: f'Q{i}'}, inplace=True)
-        else:
-            pivot_questions[f'Q{i}'] = None
-    
-    # Thêm FB1-FB4 (Q13-Q16) - lấy giá trị đầu tiên (vì cùng sinh viên cùng môn)
-    fb_cols = df.groupby(['MaSV', 'MaHP'])[['FB1', 'FB2', 'FB3', 'FB4']].first().reset_index()
-    pivot_questions = pivot_questions.merge(fb_cols, on=['MaSV', 'MaHP'], how='left')
-    
-    # Đổi tên FB thành Q13-Q16
-    pivot_questions.rename(columns={'FB1': 'Q13', 'FB2': 'Q14', 'FB3': 'Q15', 'FB4': 'Q16'}, inplace=True)
-    
-    # Sắp xếp lại cột theo thứ tự yêu cầu
-    final_pivot_cols = ['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
-                        'MaGV', 'HoDemGV', 'TenGV', 'LopHP',
-                        'Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'Q6', 'Q7', 'Q8', 'Q9', 'Q10', 'Q11', 'Q12',
-                        'Q13', 'Q14', 'Q15', 'Q16', 'HocKy', 'NamHoc', 'ProcessedDate']
-    
-    pivot_questions = pivot_questions[[c for c in final_pivot_cols if c in pivot_questions.columns]]
-    
-    # Gán lại df thành dạng pivot
-    df = pivot_questions
-    
-    print(f"✅ After pivot: {len(df):,} rows (each row = one student per course)")
-    
     # ==================== 14. UPLOAD ====================
     print("📤 Uploading to Azure...")
     output = df.to_csv(index=False, encoding='utf-8-sig')

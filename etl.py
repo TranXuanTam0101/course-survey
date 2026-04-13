@@ -19,10 +19,10 @@ SEMESTER = os.environ.get("SEMESTER")
 SURVEY_FILE = os.environ.get("SURVEY_FILE")
 
 # SQL Azure connection variables
-SQL_SERVER = os.environ.get("SQL_SERVER")
-SQL_DATABASE = os.environ.get("SQL_DATABASE")
-SQL_USERNAME = os.environ.get("SQL_USERNAME")
-SQL_PASSWORD = os.environ.get("SQL_PASSWORD")
+SQL_SERVER = os.environ.get("course-survey.database.windows.net")
+SQL_DATABASE = os.environ.get("course-survey-db")
+SQL_USERNAME = os.environ.get("dqladmin")
+SQL_PASSWORD = os.environ.get("Due@2026")
 
 if not CONNECTION_STRING or not SEMESTER or not SURVEY_FILE:
     print("❌ Missing required environment variables for Blob Storage!")

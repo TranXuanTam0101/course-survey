@@ -1,4 +1,4 @@
-import os
+bimport os
 import sys
 from azure.storage.blob import BlobServiceClient
 import pandas as pd
@@ -147,11 +147,6 @@ try:
     # Chuyển FB1->FB4 thành Q13->Q16
     fb_start = 14
     
-    # Tạo dictionary cho mapping câu hỏi
-    question_cols = {}
-    for i in range(1, 13):  # Q1-Q12 từ các dòng CauHoi khác nhau
-        question_cols[f'Q{i}'] = None
-    
     # Q13-Q16 từ FB1-FB4
     if fb_start < len(df.columns):
         df['Q13'] = df[fb_start].apply(clean_text)
@@ -178,48 +173,60 @@ try:
                        df['NgaySinh'].astype(str).fillna('') + '|' + \
                        df['LopHP'].fillna('')
     
-    # Tạo ID cho mỗi sinh viên (hash hoặc sequential)
+    # Tạo ID cho mỗi sinh viên
     unique_students = df['StudentKey'].unique()
     student_id_map = {key: f"SV{idx+1:06d}" for idx, key in enumerate(unique_students)}
     df['ID'] = df['StudentKey'].map(student_id_map)
     
-    # Pivot để chuyển 12 dòng CauHoi thành 12 cột Q1-Q12
-    # Chỉ lấy các dòng có CauHoi từ 1-12
+    # Lấy thông tin cơ bản của mỗi student (1 dòng đại diện)
+    df_basic = df.groupby('StudentKey').first().reset_index()
+    
+    # ==================== SỬA LỖI PIVOT CHO Q1-Q12 ====================
+    # Lấy tất cả các dòng có CauHoi từ 1-12
     df_questions = df[df['CauHoi'].between(1, 12)].copy()
     
-    # Tạo pivot table cho câu hỏi
-    if len(df_questions) > 0:
-        pivot_q = df_questions.pivot_table(
-            index='StudentKey',
-            columns='CauHoi',
-            values='DanhGia',
-            aggfunc='first'
-        ).reset_index()
-        
-        # Đổi tên cột thành Q1-Q12
-        pivot_q.columns = ['StudentKey'] + [f'Q{int(col)}' for col in pivot_q.columns if col != 'StudentKey']
-        
-        # Merge với dữ liệu cơ bản (lấy 1 dòng đại diện cho mỗi student)
-        df_basic = df.groupby('StudentKey').first().reset_index()
-        
-        # Merge tất cả lại
-        df_final = df_basic.merge(pivot_q, on='StudentKey', how='left')
-        
-        # Thêm Q13-Q16 (các cột này giống nhau cho tất cả dòng của cùng student)
-        for q in ['Q13', 'Q14', 'Q15', 'Q16']:
-            if q in df.columns:
-                q_values = df.groupby('StudentKey')[q].first()
-                df_final[q] = df_final['StudentKey'].map(q_values)
-    else:
-        df_final = df.groupby('StudentKey').first().reset_index()
-        # Khởi tạo các cột Q1-Q12 rỗng
-        for i in range(1, 13):
-            df_final[f'Q{i}'] = None
+    # Tạo đầy đủ các cặp (StudentKey, CauHoi) cho tất cả student và 12 câu hỏi
+    all_students = df_basic['StudentKey'].unique()
+    all_questions = list(range(1, 13))
     
-    # Điền giá trị mặc định cho Q1-Q12 nếu thiếu
-    for i in range(1, 13):
-        if f'Q{i}' not in df_final.columns:
-            df_final[f'Q{i}'] = None
+    # Tạo dataframe đầy đủ các combinations
+    complete_combinations = []
+    for student in all_students:
+        for q in all_questions:
+            complete_combinations.append({'StudentKey': student, 'CauHoi': q})
+    
+    df_complete = pd.DataFrame(complete_combinations)
+    
+    # Merge với dữ liệu có sẵn (giữ nguyên giá trị gốc, nếu thiếu thì để NaN)
+    if len(df_questions) > 0:
+        df_merged = df_complete.merge(
+            df_questions[['StudentKey', 'CauHoi', 'DanhGia']], 
+            on=['StudentKey', 'CauHoi'], 
+            how='left'
+        )
+    else:
+        df_merged = df_complete.copy()
+        df_merged['DanhGia'] = None
+    
+    # Pivot để có 12 cột Q1-Q12
+    pivot_q = df_merged.pivot_table(
+        index='StudentKey',
+        columns='CauHoi',
+        values='DanhGia',
+        aggfunc='first'
+    ).reset_index()
+    
+    # Đổi tên cột thành Q1-Q12
+    pivot_q.columns = ['StudentKey'] + [f'Q{int(col)}' for col in pivot_q.columns if col != 'StudentKey']
+    
+    # Merge với thông tin cơ bản
+    df_final = df_basic.merge(pivot_q, on='StudentKey', how='left')
+    
+    # Thêm Q13-Q16 (các cột này giống nhau cho tất cả dòng của cùng student)
+    for q in ['Q13', 'Q14', 'Q15', 'Q16']:
+        if q in df.columns:
+            q_values = df.groupby('StudentKey')[q].first()
+            df_final[q] = df_final['StudentKey'].map(q_values)
     
     # ==================== 14. CHỌN CỘT THEO YÊU CẦU ====================
     final_cols = ['ID', 'Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
@@ -258,9 +265,42 @@ try:
     sample_cols = [c for c in sample_cols if c in df_final.columns]
     print(df_final[sample_cols].head(3).to_string(index=False))
     
+    # ==================== SỬA LỖI THỐNG KÊ ====================
     print(f"\n📊 Statistics:")
-    print(f"   - Students have Q1-Q12: {df_final[[f'Q{i}' for i in range(1,13)]].notna().any(axis=1).sum():,}")
-    print(f"   - Students have Q13-Q16: {df_final[['Q13','Q14','Q15','Q16']].notna().any(axis=1).sum():,}")
+    # Đếm số sinh viên có ít nhất 1 câu trả lời (không null) cho Q1-Q12
+    students_with_q1_q12 = 0
+    students_with_q13_q16 = 0
+    
+    for idx, row in df_final.iterrows():
+        # Kiểm tra Q1-Q12: có bất kỳ câu nào không null không
+        has_any_q1_q12 = False
+        for i in range(1, 13):
+            val = row.get(f'Q{i}')
+            if pd.notna(val) and val is not None and str(val).strip() != '':
+                has_any_q1_q12 = True
+                break
+        
+        # Kiểm tra Q13-Q16: có bất kỳ câu nào không null không
+        has_any_q13_q16 = False
+        for i in range(13, 17):
+            val = row.get(f'Q{i}')
+            if pd.notna(val) and val is not None and str(val).strip() != '':
+                has_any_q13_q16 = True
+                break
+        
+        if has_any_q1_q12:
+            students_with_q1_q12 += 1
+        if has_any_q13_q16:
+            students_with_q13_q16 += 1
+    
+    print(f"   - Students have Q1-Q12: {students_with_q1_q12:,}")
+    print(f"   - Students have Q13-Q16: {students_with_q13_q16:,}")
+    
+    # Cảnh báo nếu không bằng nhau
+    if students_with_q1_q12 != students_with_q13_q16:
+        print(f"   ⚠️ WARNING: Mismatch detected! Difference: {abs(students_with_q1_q12 - students_with_q13_q16)} students")
+    else:
+        print(f"   ✅ PERFECT: All students have consistent responses!")
     
 except Exception as e:
     print(f"❌ ERROR: {str(e)}")

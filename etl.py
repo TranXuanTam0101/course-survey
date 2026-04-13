@@ -58,100 +58,93 @@ blob_client = blob_service.get_container_client("rawdata").get_blob_client(f"{SE
 
 data = blob_client.download_blob().readall()
 print(f"✅ Downloaded {len(data) / 1024 / 1024:.2f} MB")
-
-# ==================== ĐỌC FILE (rất quan trọng với encoding) ====================
+# ==================== ĐỌC FILE CSV ====================
 print("📊 Reading CSV...")
 
 df = pd.read_csv(
     io.BytesIO(data),
-    sep='\t',           # Dữ liệu của bạn dùng tab
+    sep='\t',
     header=None,
     dtype=str,
-    encoding='cp1258',  # Windows-1258 thường dùng cho tiếng Việt cũ
+    encoding='cp1258',
     on_bad_lines='skip',
     low_memory=False
 )
 
 print(f"✅ Read {len(df):,} rows, {len(df.columns)} columns")
-# ==================== XUẤT 32 CỘT RA ĐỂ KIỂM TRA ====================
-print("\n" + "="*80)
-print("🔎 KIỂM TRA 32 CỘT RAW DATA")
-print("="*80)
 
-# In tên cột theo số thứ tự
-print("Cột số | Nội dung mẫu (5 dòng đầu)")
-print("-" * 80)
+# ==================== GÁN TÊN CỘT CHÍNH XÁC ====================
+print("🔖 Assigning column names...")
 
-for i in range(len(df.columns)):
-    col_name = f"Col_{i}"
-    sample_values = df.iloc[:5, i].tolist()      # lấy 5 dòng đầu
-    sample_str = " | ".join([str(x)[:80] for x in sample_values if pd.notna(x)])  # giới hạn độ dài
-    print(f"{i:2d}     | {col_name} → {sample_str}")
-
-print("="*80)
-print(f"Tổng cộng: {len(df.columns)} cột\n")
-
-# ====================== LƯU RA FILE ĐỂ XEM DỄ HƠN ======================
-# Lưu 32 cột với 20 dòng đầu tiên ra file CSV để bạn mở bằng Excel dễ dàng
-
-inspection_df = df.head(20).copy()  # lấy 20 dòng đầu để kiểm tra
-
-# Đặt tên cột tạm thời là Col_0, Col_1, ..., Col_31
-inspection_df.columns = [f"Col_{i}" for i in range(len(df.columns))]
-
-# Lưu file
-inspection_file = f"inspection_{SURVEY_FILE.replace('.txt', '').replace('.csv', '')}_32cols.csv"
-inspection_df.to_csv(inspection_file, index=False, encoding='utf-8-sig')
-
-print(f"✅ Đã lưu file kiểm tra: {inspection_file}")
-print("   → Mở file này bằng Excel để xem toàn bộ 32 cột dễ nhất!")
-print("="*80)
-# ==================== XÁC ĐỊNH VỊ TRÍ CÁC CỘT ====================
-# Dựa trên dữ liệu mẫu bạn đưa ra
-col_names = [
-    'Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 
-    'MaHP', 'TenHP', 'MaGV', 'HoDemGV', 'TenGV', 
-    'LopHP', 'CauHoi', 'DanhGia', 'NULL1', 'Q13', 'Q14', 'Q15', 'Q16'
+df.columns = [
+    'Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh',      # 0-4
+    'MaHP', 'TenHP', 'MaGV', 'HoDemGV', 'TenGV',    # 5-9
+    'LopHP', 'CauHoi', 'DanhGia', 'Col13',          # 10-13
+    'Q13', 'Q14', 'Q15', 'Q16',                     # 14-17
+    'Col18', 'Col19', 'Col20', 'Col21', 'Col22',    # 18-22
+    'Col23', 'Col24', 'Col25', 'Col26', 'Col27',    # 23-27
+    'Col28', 'Col29', 'Col30', 'Col31'              # 28-31
 ]
 
-# Gán tên cột (nếu số cột không khớp sẽ tự điều chỉnh)
-if len(df.columns) >= len(col_names):
-    df.columns = col_names[:len(df.columns)]
-else:
-    df.columns = [f'Col_{i}' for i in range(len(df.columns))]
-
-print(f"Columns after naming: {df.columns.tolist()}")
+print("Columns assigned successfully!")
 
 # ==================== LÀM SẠCH DỮ LIỆU ====================
-print("🧹 Cleaning data...")
+print("🧹 Cleaning and fixing Vietnamese text...")
 
-df['Lop'] = df['Lop'].apply(clean_text)
-df['MaSV'] = df['MaSV'].apply(convert_masv)
-df['HoDem'] = df['HoDem'].apply(clean_text)
-df['Ten'] = df['Ten'].apply(clean_text)
-df['NgaySinh'] = df['NgaySinh'].apply(clean_text)
-df['MaHP'] = df['MaHP'].apply(clean_text)
-df['TenHP'] = df['TenHP'].apply(clean_text)
-df['MaGV'] = df['MaGV'].apply(clean_text)
-df['HoDemGV'] = df['HoDemGV'].apply(clean_text)
-df['TenGV'] = df['TenGV'].apply(clean_text)
-df['LopHP'] = df['LopHP'].apply(clean_text)
+def clean_text(text, max_len=None):
+    if pd.isna(text) or str(text).strip() in ['', 'NULL', 'nan']:
+        return None
+    text = str(text).strip()
+    if text.lower() == 'nan':
+        return None
+    
+    # Sửa lỗi encoding tiếng Việt
+    text = ftfy.fix_text(text)
+    text = text.strip()
+    
+    if max_len and len(text) > max_len:
+        text = text[:max_len]
+    return text if text else None
 
-# Câu hỏi và đánh giá
-df['CauHoi'] = pd.to_numeric(df.get('CauHoi'), errors='coerce')
-df['DanhGia'] = pd.to_numeric(df.get('DanhGia'), errors='coerce')
 
-# Feedback Q13 - Q16
-for i, q in enumerate(['Q13', 'Q14', 'Q15', 'Q16'], start=14):
-    if q in df.columns:
-        df[q] = df[q].apply(lambda x: clean_text(x, max_len=1000))
+def convert_masv(value):
+    if pd.isna(value) or str(value).strip() in ['', 'NULL']:
+        return None
+    try:
+        return str(int(float(str(value).replace(',', ''))))
+    except:
+        return str(value).strip()
 
-# ==================== THÊM METADATA ====================
+
+# Áp dụng làm sạch
+df['Lop']       = df['Lop'].apply(clean_text)
+df['MaSV']      = df['MaSV'].apply(convert_masv)
+df['HoDem']     = df['HoDem'].apply(clean_text)
+df['Ten']       = df['Ten'].apply(clean_text)
+df['NgaySinh']  = df['NgaySinh'].apply(clean_text)
+df['MaHP']      = df['MaHP'].apply(clean_text)
+df['TenHP']     = df['TenHP'].apply(clean_text)
+df['MaGV']      = df['MaGV'].apply(clean_text)
+df['HoDemGV']   = df['HoDemGV'].apply(clean_text)
+df['TenGV']     = df['TenGV'].apply(clean_text)
+df['LopHP']     = df['LopHP'].apply(clean_text)
+
+df['CauHoi']    = pd.to_numeric(df['CauHoi'], errors='coerce')
+df['DanhGia']   = pd.to_numeric(df['DanhGia'], errors='coerce')
+
+# Làm sạch feedback Q13-Q16
+for q in ['Q13', 'Q14', 'Q15', 'Q16']:
+    df[q] = df[q].apply(lambda x: clean_text(x, max_len=1000))
+
+print("✅ Data cleaning completed. Vietnamese text fixed.")
+
+# ==================== PHẦN CÒN LẠI (giữ nguyên như trước) ====================
+
 df['HocKy'] = 2 if "252" in SURVEY_FILE else 1
 df['NamHoc'] = SEMESTER
 df['ProcessedDate'] = datetime.now()
 
-# ==================== TẠO KHÓA SINH VIÊN ====================
+# Tạo StudentKey
 df['StudentKey'] = (
     df['Lop'].fillna('') + '|' +
     df['MaSV'].fillna('') + '|' +
@@ -160,38 +153,28 @@ df['StudentKey'] = (
     df['NgaySinh'].fillna('')
 )
 
-# Tạo ID sinh viên duy nhất
+# Tạo ID sinh viên
 unique_students = df['StudentKey'].unique()
 student_id_map = {key: f"SV{idx+1:06d}" for idx, key in enumerate(unique_students)}
 df['ID'] = df['StudentKey'].map(student_id_map)
 
-# Lấy thông tin cơ bản của sinh viên (lấy dòng đầu tiên)
 df_basic = df.groupby('StudentKey').first().reset_index()
 
-# ==================== PIVOT CÂU HỎI 1-12 ====================
-print("🔄 Pivoting questions Q1-Q12...")
+# Pivot Q1-Q12
+print("🔄 Pivoting Q1-Q12...")
 
 df_questions = df[df['CauHoi'].between(1, 12)].copy()
 
-# Tạo tất cả các tổ hợp sinh viên - câu hỏi (để đảm bảo đủ 12 câu)
 all_students = df_basic['StudentKey'].unique()
 complete_combinations = pd.DataFrame([
-    {'StudentKey': student, 'CauHoi': q} 
-    for student in all_students 
-    for q in range(1, 13)
+    {'StudentKey': s, 'CauHoi': q} for s in all_students for q in range(1, 13)
 ])
 
-if len(df_questions) > 0:
-    df_merged = complete_combinations.merge(
-        df_questions[['StudentKey', 'CauHoi', 'DanhGia']], 
-        on=['StudentKey', 'CauHoi'], 
-        how='left'
-    )
-else:
-    df_merged = complete_combinations.copy()
-    df_merged['DanhGia'] = None
+df_merged = complete_combinations.merge(
+    df_questions[['StudentKey', 'CauHoi', 'DanhGia']], 
+    on=['StudentKey', 'CauHoi'], how='left'
+)
 
-# Pivot
 pivot_q = df_merged.pivot_table(
     index='StudentKey',
     columns='CauHoi',
@@ -201,7 +184,6 @@ pivot_q = df_merged.pivot_table(
 
 pivot_q.columns = ['StudentKey'] + [f'Q{int(col)}' for col in pivot_q.columns if col != 'StudentKey']
 
-# Merge với thông tin cơ bản
 df_final = df_basic.merge(pivot_q, on='StudentKey', how='left')
 
 # Thêm Q13-Q16
@@ -210,19 +192,16 @@ for q in ['Q13', 'Q14', 'Q15', 'Q16']:
         q_values = df.groupby('StudentKey')[q].first()
         df_final[q] = df_final['StudentKey'].map(q_values)
 
-# ==================== CHỌN CỘT CUỐI CÙNG ====================
+# Chọn cột cuối cùng
 final_cols = [
     'ID', 'Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh',
     'MaHP', 'TenHP', 'MaGV', 'HoDemGV', 'TenGV', 'LopHP'
-] + [f'Q{i}' for i in range(1, 17)] + ['HocKy', 'NamHoc', 'ProcessedDate']
+] + [f'Q{i}' for i in range(1, 17)] + ['HocKy', 'NamHoc']
 
 final_cols_existing = [c for c in final_cols if c in df_final.columns]
-df_final = df_final[final_cols_existing]
+df_final = df_final[final_cols_existing].copy()
 
 df_final = df_final.sort_values('ID').reset_index(drop=True)
 
-print(f"✅ Final dataset: {len(df_final):,} students, {len(df_final.columns)} columns")
+print(f"\n🎉 Hoàn tất! Final dataset: {len(df_final):,} sinh viên, {len(df_final.columns)} cột")
 print(df_final.head())
-
-# Nếu muốn lưu để kiểm tra:
-# df_final.to_excel(f"processed_{SURVEY_FILE.replace('.txt','.xlsx')}", index=False)

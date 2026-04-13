@@ -7,9 +7,6 @@ from datetime import datetime
 import ftfy
 import re
 import numpy as np
-import sqlalchemy as sa
-from sqlalchemy import create_engine
-import urllib
 
 print("🚀 Starting ETL Pipeline (Optimized Version)...")
 
@@ -266,64 +263,7 @@ try:
                    'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 'Q1', 'Q2', 'Q3', 'Q13', 'Q14', 'Q15', 'Q16']
     sample_cols = [c for c in sample_cols if c in df_final.columns]
     print(df_final[sample_cols].head(3).to_string(index=False))
-
-# ==================== 17. ĐẨY DỮ LIỆU LÊN SQL AZURE ====================
-# ==================== 17. ĐẨY DỮ LIỆU LÊN SQL AZURE ====================
-    print("🗄️ Connecting to SQL Azure...")
-
-    sql_server = "course-survey.database.windows.net"
-    sql_db = "course-survey-db"
-    sql_user = "sqladmin"
-    sql_pass = "Due@2026"
-
-    params = urllib.parse.quote_plus(
-        f"DRIVER={{ODBC Driver 18 for SQL Server}};"
-        f"SERVER={sql_server};"
-        f"DATABASE={sql_db};"
-        f"UID={sql_user};"
-        f"PWD={sql_pass};"
-        "Encrypt=yes;"
-        "TrustServerCertificate=no;"
-        "Connection Timeout=30;"
-    )
-
-    # Khởi tạo engine
-    engine = sa.create_engine(f"mssql+pyodbc:///?odbc_connect={params}", fast_executemany=True)
-
-    with engine.connect() as conn:
-        print("   - Upserting Data Tables...")
-        
-        # 1. SINH_VIEN
-        df_final[['ID', 'MaSV', 'Lop', 'HoDem', 'Ten', 'NgaySinh']].drop_duplicates().to_sql('SINH_VIEN', conn, if_exists='append', index=False)
-        
-        # 2. HOC_PHAN
-        df_hp = df_final[['MaHP', 'TenHP']].drop_duplicates().dropna(subset=['MaHP'])
-        df_hp.to_sql('HOC_PHAN', conn, if_exists='append', index=False)
-        
-        # 3. GIANG_VIEN
-        df_gv = df_final[['MaGV', 'HoDemGV', 'TenGV']].drop_duplicates().dropna(subset=['MaGV'])
-        df_gv.to_sql('GIANG_VIEN', conn, if_exists='append', index=False)
-        
-        # 4. LOP_HOC_PHAN
-        df_lhp = df_final[['LopHP', 'MaHP', 'MaGV', 'HocKy', 'NamHoc']].copy()
-        df_lhp.columns = ['MaLopHP', 'MaHP', 'MaGV', 'HocKy', 'NamHoc']
-        df_lhp.drop_duplicates().dropna(subset=['MaLopHP']).to_sql('LOP_HOC_PHAN', conn, if_exists='append', index=False)
-
-        # 5. PHIEU_KHAO_SAT (Fact)
-        fact_cols = {'ID': 'ID_SV', 'LopHP': 'MaLopHP', 'HocKy': 'HocKy', 'NamHoc': 'NamHoc'}
-        for i in range(1, 17): 
-            fact_cols[f'Q{i}'] = f'Q{i}'
-        
-        df_fact = df_final[list(fact_cols.keys())].copy().rename(columns=fact_cols)
-        df_fact.to_sql('PHIEU_KHAO_SAT', conn, if_exists='append', index=False)
-
-    print("✅ All steps completed successfully!")
-
-except Exception as e:
-    print(f"❌ ERROR: {str(e)}")
-    import traceback
-    traceback.print_exc()
-    sys.exit(1)
+    
     # ==================== SỬA LỖI THỐNG KÊ ====================
     print(f"\n📊 Statistics:")
     # Đếm số sinh viên có ít nhất 1 câu trả lời (không null) cho Q1-Q12

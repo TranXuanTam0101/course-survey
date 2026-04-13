@@ -300,7 +300,9 @@ try:
         print(f"   ⚠️ WARNING: Mismatch detected! Difference: {abs(students_with_q1_q12 - students_with_q13_q16)} students")
     else:
         print(f"   ✅ PERFECT: All students have consistent responses!")
-    
+    # Trước đoạn print SUCCESS ở etl.py
+    df_final.to_csv("processed_data_temp.csv", index=False, encoding='utf-8-sig')
+    print("💾 Temporarily saved processed_data_temp.csv for SQL Loader.")
 except Exception as e:
     print(f"❌ ERROR: {str(e)}")
     import traceback

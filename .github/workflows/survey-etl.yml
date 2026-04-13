@@ -49,3 +49,7 @@ jobs:
           SEMESTER: ${{ github.event.inputs.semester }}
           SURVEY_FILE: ${{ github.event.inputs.survey_file }}
           CONNECTION_STRING: ${{ secrets.AZURE_CONNECTION_STRING }}
+
+
+      - name: Step 2 - Load to SQL
+        run: python load_to_sql.py

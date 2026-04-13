@@ -43,7 +43,7 @@ jobs:
           pip install ftfy
           pip install sqlalchemy pyodbc
       
-      - name: Run ETL
+      - name: Step 1 - Run ETL
         run: python etl.py
         env:
           SEMESTER: ${{ github.event.inputs.semester }}

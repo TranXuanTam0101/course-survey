@@ -73,7 +73,39 @@ df = pd.read_csv(
 )
 
 print(f"✅ Read {len(df):,} rows, {len(df.columns)} columns")
+# ==================== XUẤT 32 CỘT RA ĐỂ KIỂM TRA ====================
+print("\n" + "="*80)
+print("🔎 KIỂM TRA 32 CỘT RAW DATA")
+print("="*80)
 
+# In tên cột theo số thứ tự
+print("Cột số | Nội dung mẫu (5 dòng đầu)")
+print("-" * 80)
+
+for i in range(len(df.columns)):
+    col_name = f"Col_{i}"
+    sample_values = df.iloc[:5, i].tolist()      # lấy 5 dòng đầu
+    sample_str = " | ".join([str(x)[:80] for x in sample_values if pd.notna(x)])  # giới hạn độ dài
+    print(f"{i:2d}     | {col_name} → {sample_str}")
+
+print("="*80)
+print(f"Tổng cộng: {len(df.columns)} cột\n")
+
+# ====================== LƯU RA FILE ĐỂ XEM DỄ HƠN ======================
+# Lưu 32 cột với 20 dòng đầu tiên ra file CSV để bạn mở bằng Excel dễ dàng
+
+inspection_df = df.head(20).copy()  # lấy 20 dòng đầu để kiểm tra
+
+# Đặt tên cột tạm thời là Col_0, Col_1, ..., Col_31
+inspection_df.columns = [f"Col_{i}" for i in range(len(df.columns))]
+
+# Lưu file
+inspection_file = f"inspection_{SURVEY_FILE.replace('.txt', '').replace('.csv', '')}_32cols.csv"
+inspection_df.to_csv(inspection_file, index=False, encoding='utf-8-sig')
+
+print(f"✅ Đã lưu file kiểm tra: {inspection_file}")
+print("   → Mở file này bằng Excel để xem toàn bộ 32 cột dễ nhất!")
+print("="*80)
 # ==================== XÁC ĐỊNH VỊ TRÍ CÁC CỘT ====================
 # Dựa trên dữ liệu mẫu bạn đưa ra
 col_names = [

@@ -170,7 +170,7 @@ try:
                        df['MaSV'].fillna('') + '|' + \
                        df['HoDem'].fillna('') + '|' + \
                        df['Ten'].fillna('') + '|' + \
-                       df['NgaySinh'].astype(str).fillna('') + '|' + \
+                       df['NgaySinh'].astype(str).fillna('')
     
     # Tạo ID cho mỗi sinh viên
     unique_students = df['StudentKey'].unique()

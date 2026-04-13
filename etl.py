@@ -149,48 +149,44 @@ try:
     df['HocKy'] = 2 if "252" in SURVEY_FILE else 1
     df['NamHoc'] = SEMESTER
     df['ProcessedDate'] = datetime.now()
+        # ==================== 12.5. TẠO CÁC CỘT Q1-Q12 TỪ CauHoi VÀ DanhGia ====================
+    # Pivot: chuyển từ dạng dài (12 dòng/sinh viên) sang dạng rộng (1 dòng/sinh viên)
+    pivot_df = df.pivot_table(
+        index=['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
+               'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 'HocKy', 'NamHoc', 'ProcessedDate'],
+        columns='CauHoi',
+        values='DanhGia'
+    ).reset_index()
     
-    # ==================== 13. CHỌN CỘT ====================
-    final_cols = ['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
-                  'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 'CauHoi', 'DanhGia',
-                  'FB1', 'FB2', 'FB3', 'FB4', 'HocKy', 'NamHoc', 'ProcessedDate']
-    
-    df = df[[c for c in final_cols if c in df.columns]]
-        # ==================== 13.5. GIỮ NGUYÊN DỮ LIỆU - THÊM CỘT Q1-Q12 ====================
-    print("🔄 Adding Q1-Q12 columns while keeping all rows...")
-    
-    # Tạo mapping từ CauHoi sang tên cột Q
-    df['Question_Col'] = df['CauHoi'].apply(lambda x: f'Q{int(x)}' if pd.notna(x) else None)
-    
-    # Pivot để lấy giá trị DanhGia theo từng câu hỏi
-    df_pivot = df.pivot_table(
-        index=df.index,
-        columns='Question_Col',
-        values='DanhGia',
-        aggfunc='first'
-    ).reset_index(drop=True)
-    
-    # Ghép các cột Q vào df gốc
+    # Đổi tên cột CauHoi thành Q1-Q12
+    pivot_df.columns.name = None
     for i in range(1, 13):
-        col_name = f'Q{i}'
-        if col_name in df_pivot.columns:
-            df[col_name] = df_pivot[col_name]
+        if i in pivot_df.columns:
+            pivot_df = pivot_df.rename(columns={i: f'Q{i}'})
         else:
-            df[col_name] = None
+            pivot_df[f'Q{i}'] = None
     
-    # Xóa cột tạm thời
-    df = df.drop(columns=['Question_Col'])
+    # Lấy FB1-FB4 từ dòng đầu tiên của mỗi nhóm (vì FB giống nhau cho cả 12 câu)
+    fb_cols = ['FB1', 'FB2', 'FB3', 'FB4']
+    fb_group = df.groupby(['Lop', 'MaSV', 'MaHP'])[fb_cols].first().reset_index()
     
-    print(f"✅ Added Q1-Q12 columns to {len(df):,} rows")
-    print(f"   Each row still represents one question response")
-    print(f"   Q1-Q12 columns show the rating for that specific question")
+    # Merge FB vào pivot_df
+    for col in fb_cols:
+        pivot_df[col] = pivot_df.merge(fb_group[['MaSV', 'MaHP', col]], on=['MaSV', 'MaHP'], how='left')[col + '_y']
     
-    # Sắp xếp lại cột
+    # Đổi tên FB1->FB4 thành Q13->Q16
+    pivot_df['Q13'] = pivot_df['FB1']
+    pivot_df['Q14'] = pivot_df['FB2']
+    pivot_df['Q15'] = pivot_df['FB3']
+    pivot_df['Q16'] = pivot_df['FB4']
+    
+    # Gán lại df
+    df = pivot_df
+    # ==================== 13. CHỌN CỘT ====================
     final_cols = ['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
                   'MaGV', 'HoDemGV', 'TenGV', 'LopHP',
                   'Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'Q6', 'Q7', 'Q8', 'Q9', 'Q10', 'Q11', 'Q12',
-                  'CauHoi', 'DanhGia', 'FB1', 'FB2', 'FB3', 'FB4',
-                  'HocKy', 'NamHoc', 'ProcessedDate']
+                  'Q13', 'Q14', 'Q15', 'Q16', 'HocKy', 'NamHoc', 'ProcessedDate']
     
     df = df[[c for c in final_cols if c in df.columns]]
     # ==================== 14. UPLOAD ====================
@@ -207,15 +203,14 @@ try:
     # ==================== 15. KẾT QUẢ ====================
     print(f"\n{'='*50}")
     print(f"✅ SUCCESS!")
-    print(f"📊 Total rows: {len(df):,}")
+    print(f"📊 Total rows after pivot: {len(df):,}")
     print(f"📤 Uploaded to: processed-data/{output_path}")
     
     print(f"\n📋 Sample (first 3 rows):")
     sample_cols = ['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
                   'MaGV', 'HoDemGV', 'TenGV', 'LopHP',
                   'Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'Q6', 'Q7', 'Q8', 'Q9', 'Q10', 'Q11', 'Q12',
-                  'CauHoi', 'DanhGia', 'FB1', 'FB2', 'FB3', 'FB4',
-                  'HocKy', 'NamHoc']
+                  'Q13', 'Q14', 'Q15', 'Q16', 'HocKy', 'NamHoc']
     sample_cols = [c for c in sample_cols if c in df.columns]
     print(df[sample_cols].head(3).to_string(index=False))
     

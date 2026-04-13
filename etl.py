@@ -7,6 +7,9 @@ from datetime import datetime
 import ftfy
 import re
 import numpy as np
+import pyodbc
+from sqlalchemy import create_engine, text
+import urllib
 
 print("🚀 Starting ETL Pipeline (Optimized Version)...")
 
@@ -15,8 +18,18 @@ CONNECTION_STRING = os.environ.get("CONNECTION_STRING")
 SEMESTER = os.environ.get("SEMESTER")
 SURVEY_FILE = os.environ.get("SURVEY_FILE")
 
+# SQL Azure connection variables
+SQL_SERVER = os.environ.get("SQL_SERVER")
+SQL_DATABASE = os.environ.get("SQL_DATABASE")
+SQL_USERNAME = os.environ.get("SQL_USERNAME")
+SQL_PASSWORD = os.environ.get("SQL_PASSWORD")
+
 if not CONNECTION_STRING or not SEMESTER or not SURVEY_FILE:
-    print("❌ Missing required environment variables!")
+    print("❌ Missing required environment variables for Blob Storage!")
+    sys.exit(1)
+
+if not SQL_SERVER or not SQL_DATABASE or not SQL_USERNAME or not SQL_PASSWORD:
+    print("❌ Missing required environment variables for SQL Azure!")
     sys.exit(1)
 
 def clean_text(text):
@@ -36,6 +49,95 @@ def convert_masv(value):
         return str(int(float(value)))
     except:
         return value
+
+def create_sql_engine():
+    """Tạo kết nối đến SQL Azure"""
+    try:
+        connection_string = f"mssql+pyodbc://{SQL_USERNAME}:{SQL_PASSWORD}@{SQL_SERVER}:1433/{SQL_DATABASE}?driver=ODBC+Driver+18+for+SQL+Server&Encrypt=yes&TrustServerCertificate=no"
+        engine = create_engine(connection_string)
+        return engine
+    except Exception as e:
+        print(f"❌ Failed to create SQL connection: {str(e)}")
+        return None
+
+def insert_into_sql(df_final, engine):
+    """Chèn dữ liệu vào các bảng SQL Azure"""
+    print("\n📊 Inserting data into SQL Azure...")
+    
+    try:
+        # 1. Chuẩn bị dữ liệu cho bảng SINH_VIEN
+        sinh_vien_data = df_final[['ID', 'MaSV', 'Lop', 'HoDem', 'Ten', 'NgaySinh']].copy()
+        sinh_vien_data = sinh_vien_data.drop_duplicates(subset=['ID'])
+        sinh_vien_data['NgaySinh'] = pd.to_datetime(sinh_vien_data['NgaySinh'], errors='coerce').dt.date
+        
+        # 2. Chuẩn bị dữ liệu cho bảng HOC_PHAN
+        hoc_phan_data = df_final[['MaHP', 'TenHP']].copy()
+        hoc_phan_data = hoc_phan_data.drop_duplicates(subset=['MaHP'])
+        hoc_phan_data = hoc_phan_data[hoc_phan_data['MaHP'].notna()]
+        
+        # 3. Chuẩn bị dữ liệu cho bảng GIANG_VIEN
+        giang_vien_data = df_final[['MaGV', 'HoDemGV', 'TenGV']].copy()
+        giang_vien_data = giang_vien_data.drop_duplicates(subset=['MaGV'])
+        giang_vien_data = giang_vien_data[giang_vien_data['MaGV'].notna()]
+        
+        # 4. Chuẩn bị dữ liệu cho bảng LOP_HOC_PHAN
+        lop_hoc_phan_data = df_final[['LopHP', 'MaHP', 'MaGV', 'HocKy', 'NamHoc']].copy()
+        lop_hoc_phan_data = lop_hoc_phan_data.drop_duplicates(subset=['LopHP'])
+        lop_hoc_phan_data = lop_hoc_phan_data[lop_hoc_phan_data['LopHP'].notna()]
+        lop_hoc_phan_data['TenLopHP'] = lop_hoc_phan_data['LopHP']  # Tên lớp HP = Mã lớp HP
+        
+        # 5. Chuẩn bị dữ liệu cho bảng PHIEU_KHAO_SAT
+        phieu_khao_sat_data = df_final[['ID', 'LopHP'] + [f'Q{i}' for i in range(1, 17)] + ['HocKy', 'NamHoc', 'ProcessedDate']].copy()
+        phieu_khao_sat_data = phieu_khao_sat_data.rename(columns={'ID': 'ID_SV', 'LopHP': 'MaLopHP'})
+        
+        # Chuyển đổi kiểu dữ liệu cho Q1-Q12 sang float
+        for i in range(1, 13):
+            phieu_khao_sat_data[f'Q{i}'] = pd.to_numeric(phieu_khao_sat_data[f'Q{i}'], errors='coerce')
+        
+        # Thêm ProcessedDate nếu chưa có
+        if 'ProcessedDate' not in phieu_khao_sat_data.columns:
+            phieu_khao_sat_data['ProcessedDate'] = datetime.now()
+        
+        # Bắt đầu transaction
+        with engine.begin() as connection:
+            # Xóa dữ liệu cũ (tùy chọn - comment nếu muốn giữ lại)
+            print("   Clearing old data...")
+            connection.execute(text("DELETE FROM PHIEU_KHAO_SAT"))
+            connection.execute(text("DELETE FROM LOP_HOC_PHAN"))
+            connection.execute(text("DELETE FROM GIANG_VIEN"))
+            connection.execute(text("DELETE FROM HOC_PHAN"))
+            connection.execute(text("DELETE FROM SINH_VIEN"))
+            
+            # Chèn vào bảng SINH_VIEN
+            print(f"   Inserting {len(sinh_vien_data):,} records into SINH_VIEN...")
+            sinh_vien_data.to_sql('SINH_VIEN', con=connection, if_exists='append', index=False)
+            
+            # Chèn vào bảng HOC_PHAN
+            print(f"   Inserting {len(hoc_phan_data):,} records into HOC_PHAN...")
+            hoc_phan_data.to_sql('HOC_PHAN', con=connection, if_exists='append', index=False)
+            
+            # Chèn vào bảng GIANG_VIEN
+            print(f"   Inserting {len(giang_vien_data):,} records into GIANG_VIEN...")
+            giang_vien_data.to_sql('GIANG_VIEN', con=connection, if_exists='append', index=False)
+            
+            # Chèn vào bảng LOP_HOC_PHAN
+            print(f"   Inserting {len(lop_hoc_phan_data):,} records into LOP_HOC_PHAN...")
+            lop_hoc_phan_data[['LopHP', 'MaHP', 'MaGV', 'TenLopHP', 'HocKy', 'NamHoc']].to_sql(
+                'LOP_HOC_PHAN', con=connection, if_exists='append', index=False
+            )
+            
+            # Chèn vào bảng PHIEU_KHAO_SAT
+            print(f"   Inserting {len(phieu_khao_sat_data):,} records into PHIEU_KHAO_SAT...")
+            phieu_khao_sat_data.to_sql('PHIEU_KHAO_SAT', con=connection, if_exists='append', index=False)
+        
+        print("✅ Successfully inserted all data into SQL Azure!")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Error inserting into SQL: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 try:
     # ==================== 1. ĐỌC FILE OPTIMIZED ====================
@@ -165,7 +267,7 @@ try:
     # ==================== 13. TẠO ID DUY NHẤT VÀ GỘP DÒNG ====================
     print("🔄 Grouping by student (12 questions per student)...")
     
-    # Tạo ID duy nhất cho mỗi sinh viên dựa trên Lop, MaSV, HoDem, Ten, NgaySinh, LopHP
+    # Tạo ID duy nhất cho mỗi sinh viên dựa trên Lop, MaSV, HoDem, Ten, NgaySinh
     df['StudentKey'] = df['Lop'].fillna('') + '|' + \
                        df['MaSV'].fillna('') + '|' + \
                        df['HoDem'].fillna('') + '|' + \
@@ -180,7 +282,7 @@ try:
     # Lấy thông tin cơ bản của mỗi student (1 dòng đại diện)
     df_basic = df.groupby('StudentKey').first().reset_index()
     
-    # ==================== SỬA LỖI PIVOT CHO Q1-Q12 ====================
+    # ==================== XỬ LÝ Q1-Q12 ====================
     # Lấy tất cả các dòng có CauHoi từ 1-12
     df_questions = df[df['CauHoi'].between(1, 12)].copy()
     
@@ -196,7 +298,7 @@ try:
     
     df_complete = pd.DataFrame(complete_combinations)
     
-    # Merge với dữ liệu có sẵn (giữ nguyên giá trị gốc, nếu thiếu thì để NaN)
+    # Merge với dữ liệu có sẵn
     if len(df_questions) > 0:
         df_merged = df_complete.merge(
             df_questions[['StudentKey', 'CauHoi', 'DanhGia']], 
@@ -221,17 +323,22 @@ try:
     # Merge với thông tin cơ bản
     df_final = df_basic.merge(pivot_q, on='StudentKey', how='left')
     
-    # Thêm Q13-Q16 (các cột này giống nhau cho tất cả dòng của cùng student)
+    # Thêm Q13-Q16
     for q in ['Q13', 'Q14', 'Q15', 'Q16']:
         if q in df.columns:
             q_values = df.groupby('StudentKey')[q].first()
             df_final[q] = df_final['StudentKey'].map(q_values)
     
+    # Xử lý LopHP (gom nhiều lớp thành 1 dòng)
+    lophp_grouped = df.groupby('StudentKey')['LopHP'].apply(lambda x: ' | '.join(x.dropna().unique())).reset_index()
+    lophp_grouped.columns = ['StudentKey', 'LopHP']
+    df_final = df_final.merge(lophp_grouped, on='StudentKey', how='left')
+    
     # ==================== 14. CHỌN CỘT THEO YÊU CẦU ====================
     final_cols = ['ID', 'Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
                   'MaGV', 'HoDemGV', 'TenGV', 'LopHP'] + \
                  [f'Q{i}' for i in range(1, 17)] + \
-                 ['HocKy', 'NamHoc']
+                 ['HocKy', 'NamHoc', 'ProcessedDate']
     
     # Chỉ lấy các cột tồn tại
     final_cols_existing = [c for c in final_cols if c in df_final.columns]
@@ -240,8 +347,8 @@ try:
     # Sắp xếp theo ID
     df_final = df_final.sort_values('ID').reset_index(drop=True)
     
-    # ==================== 15. UPLOAD ====================
-    print("📤 Uploading to Azure...")
+    # ==================== 15. UPLOAD TO BLOB STORAGE ====================
+    print("📤 Uploading to Azure Blob Storage...")
     output = df_final.to_csv(index=False, encoding='utf-8-sig')
     output_path = f"{SEMESTER}/{SURVEY_FILE.replace('.csv', '_processed.csv')}"
     
@@ -250,13 +357,33 @@ try:
         processed_container.create_container()
     
     processed_container.get_blob_client(output_path).upload_blob(output, overwrite=True)
+    print(f"✅ Uploaded to blob: processed-data/{output_path}")
     
-    # ==================== 16. KẾT QUẢ ====================
+    # ==================== 16. INSERT INTO SQL AZURE ====================
+    # Tạo kết nối SQL
+    engine = create_sql_engine()
+    if engine:
+        # Chèn dữ liệu vào SQL
+        success = insert_into_sql(df_final, engine)
+        if not success:
+            print("⚠️ Warning: SQL insertion failed, but blob storage upload succeeded")
+    else:
+        print("❌ Failed to connect to SQL Azure, skipping database insertion")
+    
+    # ==================== 17. KẾT QUẢ ====================
     print(f"\n{'='*50}")
-    print(f"✅ SUCCESS!")
+    print(f"✅ ETL PIPELINE COMPLETED!")
     print(f"📊 Original rows: {len(df):,}")
     print(f"📊 Student rows after grouping: {len(df_final):,}")
-    print(f"📤 Uploaded to: processed-data/{output_path}")
+    print(f"📤 Blob storage: processed-data/{output_path}")
+    
+    if engine:
+        print(f"💾 SQL Azure: Data inserted into 5 tables")
+        print(f"   - SINH_VIEN: {df_final['ID'].nunique():,} records")
+        print(f"   - HOC_PHAN: {df_final['MaHP'].nunique():,} records")
+        print(f"   - GIANG_VIEN: {df_final['MaGV'].nunique():,} records")
+        print(f"   - LOP_HOC_PHAN: {df_final['LopHP'].nunique():,} records")
+        print(f"   - PHIEU_KHAO_SAT: {len(df_final):,} records")
     
     print(f"\n📋 Sample (first 3 rows):")
     sample_cols = ['ID', 'Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
@@ -264,14 +391,11 @@ try:
     sample_cols = [c for c in sample_cols if c in df_final.columns]
     print(df_final[sample_cols].head(3).to_string(index=False))
     
-    # ==================== SỬA LỖI THỐNG KÊ ====================
     print(f"\n📊 Statistics:")
-    # Đếm số sinh viên có ít nhất 1 câu trả lời (không null) cho Q1-Q12
     students_with_q1_q12 = 0
     students_with_q13_q16 = 0
     
     for idx, row in df_final.iterrows():
-        # Kiểm tra Q1-Q12: có bất kỳ câu nào không null không
         has_any_q1_q12 = False
         for i in range(1, 13):
             val = row.get(f'Q{i}')
@@ -279,7 +403,6 @@ try:
                 has_any_q1_q12 = True
                 break
         
-        # Kiểm tra Q13-Q16: có bất kỳ câu nào không null không
         has_any_q13_q16 = False
         for i in range(13, 17):
             val = row.get(f'Q{i}')
@@ -295,11 +418,10 @@ try:
     print(f"   - Students have Q1-Q12: {students_with_q1_q12:,}")
     print(f"   - Students have Q13-Q16: {students_with_q13_q16:,}")
     
-    # Cảnh báo nếu không bằng nhau
-    if students_with_q1_q12 != students_with_q13_q16:
-        print(f"   ⚠️ WARNING: Mismatch detected! Difference: {abs(students_with_q1_q12 - students_with_q13_q16)} students")
-    else:
+    if students_with_q1_q12 == students_with_q13_q16:
         print(f"   ✅ PERFECT: All students have consistent responses!")
+    else:
+        print(f"   ⚠️ WARNING: Mismatch detected! Difference: {abs(students_with_q1_q12 - students_with_q13_q16)} students")
     
 except Exception as e:
     print(f"❌ ERROR: {str(e)}")

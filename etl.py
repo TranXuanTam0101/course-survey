@@ -5,8 +5,6 @@ import pandas as pd
 import io
 from datetime import datetime
 import ftfy
-import re
-import numpy as np
 
 print("🚀 Starting ETL Pipeline (Optimized Version)...")
 
@@ -22,76 +20,6 @@ if not CONNECTION_STRING or not SEMESTER or not SURVEY_FILE:
 
 def clean_text(text, max_len=None):
     """Sửa lỗi encoding tiếng Việt và làm sạch text"""
-    if pd.isna(text) or text in ['NULL', '', 'nan', None]:
-        return None
-    text = str(text).strip()
-    
-    if text.lower() == 'nan':
-        return None
-    
-    # Sửa lỗi encoding tiếng Việt bằng ftfy
-    if '?' in text or any(ord(c) > 127 and ord(c) < 256 for c in text):
-        text = ftfy.fix_text(text)
-    
-    text = text.strip()
-    
-    if max_len and len(text) > max_len:
-        text = text[:max_len]
-    
-    return text if text else None
-
-
-def convert_masv(value):
-    """Chuyển đổi mã sinh viên dạng 1.91122E+11 thành string bình thường"""
-    if pd.isna(value) or value in ['', 'NULL']:
-        return None
-    try:
-        # Xử lý scientific notation
-        return str(int(float(str(value).replace(',', ''))))
-    except:
-        return str(value).strip()
-
-
-print("📥 Connecting to Azure Storage...")
-blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
-blob_client = blob_service.get_container_client("rawdata").get_blob_client(f"{SEMESTER}/{SURVEY_FILE}")
-
-data = blob_client.download_blob().readall()
-print(f"✅ Downloaded {len(data) / 1024 / 1024:.2f} MB")
-# ==================== ĐỌC FILE CSV ====================
-print("📊 Reading CSV...")
-
-df = pd.read_csv(
-    io.BytesIO(data),
-    sep='\t',
-    header=None,
-    dtype=str,
-    encoding='cp1258',
-    on_bad_lines='skip',
-    low_memory=False
-)
-
-print(f"✅ Read {len(df):,} rows, {len(df.columns)} columns")
-
-# ==================== GÁN TÊN CỘT CHÍNH XÁC ====================
-print("🔖 Assigning column names...")
-
-df.columns = [
-    'Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh',      # 0-4
-    'MaHP', 'TenHP', 'MaGV', 'HoDemGV', 'TenGV',    # 5-9
-    'LopHP', 'CauHoi', 'DanhGia', 'Col13',          # 10-13
-    'Q13', 'Q14', 'Q15', 'Q16',                     # 14-17
-    'Col18', 'Col19', 'Col20', 'Col21', 'Col22',    # 18-22
-    'Col23', 'Col24', 'Col25', 'Col26', 'Col27',    # 23-27
-    'Col28', 'Col29', 'Col30', 'Col31'              # 28-31
-]
-
-print("Columns assigned successfully!")
-
-# ==================== LÀM SẠCH DỮ LIỆU ====================
-print("🧹 Cleaning and fixing Vietnamese text...")
-
-def clean_text(text, max_len=None):
     if pd.isna(text) or str(text).strip() in ['', 'NULL', 'nan']:
         return None
     text = str(text).strip()
@@ -108,6 +36,7 @@ def clean_text(text, max_len=None):
 
 
 def convert_masv(value):
+    """Chuyển mã sinh viên dạng 1,91122E+11 thành string"""
     if pd.isna(value) or str(value).strip() in ['', 'NULL']:
         return None
     try:
@@ -116,35 +45,68 @@ def convert_masv(value):
         return str(value).strip()
 
 
-# Áp dụng làm sạch
-df['Lop']       = df['Lop'].apply(clean_text)
-df['MaSV']      = df['MaSV'].apply(convert_masv)
-df['HoDem']     = df['HoDem'].apply(clean_text)
-df['Ten']       = df['Ten'].apply(clean_text)
-df['NgaySinh']  = df['NgaySinh'].apply(clean_text)
-df['MaHP']      = df['MaHP'].apply(clean_text)
-df['TenHP']     = df['TenHP'].apply(clean_text)
-df['MaGV']      = df['MaGV'].apply(clean_text)
-df['HoDemGV']   = df['HoDemGV'].apply(clean_text)
-df['TenGV']     = df['TenGV'].apply(clean_text)
-df['LopHP']     = df['LopHP'].apply(clean_text)
+# ==================== KẾT NỐI AZURE ====================
+print("📥 Connecting to Azure Storage...")
+blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
 
-df['CauHoi']    = pd.to_numeric(df['CauHoi'], errors='coerce')
-df['DanhGia']   = pd.to_numeric(df['DanhGia'], errors='coerce')
+# Download raw file
+blob_client = blob_service.get_container_client("rawdata").get_blob_client(f"{SEMESTER}/{SURVEY_FILE}")
+data = blob_client.download_blob().readall()
+print(f"✅ Downloaded {len(data) / 1024 / 1024:.2f} MB")
 
-# Làm sạch feedback Q13-Q16
+# ==================== ĐỌC FILE ====================
+print("📊 Reading CSV...")
+df = pd.read_csv(
+    io.BytesIO(data),
+    sep='\t',
+    header=None,
+    dtype=str,
+    encoding='cp1258',
+    on_bad_lines='skip',
+    low_memory=False
+)
+print(f"✅ Read {len(df):,} rows, {len(df.columns)} columns")
+
+# ==================== GÁN TÊN CỘT ====================
+print("🔖 Assigning column names...")
+df.columns = [
+    'Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh',
+    'MaHP', 'TenHP', 'MaGV', 'HoDemGV', 'TenGV',
+    'LopHP', 'CauHoi', 'DanhGia', 'Col13',
+    'Q13', 'Q14', 'Q15', 'Q16',
+    'Col18', 'Col19', 'Col20', 'Col21', 'Col22',
+    'Col23', 'Col24', 'Col25', 'Col26', 'Col27',
+    'Col28', 'Col29', 'Col30', 'Col31'
+]
+
+# ==================== LÀM SẠCH DỮ LIỆU ====================
+print("🧹 Cleaning and fixing Vietnamese text...")
+
+df['Lop']      = df['Lop'].apply(clean_text)
+df['MaSV']     = df['MaSV'].apply(convert_masv)
+df['HoDem']    = df['HoDem'].apply(clean_text)
+df['Ten']      = df['Ten'].apply(clean_text)
+df['NgaySinh'] = df['NgaySinh'].apply(clean_text)
+df['MaHP']     = df['MaHP'].apply(clean_text)
+df['TenHP']    = df['TenHP'].apply(clean_text)
+df['MaGV']     = df['MaGV'].apply(clean_text)
+df['HoDemGV']  = df['HoDemGV'].apply(clean_text)
+df['TenGV']    = df['TenGV'].apply(clean_text)
+df['LopHP']    = df['LopHP'].apply(clean_text)
+
+df['CauHoi']   = pd.to_numeric(df['CauHoi'], errors='coerce')
+df['DanhGia']  = pd.to_numeric(df['DanhGia'], errors='coerce')
+
 for q in ['Q13', 'Q14', 'Q15', 'Q16']:
     df[q] = df[q].apply(lambda x: clean_text(x, max_len=1000))
 
-print("✅ Data cleaning completed. Vietnamese text fixed.")
+print("✅ Data cleaning completed.")
 
-# ==================== PHẦN CÒN LẠI (giữ nguyên như trước) ====================
-
+# ==================== XỬ LÝ LOGIC ETL ====================
 df['HocKy'] = 2 if "252" in SURVEY_FILE else 1
 df['NamHoc'] = SEMESTER
 df['ProcessedDate'] = datetime.now()
 
-# Tạo StudentKey
 df['StudentKey'] = (
     df['Lop'].fillna('') + '|' +
     df['MaSV'].fillna('') + '|' +
@@ -153,7 +115,6 @@ df['StudentKey'] = (
     df['NgaySinh'].fillna('')
 )
 
-# Tạo ID sinh viên
 unique_students = df['StudentKey'].unique()
 student_id_map = {key: f"SV{idx+1:06d}" for idx, key in enumerate(unique_students)}
 df['ID'] = df['StudentKey'].map(student_id_map)
@@ -162,7 +123,6 @@ df_basic = df.groupby('StudentKey').first().reset_index()
 
 # Pivot Q1-Q12
 print("🔄 Pivoting Q1-Q12...")
-
 df_questions = df[df['CauHoi'].between(1, 12)].copy()
 
 all_students = df_basic['StudentKey'].unique()
@@ -171,7 +131,7 @@ complete_combinations = pd.DataFrame([
 ])
 
 df_merged = complete_combinations.merge(
-    df_questions[['StudentKey', 'CauHoi', 'DanhGia']], 
+    df_questions[['StudentKey', 'CauHoi', 'DanhGia']],
     on=['StudentKey', 'CauHoi'], how='left'
 )
 
@@ -192,7 +152,7 @@ for q in ['Q13', 'Q14', 'Q15', 'Q16']:
         q_values = df.groupby('StudentKey')[q].first()
         df_final[q] = df_final['StudentKey'].map(q_values)
 
-# Chọn cột cuối cùng
+# ==================== CHỌN CỘT CUỐI CÙNG ====================
 final_cols = [
     'ID', 'Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh',
     'MaHP', 'TenHP', 'MaGV', 'HoDemGV', 'TenGV', 'LopHP'
@@ -200,8 +160,32 @@ final_cols = [
 
 final_cols_existing = [c for c in final_cols if c in df_final.columns]
 df_final = df_final[final_cols_existing].copy()
-
 df_final = df_final.sort_values('ID').reset_index(drop=True)
 
-print(f"\n🎉 Hoàn tất! Final dataset: {len(df_final):,} sinh viên, {len(df_final.columns)} cột")
-print(df_final.head())
+print(f"\n🎉 Hoàn tất xử lý! Final dataset: {len(df_final):,} sinh viên, {len(df_final.columns)} cột")
+
+# ==================== XUẤT FILE KẾT QUẢ ====================
+print("💾 Saving processed file...")
+
+# 1. Lưu file local (để kiểm tra)
+local_filename = f"{SURVEY_FILE.replace('.txt','').replace('.csv','')}_processed.csv"
+df_final.to_csv(local_filename, index=False, encoding='utf-8-sig')
+print(f"✅ Saved locally: {local_filename}")
+
+# 2. Upload lên Azure Blob
+print("📤 Uploading to Azure Storage...")
+output_path = f"{SEMESTER}/{SURVEY_FILE.replace('.txt','').replace('.csv','')}_processed.csv"
+
+processed_container = blob_service.get_container_client("processed-data")
+if not processed_container.exists():
+    processed_container.create_container()
+    print("✅ Created container: processed-data")
+
+# Upload
+processed_container.get_blob_client(output_path).upload_blob(
+    df_final.to_csv(index=False, encoding='utf-8-sig'), 
+    overwrite=True
+)
+
+print(f"✅ Uploaded successfully to: processed-data/{output_path}")
+print("🎯 ETL Pipeline completed successfully!")

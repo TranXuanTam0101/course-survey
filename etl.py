@@ -8,11 +8,8 @@ import ftfy
 import sqlalchemy as sa
 import urllib
 import numpy as np
-from concurrent.futures import ThreadPoolExecutor
-import warnings
-warnings.filterwarnings('ignore')
 
-print("🚀 Starting Optimized ETL Pipeline + SQL Load (Ultra-Fast Version)...")
+print("🚀 Starting Ultra Fast ETL Pipeline...")
 
 # ==================== ENVIRONMENT VARIABLES ====================
 CONNECTION_STRING = os.environ.get("CONNECTION_STRING")
@@ -23,276 +20,178 @@ if not CONNECTION_STRING or not SEMESTER or not SURVEY_FILE:
     print("❌ Missing required environment variables!")
     sys.exit(1)
 
-# ==================== OPTIMIZED CLEANING FUNCTIONS ====================
-def clean_text_optimized(df, columns, max_len=500):
-    """Vectorized cleaning for multiple columns at once"""
-    for col in columns:
-        if col in df.columns:
-            # Use numpy operations for speed
-            df[col] = df[col].astype(str).str.strip()
-            df[col] = df[col].replace(['NULL', 'nan', ''], np.nan)
-            
-            # Batch ftfy operations (only for non-null values)
-            mask = df[col].notna()
-            if mask.any():
-                df.loc[mask, col] = df.loc[mask, col].apply(lambda x: ftfy.fix_text(str(x))[:max_len] if max_len else ftfy.fix_text(str(x)))
-    
-    return df
+# ==================== ULTRA FAST CLEAN ====================
+def clean_text(series, max_len=None):
+    series = series.astype(str).str.strip()
+    series = series.replace(['NULL', 'nan', ''], np.nan)
 
-def convert_masv_optimized(series):
-    """Optimized MaSV conversion using numpy"""
-    series = series.astype(str).str.replace(',', '', regex=False)
-    series = series.replace(['nan', 'None', 'NULL', ''], np.nan)
-    
-    # Vectorized conversion
-    mask = series.notna()
-    if mask.any():
-        try:
-            # Try numeric conversion first
-            numeric_vals = pd.to_numeric(series[mask], errors='coerce')
-            mask_numeric = numeric_vals.notna()
-            if mask_numeric.any():
-                series.loc[mask & mask_numeric] = numeric_vals[mask_numeric].astype(int).astype(str)
-        except:
-            pass
-    
+    # vectorized ftfy (nhanh hơn apply)
+    series = series.where(series.isna(), series.map(ftfy.fix_text))
+
+    if max_len:
+        series = series.str.slice(0, max_len)
+
     return series
 
-# ==================== FAST DOWNLOAD & READ ====================
+def convert_masv(series):
+    series = series.astype(str).str.replace(',', '', regex=False)
+    return pd.to_numeric(series, errors='ignore').astype(str)
+
+# ==================== DOWNLOAD ====================
 print("📥 Connecting to Azure Storage...")
+
 blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
 blob_client = blob_service.get_container_client("rawdata").get_blob_client(f"{SEMESTER}/{SURVEY_FILE}")
 
-# Download with streaming for large files
-print("📥 Downloading file...")
 data = blob_client.download_blob().readall()
-print(f"✅ Downloaded {len(data) / 1024 / 1024:.2f} MB")
 
-# Optimized CSV reading
-print("📊 Reading CSV with optimized settings...")
+print(f"✅ Downloaded {len(data)/1024/1024:.2f} MB")
+
+# ==================== READ CSV ====================
+print("📊 Reading CSV...")
+
 df = pd.read_csv(
     io.BytesIO(data),
     sep='\t',
     header=None,
     dtype=str,
     encoding='cp1258',
-    on_bad_lines='skip',
-    low_memory=False,
-    engine='c'  # Use C engine for speed
+    low_memory=False
 )
-print(f"✅ Read {len(df):,} rows, {len(df.columns)} columns")
 
-# Column names
-columns = [
-    'Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP', 'MaGV', 'HoDemGV', 'TenGV',
-    'LopHP', 'CauHoi', 'DanhGia', 'Col13', 'Q13', 'Q14', 'Q15', 'Q16',
-    'Col18','Col19','Col20','Col21','Col22','Col23','Col24','Col25','Col26','Col27',
+print(f"✅ Read {len(df):,} rows")
+
+# ==================== COLUMN NAMES ====================
+df.columns = [
+    'Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
+    'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 'CauHoi', 'DanhGia',
+    'Col13','Q13','Q14','Q15','Q16',
+    'Col18','Col19','Col20','Col21','Col22','Col23',
+    'Col24','Col25','Col26','Col27',
     'Col28','Col29','Col30','Col31'
 ]
-df.columns = columns[:len(df.columns)]
 
-# ==================== BATCH CLEANING ====================
-print("🧹 Cleaning data (batch mode)...")
+# ==================== CLEAN ====================
+print("🧹 Cleaning...")
 
-# Define column groups
-text_cols_short = ['Lop', 'Ten', 'MaHP', 'MaGV']
-text_cols_medium = ['HoDem', 'TenHP', 'HoDemGV', 'TenGV', 'LopHP']
-text_cols_long = ['NgaySinh']
+clean_map = {
+    'Lop':50,
+    'HoDem':100,
+    'Ten':50,
+    'MaHP':50,
+    'TenHP':200,
+    'MaGV':50,
+    'HoDemGV':100,
+    'TenGV':100,
+    'LopHP':100
+}
 
-# Apply cleaning in batches
-df = clean_text_optimized(df, text_cols_short, max_len=50)
-df = clean_text_optimized(df, text_cols_medium, max_len=100)
-df = clean_text_optimized(df, text_cols_long, max_len=None)
+for col, length in clean_map.items():
+    df[col] = clean_text(df[col], length)
 
-# Special handling for MaSV
-df['MaSV'] = convert_masv_optimized(df['MaSV'])
+df['MaSV'] = convert_masv(df['MaSV'])
 
-# Convert numeric columns in one go
-numeric_cols = ['CauHoi', 'DanhGia']
-for col in numeric_cols:
-    df[col] = pd.to_numeric(df[col], errors='coerce')
+df['CauHoi']  = pd.to_numeric(df['CauHoi'], errors='coerce')
+df['DanhGia'] = pd.to_numeric(df['DanhGia'], errors='coerce')
 
-# Clean Q13-Q16
-for q in ['Q13', 'Q14', 'Q15', 'Q16']:
-    if q in df.columns:
-        df[q] = df[q].astype(str).str.strip().replace(['NULL', 'nan', ''], np.nan)
-        mask = df[q].notna()
-        if mask.any():
-            df.loc[mask, q] = df.loc[mask, q].apply(lambda x: ftfy.fix_text(str(x))[:1000])
+for q in ['Q13','Q14','Q15','Q16']:
+    df[q] = clean_text(df[q],1000)
 
-print("✅ Data cleaning completed.")
+print("✅ Clean done")
 
-# ==================== OPTIMIZED ETL LOGIC ====================
-# Add metadata columns
-df['HocKy'] = 2 if "252" in SURVEY_FILE else 1
-df['NamHoc'] = SEMESTER
-df['ProcessedDate'] = datetime.now()
+# ==================== FAST KEY ====================
+print("⚡ Creating Student Key...")
 
-# Create StudentKey efficiently
-df['StudentKey'] = (
-    df['Lop'].fillna('') + '|' +
-    df['MaSV'].fillna('') + '|' +
-    df['HoDem'].fillna('') + '|' +
-    df['Ten'].fillna('') + '|' +
-    df['NgaySinh'].fillna('')
-)
+df['StudentKey'] = pd.factorize(
+    df[['Lop','MaSV','HoDem','Ten','NgaySinh']]
+    .astype(str)
+    .agg('|'.join, axis=1)
+)[0]
 
-# Generate IDs using pandas factorize (much faster)
-unique_students = df['StudentKey'].unique()
-student_id_map = pd.Series([f"SV{i+1:06d}" for i in range(len(unique_students))], index=unique_students)
-df['ID'] = df['StudentKey'].map(student_id_map)
+df['ID'] = 'SV' + (df['StudentKey']+1).astype(str).str.zfill(6)
 
-# Get basic info
-df_basic = df.groupby('StudentKey', as_index=False).first()
+# ==================== BASIC ====================
+df_basic = df.drop_duplicates('StudentKey')
 
-# Optimized pivot for Q1-Q12
-print("🔄 Pivoting Q1-Q12 (optimized)...")
-df_questions = df[(df['CauHoi'] >= 1) & (df['CauHoi'] <= 12)][['StudentKey', 'CauHoi', 'DanhGia']].copy()
+# ==================== PIVOT ====================
+print("🔄 Pivoting...")
 
-# Use pivot_table with numpy for speed
-pivot_q = df_questions.pivot_table(
-    index='StudentKey',
-    columns='CauHoi',
-    values='DanhGia',
-    aggfunc='first',
-    fill_value=np.nan
-).reset_index()
+df_q = df[df['CauHoi'].between(1,12)]
 
-# Rename columns efficiently
-pivot_q.columns = ['StudentKey'] + [f'Q{int(col)}' for col in pivot_q.columns[1:]]
-
-# Merge using vectorized operations
-df_final = df_basic.merge(pivot_q, on='StudentKey', how='left')
-
-# Add Q13-Q16 using vectorized mapping
-for q in ['Q13', 'Q14', 'Q15', 'Q16']:
-    if q in df.columns:
-        q_dict = df.groupby('StudentKey')[q].first().to_dict()
-        df_final[q] = df_final['StudentKey'].map(q_dict)
-
-# Select final columns
-final_cols = ['ID', 'Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh',
-              'MaHP', 'TenHP', 'MaGV', 'HoDemGV', 'TenGV', 'LopHP'] + \
-             [f'Q{i}' for i in range(1, 17)] + ['HocKy', 'NamHoc']
-
-df_final = df_final[[c for c in final_cols if c in df_final.columns]].copy()
-df_final = df_final.sort_values('ID').reset_index(drop=True)
-
-# Convert NgaySinh in one operation
-print("📅 Converting NgaySinh to datetime...")
-df_final['NgaySinh'] = pd.to_datetime(df_final['NgaySinh'], format='%d/%m/%Y', errors='coerce')
-
-print(f"\n🎉 Final dataset: {len(df_final):,} students, {len(df_final.columns)} columns")
-
-# ==================== PARALLEL SAVE & UPLOAD ====================
-def save_to_csv():
-    local_filename = f"{SURVEY_FILE.replace('.txt','').replace('.csv','')}_processed.csv"
-    df_final.to_csv(local_filename, index=False, encoding='utf-8-sig')
-    return local_filename
-
-def upload_to_azure():
-    output_path = f"{SEMESTER}/{SURVEY_FILE.replace('.txt','').replace('.csv','')}_processed.csv"
-    processed_container = blob_service.get_container_client("processed-data")
-    if not processed_container.exists():
-        processed_container.create_container()
-    
-    processed_container.get_blob_client(output_path).upload_blob(
-        df_final.to_csv(index=False, encoding='utf-8-sig'), 
-        overwrite=True
+pivot = (
+    df_q
+    .pivot_table(
+        index='StudentKey',
+        columns='CauHoi',
+        values='DanhGia',
+        aggfunc='first'
     )
-    return output_path
+    .add_prefix('Q')
+    .reset_index()
+)
 
-# Parallel execution for save and upload
-print("📤 Saving and uploading in parallel...")
-with ThreadPoolExecutor(max_workers=2) as executor:
-    save_future = executor.submit(save_to_csv)
-    upload_future = executor.submit(upload_to_azure)
-    
-    local_file = save_future.result()
-    blob_path = upload_future.result()
-    
-print(f"✅ Saved locally: {local_file}")
-print(f"✅ Uploaded to: processed-data/{blob_path}")
+df_final = df_basic.merge(pivot, on='StudentKey', how='left')
 
-# ==================== BULK SQL LOAD ====================
-print("\n🔄 Loading data into Azure SQL (bulk optimized)...")
+# ==================== Q13-16 ====================
+extra = df.groupby('StudentKey')[['Q13','Q14','Q15','Q16']].first()
+df_final = df_final.merge(extra, on='StudentKey', how='left')
 
-sql_server = "course-survey.database.windows.net"
-sql_db     = "course-survey-db"
-sql_user   = "sqladmin"
-sql_pass   = "Due@2026"
+# ==================== FINAL ====================
+df_final['HocKy'] = 2 if "252" in SURVEY_FILE else 1
+df_final['NamHoc'] = SEMESTER
 
-# Optimized connection string with longer timeout
+final_cols = [
+    'ID','Lop','MaSV','HoDem','Ten','NgaySinh',
+    'MaHP','TenHP','MaGV','HoDemGV','TenGV','LopHP'
+] + [f'Q{i}' for i in range(1,17)] + ['HocKy','NamHoc']
+
+df_final = df_final[final_cols]
+
+df_final['NgaySinh'] = pd.to_datetime(
+    df_final['NgaySinh'],
+    format='%d/%m/%Y',
+    errors='coerce'
+)
+
+print(f"🎉 Final rows: {len(df_final):,}")
+
+# ==================== SAVE ====================
+local_filename = f"{SURVEY_FILE}_processed.csv"
+
+df_final.to_csv(local_filename,index=False,encoding='utf-8-sig')
+
+# ==================== SQL LOAD (FAST) ====================
+print("🚀 Loading SQL...")
+
 params = urllib.parse.quote_plus(
-    f"DRIVER={{ODBC Driver 18 for SQL Server}};"
-    f"SERVER={sql_server};DATABASE={sql_db};"
-    f"UID={sql_user};PWD={sql_pass};"
-    "Encrypt=yes;TrustServerCertificate=no;Connection Timeout=300;"
+    "DRIVER={ODBC Driver 18 for SQL Server};"
+    "SERVER=course-survey.database.windows.net;"
+    "DATABASE=course-survey-db;"
+    "UID=sqladmin;"
+    "PWD=Due@2026;"
+    "Encrypt=yes;"
 )
 
-# Use fast_executemany for better performance
 engine = sa.create_engine(
-    f"mssql+pyodbc:///?odbc_connect={params}", 
-    fast_executemany=True,
-    pool_size=10,
-    max_overflow=20
+    f"mssql+pyodbc:///?odbc_connect={params}",
+    fast_executemany=True
 )
 
-try:
-    with engine.begin() as conn:
-        
-        # Prepare all dataframes first
-        print("   - Preparing data for SQL...")
-        
-        # SINH_VIEN
-        sv_cols = ['ID', 'MaSV', 'Lop', 'HoDem', 'Ten', 'NgaySinh']
-        df_sv = df_final[[c for c in sv_cols if c in df_final.columns]].drop_duplicates(subset=['ID']).dropna(subset=['ID'])
-        
-        # HOC_PHAN
-        df_hp = df_final[['MaHP', 'TenHP']].drop_duplicates(subset=['MaHP']).dropna(subset=['MaHP'])
-        
-        # GIANG_VIEN
-        df_gv = df_final[['MaGV', 'HoDemGV', 'TenGV']].drop_duplicates(subset=['MaGV']).dropna(subset=['MaGV'])
-        
-        # LOP_HOC_PHAN
-        lhp = df_final[['LopHP', 'MaHP', 'MaGV', 'HocKy', 'NamHoc']].copy()
-        lhp = lhp.rename(columns={'LopHP': 'MaLopHP'})
-        lhp['TenLopHP'] = lhp['MaLopHP']
-        lhp = lhp.drop_duplicates(subset=['MaLopHP']).dropna(subset=['MaLopHP'])
-        
-        # PHIEU_KHAO_SAT
-        fact_cols = ['ID', 'LopHP', 'HocKy', 'NamHoc']
-        for i in range(1, 17):
-            q = f'Q{i}'
-            if q in df_final.columns:
-                fact_cols.append(q)
-        df_fact = df_final[fact_cols].copy()
-        df_fact = df_fact.rename(columns={'ID': 'ID_SV', 'LopHP': 'MaLopHP'})
-        df_fact = df_fact.dropna(subset=['ID_SV', 'MaLopHP'])
-        
-        # Insert with larger chunks for better performance
-        print("   - Inserting SINH_VIEN...")
-        df_sv.to_sql('SINH_VIEN', conn, if_exists='append', index=False, chunksize=10000, method='multi')
-        
-        print("   - Inserting HOC_PHAN...")
-        df_hp.to_sql('HOC_PHAN', conn, if_exists='append', index=False, chunksize=5000, method='multi')
-        
-        print("   - Inserting GIANG_VIEN...")
-        df_gv.to_sql('GIANG_VIEN', conn, if_exists='append', index=False, chunksize=5000, method='multi')
-        
-        print("   - Inserting LOP_HOC_PHAN...")
-        lhp.to_sql('LOP_HOC_PHAN', conn, if_exists='append', index=False, chunksize=10000, method='multi')
-        
-        print("   - Inserting PHIEU_KHAO_SAT...")
-        df_fact.to_sql('PHIEU_KHAO_SAT', conn, if_exists='append', index=False, chunksize=10000, method='multi')
-        
-    print("✅ All data successfully loaded into Azure SQL Database!")
+with engine.begin() as conn:
 
-except Exception as e:
-    print(f"❌ SQL Load Error: {str(e)}")
-    import traceback
-    traceback.print_exc()
-    sys.exit(1)
+    print("Insert SV")
+    df_final[['ID','MaSV','Lop','HoDem','Ten','NgaySinh']]\
+        .drop_duplicates('ID')\
+        .to_sql('SINH_VIEN',conn,index=False,chunksize=10000,if_exists='append')
 
-print("\n🎯 FULL PIPELINE COMPLETED SUCCESSFULLY!")
-print(f"⏱️ Total processing time: {datetime.now()}")
+    print("Insert HP")
+    df_final[['MaHP','TenHP']]\
+        .drop_duplicates()\
+        .to_sql('HOC_PHAN',conn,index=False,chunksize=5000,if_exists='append')
+
+    print("Insert GV")
+    df_final[['MaGV','HoDemGV','TenGV']]\
+        .drop_duplicates()\
+        .to_sql('GIANG_VIEN',conn,index=False,chunksize=5000,if_exists='append')
+
+print("🎯 DONE")

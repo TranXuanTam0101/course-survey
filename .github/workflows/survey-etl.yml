@@ -33,6 +33,7 @@ jobs:
           pip install pandas
           pip install azure-storage-blob
           pip install ftfy
+          pip install sqlalchemy pyodbc
       
       - name: Run ETL
         run: python etl.py

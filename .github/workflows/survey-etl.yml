@@ -30,9 +30,22 @@ jobs:
       
       - name: Install dependencies
         run: |
+          pip install --upgrade pip
           pip install pandas
           pip install azure-storage-blob
           pip install ftfy
+          pip install pyodbc
+          pip install sqlalchemy
+          pip install numpy
+      
+      - name: Install ODBC Driver for SQL Server
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y unixodbc-dev
+          sudo apt-get install -y odbcinst
+          sudo apt-get install -y msodbcsql18
+        env:
+          ACCEPT_EULA: Y
       
       - name: Run ETL
         run: python etl.py
@@ -40,3 +53,7 @@ jobs:
           SEMESTER: ${{ github.event.inputs.semester }}
           SURVEY_FILE: ${{ github.event.inputs.survey_file }}
           CONNECTION_STRING: ${{ secrets.AZURE_CONNECTION_STRING }}
+          SQL_SERVER: ${{ secrets.SQL_SERVER }}
+          SQL_DATABASE: ${{ secrets.SQL_DATABASE }}
+          SQL_USERNAME: ${{ secrets.SQL_USERNAME }}
+          SQL_PASSWORD: ${{ secrets.SQL_PASSWORD }}

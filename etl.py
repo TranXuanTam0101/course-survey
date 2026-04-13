@@ -1,8 +1,3 @@
-từ đoạn code dưới của tôi hãy xử lý dữ liệu, mỗi sinh viên sẽ có 1 dòng dữ liệu gồm 'Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
-                  'MaGV', 'HoDemGV', 'TenGV', 'LopHP', Q1;Q2;Q3;Q4;Q5;Q6;Q7;Q8;Q9;Q10;Q11;Q12; Q13; Q14; Q15; Q16, HocKy', 'NamHoc', 'ProcessedDate'
-BIẾT TỪ q1->q12 là giá trị của cột DanhGia  tương ứng với cột CauHoi, Q13->Q16 là FB1->FB4
-
-# etl.py - ĐÃ CHỈNH SỬA LOGIC LOP VÀ MASV
 import os
 import sys
 from azure.storage.blob import BlobServiceClient

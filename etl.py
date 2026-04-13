@@ -1,4 +1,4 @@
-bimport os
+import os
 import sys
 from azure.storage.blob import BlobServiceClient
 import pandas as pd

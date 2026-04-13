@@ -2,36 +2,53 @@ import os
 import sys
 from azure.storage.blob import BlobServiceClient
 import pandas as pd
-import numpy as np
 import io
 from datetime import datetime
 import ftfy
 import sqlalchemy as sa
 import urllib
 
-# ==================== CẤU HÌNH TỐI ƯU ====================
-# Tăng tốc độ bằng cách sử dụng công cụ chuyên dụng
-# Bật fast_executemany là cách nhanh nhất để insert vào SQL Server
-FAST_EXECUTE = True 
+print("🚀 Starting Optimized ETL Pipeline + SQL Load (Fixed Truncation Error)...")
 
-def clean_text_optimized(series, max_len=500):
-    # Tránh dùng .apply(lambda) nếu có thể, dùng các hàm vector bẩm sinh của pandas
-    series = series.astype(str).str.strip().replace(['nan', 'NULL', 'None', ''], np.nan)
-    
-    # ftfy là hàm xử lý chuỗi phức tạp, vẫn dùng apply nhưng chỉ dùng cho các dòng không null
-    mask = series.notna()
-    series[mask] = series[mask].apply(ftfy.fix_text)
-    
+# ==================== ENVIRONMENT VARIABLES ====================
+CONNECTION_STRING = os.environ.get("CONNECTION_STRING")
+SEMESTER = os.environ.get("SEMESTER")
+SURVEY_FILE = os.environ.get("SURVEY_FILE")
+
+if not CONNECTION_STRING or not SEMESTER or not SURVEY_FILE:
+    print("❌ Missing required environment variables!")
+    sys.exit(1)
+
+# ==================== HÀM LÀM SẠCH (Cải tiến) ====================
+def clean_text_vectorized(series, max_len=500):
+    series = series.astype(str).str.strip()
+    series = series.replace(['NULL', 'nan', ''], None)
+    # Sửa encoding
+    series = series.apply(lambda x: ftfy.fix_text(str(x)) if pd.notna(x) else x)
+    series = series.str.strip()
     if max_len:
-        series = series.str[:max_len]
-    return series
+        series = series.str[:max_len]   # Giới hạn độ dài
+    return series.where(series.notna() & (series != ''), None)
+
+def convert_masv_vectorized(series):
+    series = series.astype(str).str.replace(',', '', regex=False)
+    def safe_convert(x):
+        if pd.isna(x) or str(x).strip() in ['', 'NULL']:
+            return None
+        try:
+            return str(int(float(x)))
+        except:
+            return str(x).strip()
+    return series.map(safe_convert)
 
 # ==================== DOWNLOAD & READ ====================
-# (Giữ nguyên phần kết nối Azure của bạn)
-# ... [Phần code lấy dữ liệu từ Azure] ...
+print("📥 Connecting to Azure Storage...")
+blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
+blob_client = blob_service.get_container_client("rawdata").get_blob_client(f"{SEMESTER}/{SURVEY_FILE}")
+data = blob_client.download_blob().readall()
+print(f"✅ Downloaded {len(data) / 1024 / 1024:.2f} MB")
 
 print("📊 Reading CSV...")
-# Tối ưu: Chỉ đọc các cột cần thiết nếu file quá lớn
 df = pd.read_csv(
     io.BytesIO(data),
     sep='\t',
@@ -39,11 +56,10 @@ df = pd.read_csv(
     dtype=str,
     encoding='cp1258',
     on_bad_lines='skip',
-    engine='c', # Sử dụng engine C để nhanh hơn
     low_memory=False
 )
+print(f"✅ Read {len(df):,} rows, {len(df.columns)} columns")
 
-# Rename nhanh
 df.columns = [
     'Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP', 'MaGV', 'HoDemGV', 'TenGV',
     'LopHP', 'CauHoi', 'DanhGia', 'Col13', 'Q13', 'Q14', 'Q15', 'Q16',
@@ -51,79 +67,152 @@ df.columns = [
     'Col28','Col29','Col30','Col31'
 ]
 
-# ==================== XỬ LÝ DỮ LIỆU TỐI ƯU ====================
+# ==================== CLEANING (Giới hạn độ dài tên GV) ====================
 print("🧹 Cleaning data...")
-cols_to_clean = {
-    'Lop': 50, 'HoDem': 100, 'Ten': 50, 'MaHP': 50, 
-    'TenHP': 200, 'MaGV': 50, 'HoDemGV': 100, 'TenGV': 100, 'LopHP': 100
-}
-for col, length in cols_to_clean.items():
-    df[col] = clean_text_optimized(df[col], length)
+df['Lop']      = clean_text_vectorized(df['Lop'], 50)
+df['HoDem']    = clean_text_vectorized(df['HoDem'], 100)
+df['Ten']      = clean_text_vectorized(df['Ten'], 50)
+df['NgaySinh'] = clean_text_vectorized(df['NgaySinh'])
+df['MaHP']     = clean_text_vectorized(df['MaHP'], 50)
+df['TenHP']    = clean_text_vectorized(df['TenHP'], 200)
+df['MaGV']     = clean_text_vectorized(df['MaGV'], 50)
+df['HoDemGV']  = clean_text_vectorized(df['HoDemGV'], 100)   # Giới hạn 100 ký tự
+df['TenGV']    = clean_text_vectorized(df['TenGV'], 100)     # Giới hạn 100 ký tự
+df['LopHP']    = clean_text_vectorized(df['LopHP'], 100)
 
-# Xử lý MaSV dùng vector thay vì map(safe_convert)
-df['MaSV'] = df['MaSV'].str.replace(',', '', regex=False).str.split('.').str[0]
+df['MaSV'] = convert_masv_vectorized(df['MaSV'])
 
-# Chuyển đổi số hàng loạt
-df['CauHoi'] = pd.to_numeric(df['CauHoi'], errors='coerce')
+df['CauHoi']  = pd.to_numeric(df['CauHoi'], errors='coerce')
 df['DanhGia'] = pd.to_numeric(df['DanhGia'], errors='coerce')
 
-# ==================== LOGIC ETL TẬP TRUNG ====================
-# Tạo StudentKey cực nhanh bằng cách cộng chuỗi trực tiếp
-df['StudentKey'] = (df['Lop'].fillna('') + df['MaSV'].fillna('') + 
-                    df['HoDem'].fillna('') + df['Ten'].fillna('') + 
-                    df['NgaySinh'].fillna(''))
+for q in ['Q13', 'Q14', 'Q15', 'Q16']:
+    df[q] = clean_text_vectorized(df[q], max_len=1000)
 
-# Pivot table là điểm gây chậm. Ta lọc trước khi pivot.
+print("✅ Data cleaning completed.")
+
+# ==================== ETL LOGIC ====================
+df['HocKy'] = 2 if "252" in SURVEY_FILE else 1
+df['NamHoc'] = SEMESTER
+df['ProcessedDate'] = datetime.now()
+
+df['StudentKey'] = (
+    df['Lop'].fillna('') + '|' +
+    df['MaSV'].fillna('') + '|' +
+    df['HoDem'].fillna('') + '|' +
+    df['Ten'].fillna('') + '|' +
+    df['NgaySinh'].fillna('')
+)
+
+unique_students = df['StudentKey'].unique()
+student_id_map = {key: f"SV{idx+1:06d}" for idx, key in enumerate(unique_students)}
+df['ID'] = df['StudentKey'].map(student_id_map)
+
+df_basic = df.groupby('StudentKey', as_index=False).first()
+
 print("🔄 Pivoting Q1-Q12...")
-df_q1_12 = df[df['CauHoi'].between(1, 12)]
-pivot_q = df_q1_12.pivot_table(
+df_questions = df[df['CauHoi'].between(1, 12)][['StudentKey', 'CauHoi', 'DanhGia']].copy()
+
+pivot_q = df_questions.pivot_table(
     index='StudentKey',
     columns='CauHoi',
     values='DanhGia',
     aggfunc='first'
 ).reset_index()
-pivot_q.columns = ['StudentKey'] + [f'Q{int(i)}' for i in pivot_q.columns[1:]]
 
-# Xử lý Q13-Q16: Thay vì map(groupby), dùng pivot tương tự hoặc merge
-df_q13_16 = df[['StudentKey', 'Q13', 'Q14', 'Q15', 'Q16']].drop_duplicates('StudentKey')
+pivot_q.columns = ['StudentKey'] + [f'Q{int(col)}' for col in pivot_q.columns[1:]]
+df_final = df_basic.merge(pivot_q, on='StudentKey', how='left')
 
-# Tổng hợp df_final bằng cách merge các bảng đã rút gọn (nhanh hơn groupby trên bảng lớn)
-df_main_info = df.drop_duplicates('StudentKey').drop(columns=['CauHoi', 'DanhGia', 'Q13', 'Q14', 'Q15', 'Q16'])
-df_final = df_main_info.merge(pivot_q, on='StudentKey', how='left')
-df_final = df_final.merge(df_q13_16, on='StudentKey', how='left')
+for q in ['Q13', 'Q14', 'Q15', 'Q16']:
+    if q in df.columns:
+        df_final[q] = df_final['StudentKey'].map(df.groupby('StudentKey')[q].first())
 
-# Tạo ID duy nhất bằng factorize (nhanh hơn dict map rất nhiều)
-df_final['ID'] = pd.Series(pd.factorize(df_final['StudentKey'])[0] + 1).apply(lambda x: f"SV{x:06d}")
+final_cols = ['ID', 'Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh',
+              'MaHP', 'TenHP', 'MaGV', 'HoDemGV', 'TenGV', 'LopHP'] + \
+             [f'Q{i}' for i in range(1, 17)] + ['HocKy', 'NamHoc']
 
-# ==================== LOAD VÀO SQL (SUPER FAST) ====================
-print("\n🚀 Loading data into Azure SQL with fast_executemany...")
+df_final = df_final[[c for c in final_cols if c in df_final.columns]].copy()
+df_final = df_final.sort_values('ID').reset_index(drop=True)
 
-# Quan trọng: Bật fast_executemany=True
-engine = sa.create_engine(
-    f"mssql+pyodbc:///?odbc_connect={params}", 
-    fast_executemany=True, 
-    future=True
+# Chuyển ngày sinh
+print("📅 Converting NgaySinh to datetime...")
+df_final['NgaySinh'] = pd.to_datetime(df_final['NgaySinh'], format='%d/%m/%Y', errors='coerce')
+
+print(f"\n🎉 Final dataset: {len(df_final):,} sinh viên, {len(df_final.columns)} cột")
+
+# ==================== SAVE & UPLOAD ====================
+local_filename = f"{SURVEY_FILE.replace('.txt','').replace('.csv','')}_processed.csv"
+df_final.to_csv(local_filename, index=False, encoding='utf-8-sig')
+print(f"✅ Saved locally: {local_filename}")
+
+print("📤 Uploading to Azure Storage...")
+output_path = f"{SEMESTER}/{SURVEY_FILE.replace('.txt','').replace('.csv','')}_processed.csv"
+processed_container = blob_service.get_container_client("processed-data")
+if not processed_container.exists():
+    processed_container.create_container()
+
+processed_container.get_blob_client(output_path).upload_blob(
+    df_final.to_csv(index=False, encoding='utf-8-sig'), overwrite=True
+)
+print(f"✅ Uploaded to: processed-data/{output_path}")
+
+# ==================== LOAD VÀO SQL ====================
+print("\n🔄 Loading data into Azure SQL...")
+
+sql_server = "course-survey.database.windows.net"
+sql_db     = "course-survey-db"
+sql_user   = "sqladmin"
+sql_pass   = "Due@2026"
+
+params = urllib.parse.quote_plus(
+    f"DRIVER={{ODBC Driver 18 for SQL Server}};"
+    f"SERVER={sql_server};DATABASE={sql_db};"
+    f"UID={sql_user};PWD={sql_pass};"
+    "Encrypt=yes;TrustServerCertificate=no;Connection Timeout=60;"
 )
 
-def secure_insert(df_to_load, table_name, conn, chunk=10000):
-    if df_to_load.empty: return
-    # Loại bỏ các cột không có trong schema nếu cần
-    df_to_load.to_sql(table_name, conn, if_exists='append', index=False, chunksize=chunk)
+# Tắt fast_executemany tạm thời để tránh buffer issue (có thể bật lại sau khi sửa schema)
+engine = sa.create_engine(f"mssql+pyodbc:///?odbc_connect={params}", fast_executemany=False)
 
 try:
     with engine.connect() as conn:
-        # Tắt kiểm tra ràng buộc hoặc dùng transaction để tăng tốc
         with conn.begin():
+            
             print("   - Inserting SINH_VIEN...")
             sv_cols = ['ID', 'MaSV', 'Lop', 'HoDem', 'Ten', 'NgaySinh']
-            secure_insert(df_final[sv_cols].drop_duplicates('ID'), 'SINH_VIEN', conn)
+            df_sv = df_final[[c for c in sv_cols if c in df_final.columns]].drop_duplicates(subset=['ID'])
+            df_sv.to_sql('SINH_VIEN', conn, if_exists='append', index=False, chunksize=4000)
 
-            print("   - Inserting GIANG_VIEN...")
-            gv_cols = ['MaGV', 'HoDemGV', 'TenGV']
-            secure_insert(df_final[gv_cols].dropna(subset=['MaGV']).drop_duplicates('MaGV'), 'GIANG_VIEN', conn)
-            
-            # ... Làm tương tự cho các bảng khác ...
-            
-    print("✅ All data loaded!")
+            print("   - Inserting HOC_PHAN...")
+            df_hp = df_final[['MaHP', 'TenHP']].drop_duplicates(subset=['MaHP']).dropna(subset=['MaHP'])
+            df_hp.to_sql('HOC_PHAN', conn, if_exists='append', index=False, chunksize=1000)
+
+            print("   - Inserting GIANG_VIEN...")   # Đây là chỗ lỗi trước
+            df_gv = df_final[['MaGV', 'HoDemGV', 'TenGV']].drop_duplicates(subset=['MaGV']).dropna(subset=['MaGV'])
+            df_gv.to_sql('GIANG_VIEN', conn, if_exists='append', index=False, chunksize=500)
+
+            print("   - Inserting LOP_HOC_PHAN...")
+            lhp = df_final[['LopHP', 'MaHP', 'MaGV', 'HocKy', 'NamHoc']].copy()
+            lhp = lhp.rename(columns={'LopHP': 'MaLopHP'})
+            lhp['TenLopHP'] = lhp['MaLopHP']
+            lhp = lhp.drop_duplicates(subset=['MaLopHP']).dropna(subset=['MaLopHP'])
+            lhp.to_sql('LOP_HOC_PHAN', conn, if_exists='append', index=False, chunksize=4000)
+
+            print("   - Inserting PHIEU_KHAO_SAT...")
+            fact_cols = ['ID', 'LopHP', 'HocKy', 'NamHoc']
+            for i in range(1, 17):
+                q = f'Q{i}'
+                if q in df_final.columns:
+                    fact_cols.append(q)
+            df_fact = df_final[fact_cols].copy()
+            df_fact = df_fact.rename(columns={'ID': 'ID_SV', 'LopHP': 'MaLopHP'})
+            df_fact.to_sql('PHIEU_KHAO_SAT', conn, if_exists='append', index=False, chunksize=4000)
+
+    print("✅ All data successfully loaded into Azure SQL Database!")
+
 except Exception as e:
-    print(f"❌ SQL Error: {e}")
+    print(f"❌ SQL Load Error: {str(e)}")
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
+
+print("\n🎯 FULL PIPELINE COMPLETED SUCCESSFULLY!")

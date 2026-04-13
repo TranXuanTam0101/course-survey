@@ -215,8 +215,9 @@ try:
     
     print(f"\n📋 Sample (first 3 rows):")
     sample_cols = ['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
-    'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 'CauHoi', 'DanhGia',
-    'FB1', 'FB2', 'FB3', 'FB4']
+                        'MaGV', 'HoDemGV', 'TenGV', 'LopHP',
+                        'Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'Q6', 'Q7', 'Q8', 'Q9', 'Q10', 'Q11', 'Q12',
+                        'Q13', 'Q14', 'Q15', 'Q16', 'HocKy', 'NamHoc']
     sample_cols = [c for c in sample_cols if c in df.columns]
     print(df[sample_cols].head(3).to_string(index=False))
     

@@ -156,31 +156,37 @@ try:
                   'FB1', 'FB2', 'FB3', 'FB4', 'HocKy', 'NamHoc', 'ProcessedDate']
     
     df = df[[c for c in final_cols if c in df.columns]]
-    # ==================== 13.5. PIVOT DỮ LIỆU - MỖI SINH VIÊN 1 DÒNG ====================
-    print("🔄 Pivoting data - each student as one row...")
+    # ==================== 13.5. GỘP DỮ LIỆU - GIỮ NGUYÊN TOÀN BỘ ====================
+    print("🔄 Merging Q1-Q12 into single row per student...")
     
-    # Tạo dataframe chứa các cột cố định
+    # Lấy danh sách các cột cố định
     fixed_cols = ['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
                   'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 'HocKy', 'NamHoc', 'ProcessedDate']
     
-    # Lấy các cột cố định (bỏ qua các dòng bị thiếu)
-    df_fixed = df[fixed_cols].drop_duplicates(subset=['MaSV', 'MaHP'])
+    # Tạo dataframe kết quả từ các cột cố định (bỏ duplicate)
+    df_result = df[fixed_cols].drop_duplicates(subset=['MaSV', 'MaHP']).copy()
     
-    # Pivot cho Q1-Q12 (từ CauHoi và DanhGia)
-    df_q = df[['MaSV', 'MaHP', 'CauHoi', 'DanhGia']].dropna(subset=['CauHoi', 'DanhGia'])
-    df_q['CauHoi'] = df_q['CauHoi'].astype(int)
-    df_pivot_q = df_q.pivot_table(index=['MaSV', 'MaHP'], columns='CauHoi', values='DanhGia', aggfunc='first')
-    df_pivot_q.columns = [f'Q{col}' for col in df_pivot_q.columns]
+    # Khởi tạo các cột Q1-Q12 với giá trị mặc định là None
+    for i in range(1, 13):
+        df_result[f'Q{i}'] = None
     
-    # Pivot cho Q13-Q16 (từ FB1-FB4)
+    # Duyệt từng dòng trong df gốc để điền giá trị vào Q1-Q12
+    # Sử dụng groupby để tối ưu tốc độ thay vì loop từng dòng
+    for (masv, mahp), group in df.groupby(['MaSV', 'MaHP']):
+        mask = (df_result['MaSV'] == masv) & (df_result['MaHP'] == mahp)
+        for _, row in group.iterrows():
+            if pd.notna(row['CauHoi']):
+                cauhoi = int(row['CauHoi'])
+                if 1 <= cauhoi <= 12:
+                    df_result.loc[mask, f'Q{cauhoi}'] = row['DanhGia']
+    
+    # Thêm các cột Q13-Q16 (FB1-FB4)
     df_fb = df[['MaSV', 'MaHP', 'FB1', 'FB2', 'FB3', 'FB4']].drop_duplicates(subset=['MaSV', 'MaHP'])
     df_fb = df_fb.rename(columns={'FB1': 'Q13', 'FB2': 'Q14', 'FB3': 'Q15', 'FB4': 'Q16'})
     
-    # Ghép các bảng lại
-    df_result = df_fixed.merge(df_pivot_q, on=['MaSV', 'MaHP'], how='left')
     df_result = df_result.merge(df_fb, on=['MaSV', 'MaHP'], how='left')
     
-    # Sắp xếp cột theo đúng thứ tự yêu cầu
+    # Sắp xếp cột theo thứ tự yêu cầu
     final_cols_pivot = ['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
                         'MaGV', 'HoDemGV', 'TenGV', 'LopHP',
                         'Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'Q6', 'Q7', 'Q8', 'Q9', 'Q10', 'Q11', 'Q12',
@@ -189,9 +195,13 @@ try:
     
     df_result = df_result[[c for c in final_cols_pivot if c in df_result.columns]]
     
-    print(f"✅ Pivot completed: {len(df_result):,} rows (each row = one student per course)")
+    # Thống kê số lượng sinh viên có đủ 12 câu hỏi
+    full_questions = df_result[[f'Q{i}' for i in range(1, 13)]].notna().all(axis=1).sum()
+    print(f"✅ Grouping completed: {len(df_result):,} rows")
+    print(f"   Students with full 12 questions: {full_questions:,}")
+    print(f"   Students with missing questions: {len(df_result) - full_questions:,}")
     
-    # Gán lại df thành df_result để upload
+    # Gán lại df
     df = df_result
     # ==================== 14. UPLOAD ====================
     print("📤 Uploading to Azure...")

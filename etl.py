@@ -1,4 +1,3 @@
-# etl.py - ĐÃ CHỈNH SỬA LOGIC LOP VÀ MASV + PIVOT
 import os
 import sys
 from azure.storage.blob import BlobServiceClient
@@ -211,11 +210,13 @@ try:
     # ==================== 15. KẾT QUẢ ====================
     print(f"\n{'='*50}")
     print(f"✅ SUCCESS!")
-    print(f"📊 Total rows (students per course): {len(df):,}")
+    print(f"📊 Total rows: {len(df):,}")
     print(f"📤 Uploaded to: processed-data/{output_path}")
     
     print(f"\n📋 Sample (first 3 rows):")
-    sample_cols = ['Lop', 'MaSV', 'HoDem', 'Ten', 'MaHP', 'TenHP', 'Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'Q6', 'Q7', 'Q8', 'Q9', 'Q10', 'Q11', 'Q12', 'Q13', 'Q14', 'Q15', 'Q16']
+    sample_cols = ['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
+    'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 'CauHoi', 'DanhGia',
+    'FB1', 'FB2', 'FB3', 'FB4']
     sample_cols = [c for c in sample_cols if c in df.columns]
     print(df[sample_cols].head(3).to_string(index=False))
     

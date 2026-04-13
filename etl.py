@@ -156,7 +156,43 @@ try:
                   'FB1', 'FB2', 'FB3', 'FB4', 'HocKy', 'NamHoc', 'ProcessedDate']
     
     df = df[[c for c in final_cols if c in df.columns]]
+    # ==================== 13.5. PIVOT DỮ LIỆU - MỖI SINH VIÊN 1 DÒNG ====================
+    print("🔄 Pivoting data - each student as one row...")
     
+    # Tạo dataframe chứa các cột cố định
+    fixed_cols = ['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
+                  'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 'HocKy', 'NamHoc', 'ProcessedDate']
+    
+    # Lấy các cột cố định (bỏ qua các dòng bị thiếu)
+    df_fixed = df[fixed_cols].drop_duplicates(subset=['MaSV', 'MaHP'])
+    
+    # Pivot cho Q1-Q12 (từ CauHoi và DanhGia)
+    df_q = df[['MaSV', 'MaHP', 'CauHoi', 'DanhGia']].dropna(subset=['CauHoi', 'DanhGia'])
+    df_q['CauHoi'] = df_q['CauHoi'].astype(int)
+    df_pivot_q = df_q.pivot_table(index=['MaSV', 'MaHP'], columns='CauHoi', values='DanhGia', aggfunc='first')
+    df_pivot_q.columns = [f'Q{col}' for col in df_pivot_q.columns]
+    
+    # Pivot cho Q13-Q16 (từ FB1-FB4)
+    df_fb = df[['MaSV', 'MaHP', 'FB1', 'FB2', 'FB3', 'FB4']].drop_duplicates(subset=['MaSV', 'MaHP'])
+    df_fb = df_fb.rename(columns={'FB1': 'Q13', 'FB2': 'Q14', 'FB3': 'Q15', 'FB4': 'Q16'})
+    
+    # Ghép các bảng lại
+    df_result = df_fixed.merge(df_pivot_q, on=['MaSV', 'MaHP'], how='left')
+    df_result = df_result.merge(df_fb, on=['MaSV', 'MaHP'], how='left')
+    
+    # Sắp xếp cột theo đúng thứ tự yêu cầu
+    final_cols_pivot = ['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
+                        'MaGV', 'HoDemGV', 'TenGV', 'LopHP',
+                        'Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'Q6', 'Q7', 'Q8', 'Q9', 'Q10', 'Q11', 'Q12',
+                        'Q13', 'Q14', 'Q15', 'Q16',
+                        'HocKy', 'NamHoc', 'ProcessedDate']
+    
+    df_result = df_result[[c for c in final_cols_pivot if c in df_result.columns]]
+    
+    print(f"✅ Pivot completed: {len(df_result):,} rows (each row = one student per course)")
+    
+    # Gán lại df thành df_result để upload
+    df = df_result
     # ==================== 14. UPLOAD ====================
     print("📤 Uploading to Azure...")
     output = df.to_csv(index=False, encoding='utf-8-sig')

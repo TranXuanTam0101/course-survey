@@ -3,132 +3,194 @@ import sys
 from azure.storage.blob import BlobServiceClient
 import pandas as pd
 import io
-import numpy as np
 from datetime import datetime
 import ftfy
+import re
+import numpy as np
 
-print("🚀 Starting Refined ETL Pipeline...")
+print("🚀 Starting ETL Pipeline (Optimized Version)...")
 
-# ==================== 1. CẤU HÌNH ====================
+# Lấy environment variables
 CONNECTION_STRING = os.environ.get("CONNECTION_STRING")
 SEMESTER = os.environ.get("SEMESTER")
 SURVEY_FILE = os.environ.get("SURVEY_FILE")
 
 if not CONNECTION_STRING or not SEMESTER or not SURVEY_FILE:
-    print("❌ Missing environment variables!")
+    print("❌ Missing required environment variables!")
     sys.exit(1)
 
-def clean_text(text):
-    if pd.isna(text) or str(text).strip().lower() in ['null', 'nan', '', 'none']:
+
+def clean_text(text, max_len=None):
+    """Sửa lỗi encoding tiếng Việt và làm sạch text"""
+    if pd.isna(text) or text in ['NULL', '', 'nan', None]:
         return None
-    return ftfy.fix_text(str(text)).strip()
-
-try:
-    # ==================== 2. TẢI DỮ LIỆU ====================
-    blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
-    blob_client = blob_service.get_container_client("rawdata").get_blob_client(f"{SEMESTER}/{SURVEY_FILE}")
-    data = blob_client.download_blob().readall()
+    text = str(text).strip()
     
-    # Thử đọc UTF-8 (65001), nếu lỗi dùng CP1258
+    if text.lower() == 'nan':
+        return None
+    
+    # Sửa lỗi encoding tiếng Việt bằng ftfy
+    if '?' in text or any(ord(c) > 127 and ord(c) < 256 for c in text):
+        text = ftfy.fix_text(text)
+    
+    text = text.strip()
+    
+    if max_len and len(text) > max_len:
+        text = text[:max_len]
+    
+    return text if text else None
+
+
+def convert_masv(value):
+    """Chuyển đổi mã sinh viên dạng 1.91122E+11 thành string bình thường"""
+    if pd.isna(value) or value in ['', 'NULL']:
+        return None
     try:
-        df_raw = pd.read_csv(io.BytesIO(data), sep='\t', header=None, dtype=str, encoding='utf-8-sig', low_memory=False)
+        # Xử lý scientific notation
+        return str(int(float(str(value).replace(',', ''))))
     except:
-        df_raw = pd.read_csv(io.BytesIO(data), sep='\t', header=None, dtype=str, encoding='cp1258', low_memory=False)
+        return str(value).strip()
 
-    print(f"✅ Loaded {len(df_raw):,} raw lines.")
 
-    # ==================== 3. DÒ TÌM MỐC CỘT (ANCHORING) ====================
-    # Tìm cột Ngày Sinh (dd/mm/yyyy)
-    date_pattern = r'\d{1,2}/\d{1,2}/\d{4}'
-    date_mask = df_raw.apply(lambda s: s.str.contains(date_pattern, na=False)).any()
-    date_idx = date_mask[date_mask == True].index[0]
-    
-    # Tìm cột Mã GV (Cột số sau MaHP)
-    search_gv = df_raw.iloc[:, date_idx + 2 : date_idx + 10]
-    magv_mask = search_gv.apply(lambda s: s.str.isdigit(), axis=0).any()
-    magv_idx = magv_mask[magv_mask == True].index[0]
+print("📥 Connecting to Azure Storage...")
+blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
+blob_client = blob_service.get_container_client("rawdata").get_blob_client(f"{SEMESTER}/{SURVEY_FILE}")
 
-    # ==================== 4. TRÍCH XUẤT THÔNG TIN ====================
-    df_processed = pd.DataFrame()
-    
-    # Thông tin Sinh viên
-    df_processed['Lop'] = df_raw[0].apply(clean_text)
-    df_processed['MaSV'] = df_raw[1].apply(clean_text)
-    
-    hoten_sv = df_raw.iloc[:, 2:date_idx].fillna('').agg(' '.join, axis=1).str.split()
-    df_processed['Ten'] = hoten_sv.str[-1].apply(clean_text)
-    df_processed['HoDem'] = hoten_sv.str[:-1].str.join(' ').apply(clean_text)
-    df_processed['NgaySinh'] = df_raw[date_idx].apply(clean_text)
-    
-    # Thông tin Học phần & Giảng viên
-    df_processed['MaHP'] = df_raw[date_idx + 1].apply(clean_text)
-    df_processed['TenHP'] = df_raw.iloc[:, date_idx + 2 : magv_idx].fillna('').agg(' '.join, axis=1).apply(clean_text)
-    
-    df_processed['MaGV'] = df_raw[magv_idx].apply(clean_text)
-    df_processed['HoDemGV'] = df_raw[magv_idx + 1].apply(clean_text)
-    df_processed['TenGV'] = df_raw[magv_idx + 2].apply(clean_text)
-    df_processed['LopHP'] = df_raw[magv_idx + 3].apply(clean_text)
-    
-    # Câu hỏi & Đánh giá (Q1-Q12 nằm ở cột dọc)
-    df_processed['CauHoi'] = pd.to_numeric(df_raw[magv_idx + 4], errors='coerce')
-    df_processed['DanhGia'] = df_raw[magv_idx + 5].apply(clean_text)
+data = blob_client.download_blob().readall()
+print(f"✅ Downloaded {len(data) / 1024 / 1024:.2f} MB")
 
-    # Feedback (Q13-Q16 nằm ở các cột ngang sau cột Đánh giá)
-    for i, q_num in enumerate(range(13, 17)):
-        fb_idx = magv_idx + 6 + i
-        if fb_idx < len(df_raw.columns):
-            df_processed[f'Q{q_num}'] = df_raw[fb_idx].apply(clean_text)
+# ==================== ĐỌC FILE (rất quan trọng với encoding) ====================
+print("📊 Reading CSV...")
 
-    # ==================== 5. TẠO ID & PIVOT DỮ LIỆU ====================
-    # Tạo ID duy nhất cho bảng SINH_VIEN
-    df_processed['ID'] = (
-        df_processed['Lop'].fillna('') + '|' + 
-        df_processed['MaSV'].fillna('') + '|' + 
-        df_processed['HoDem'].fillna('') + '|' + 
-        df_processed['Ten'].fillna('') + '|' + 
-        df_processed['NgaySinh'].fillna('')
+df = pd.read_csv(
+    io.BytesIO(data),
+    sep='\t',           # Dữ liệu của bạn dùng tab
+    header=None,
+    dtype=str,
+    encoding='cp1258',  # Windows-1258 thường dùng cho tiếng Việt cũ
+    on_bad_lines='skip',
+    low_memory=False
+)
+
+print(f"✅ Read {len(df):,} rows, {len(df.columns)} columns")
+
+# ==================== XÁC ĐỊNH VỊ TRÍ CÁC CỘT ====================
+# Dựa trên dữ liệu mẫu bạn đưa ra
+col_names = [
+    'Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 
+    'MaHP', 'TenHP', 'MaGV', 'HoDemGV', 'TenGV', 
+    'LopHP', 'CauHoi', 'DanhGia', 'NULL1', 'Q13', 'Q14', 'Q15', 'Q16'
+]
+
+# Gán tên cột (nếu số cột không khớp sẽ tự điều chỉnh)
+if len(df.columns) >= len(col_names):
+    df.columns = col_names[:len(df.columns)]
+else:
+    df.columns = [f'Col_{i}' for i in range(len(df.columns))]
+
+print(f"Columns after naming: {df.columns.tolist()}")
+
+# ==================== LÀM SẠCH DỮ LIỆU ====================
+print("🧹 Cleaning data...")
+
+df['Lop'] = df['Lop'].apply(clean_text)
+df['MaSV'] = df['MaSV'].apply(convert_masv)
+df['HoDem'] = df['HoDem'].apply(clean_text)
+df['Ten'] = df['Ten'].apply(clean_text)
+df['NgaySinh'] = df['NgaySinh'].apply(clean_text)
+df['MaHP'] = df['MaHP'].apply(clean_text)
+df['TenHP'] = df['TenHP'].apply(clean_text)
+df['MaGV'] = df['MaGV'].apply(clean_text)
+df['HoDemGV'] = df['HoDemGV'].apply(clean_text)
+df['TenGV'] = df['TenGV'].apply(clean_text)
+df['LopHP'] = df['LopHP'].apply(clean_text)
+
+# Câu hỏi và đánh giá
+df['CauHoi'] = pd.to_numeric(df.get('CauHoi'), errors='coerce')
+df['DanhGia'] = pd.to_numeric(df.get('DanhGia'), errors='coerce')
+
+# Feedback Q13 - Q16
+for i, q in enumerate(['Q13', 'Q14', 'Q15', 'Q16'], start=14):
+    if q in df.columns:
+        df[q] = df[q].apply(lambda x: clean_text(x, max_len=1000))
+
+# ==================== THÊM METADATA ====================
+df['HocKy'] = 2 if "252" in SURVEY_FILE else 1
+df['NamHoc'] = SEMESTER
+df['ProcessedDate'] = datetime.now()
+
+# ==================== TẠO KHÓA SINH VIÊN ====================
+df['StudentKey'] = (
+    df['Lop'].fillna('') + '|' +
+    df['MaSV'].fillna('') + '|' +
+    df['HoDem'].fillna('') + '|' +
+    df['Ten'].fillna('') + '|' +
+    df['NgaySinh'].fillna('')
+)
+
+# Tạo ID sinh viên duy nhất
+unique_students = df['StudentKey'].unique()
+student_id_map = {key: f"SV{idx+1:06d}" for idx, key in enumerate(unique_students)}
+df['ID'] = df['StudentKey'].map(student_id_map)
+
+# Lấy thông tin cơ bản của sinh viên (lấy dòng đầu tiên)
+df_basic = df.groupby('StudentKey').first().reset_index()
+
+# ==================== PIVOT CÂU HỎI 1-12 ====================
+print("🔄 Pivoting questions Q1-Q12...")
+
+df_questions = df[df['CauHoi'].between(1, 12)].copy()
+
+# Tạo tất cả các tổ hợp sinh viên - câu hỏi (để đảm bảo đủ 12 câu)
+all_students = df_basic['StudentKey'].unique()
+complete_combinations = pd.DataFrame([
+    {'StudentKey': student, 'CauHoi': q} 
+    for student in all_students 
+    for q in range(1, 13)
+])
+
+if len(df_questions) > 0:
+    df_merged = complete_combinations.merge(
+        df_questions[['StudentKey', 'CauHoi', 'DanhGia']], 
+        on=['StudentKey', 'CauHoi'], 
+        how='left'
     )
+else:
+    df_merged = complete_combinations.copy()
+    df_merged['DanhGia'] = None
 
-    # Các cột giữ cố định khi Pivot
-    index_cols = ['ID', 'Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 
-                  'MaHP', 'TenHP', 'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 
-                  'Q13', 'Q14', 'Q15', 'Q16']
-    
-    # Thực hiện Pivot để đưa Q1-Q12 từ dòng thành cột
-    df_pivot = df_processed.pivot_table(
-        index=[c for c in index_cols if c in df_processed.columns],
-        columns='CauHoi',
-        values='DanhGia',
-        aggfunc='first'
-    ).reset_index()
+# Pivot
+pivot_q = df_merged.pivot_table(
+    index='StudentKey',
+    columns='CauHoi',
+    values='DanhGia',
+    aggfunc='first'
+).reset_index()
 
-    # Đổi tên cột 1.0, 2.0 -> Q1, Q2...
-    df_pivot.columns = [f'Q{int(float(c))}' if str(c).replace('.0','').isdigit() else c for c in df_pivot.columns]
+pivot_q.columns = ['StudentKey'] + [f'Q{int(col)}' for col in pivot_q.columns if col != 'StudentKey']
 
-    # Bổ sung Metadata
-    df_pivot['NamHoc'] = SEMESTER
-    df_pivot['HocKy'] = 2 if "252" in SURVEY_FILE else 1
+# Merge với thông tin cơ bản
+df_final = df_basic.merge(pivot_q, on='StudentKey', how='left')
 
-    # ==================== 6. XUẤT KẾT QUẢ ====================
-    TEMP_FILE = "processed_data_temp.csv"
-    df_pivot.to_csv(TEMP_FILE, index=False, encoding='utf-8-sig')
-    
-    print("\n--- 📋 Sample Data Preview ---")
-    print(df_pivot[['ID', 'MaSV', 'MaHP', 'Q1', 'Q13']].head(3).to_string(index=False))
-    print(f"\n✅ Total records: {len(df_pivot):,}")
-    
-    # Upload lên Azure (Tùy chọn lưu trữ lại)
-    processed_container = blob_service.get_container_client("processed-data")
-    if not processed_container.exists(): processed_container.create_container()
-    
-    output_path = f"{SEMESTER}/{SURVEY_FILE.replace('.csv', '_final.csv')}"
-    with open(TEMP_FILE, "rb") as f:
-        processed_container.upload_blob(name=output_path, data=f, overwrite=True)
+# Thêm Q13-Q16
+for q in ['Q13', 'Q14', 'Q15', 'Q16']:
+    if q in df.columns:
+        q_values = df.groupby('StudentKey')[q].first()
+        df_final[q] = df_final['StudentKey'].map(q_values)
 
-    print(f"🚀 ETL Process Finished. File {TEMP_FILE} is ready for SQL Load.")
+# ==================== CHỌN CỘT CUỐI CÙNG ====================
+final_cols = [
+    'ID', 'Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh',
+    'MaHP', 'TenHP', 'MaGV', 'HoDemGV', 'TenGV', 'LopHP'
+] + [f'Q{i}' for i in range(1, 17)] + ['HocKy', 'NamHoc', 'ProcessedDate']
 
-except Exception as e:
-    print(f"❌ ERROR: {str(e)}")
-    import traceback
-    traceback.print_exc()
-    sys.exit(1)
+final_cols_existing = [c for c in final_cols if c in df_final.columns]
+df_final = df_final[final_cols_existing]
+
+df_final = df_final.sort_values('ID').reset_index(drop=True)
+
+print(f"✅ Final dataset: {len(df_final):,} students, {len(df_final.columns)} columns")
+print(df_final.head())
+
+# Nếu muốn lưu để kiểm tra:
+# df_final.to_excel(f"processed_{SURVEY_FILE.replace('.txt','.xlsx')}", index=False)

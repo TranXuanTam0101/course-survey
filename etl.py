@@ -7,6 +7,9 @@ from datetime import datetime
 import ftfy
 import re
 import numpy as np
+import sqlalchemy as sa
+from sqlalchemy import create_engine
+import urllib
 
 print("🚀 Starting ETL Pipeline (Optimized Version)...")
 
@@ -263,9 +266,6 @@ try:
                    'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 'Q1', 'Q2', 'Q3', 'Q13', 'Q14', 'Q15', 'Q16']
     sample_cols = [c for c in sample_cols if c in df_final.columns]
     print(df_final[sample_cols].head(3).to_string(index=False))
-    import sqlalchemy as sa
-from sqlalchemy import create_engine
-import urllib
 
 # ==================== 17. ĐẨY DỮ LIỆU LÊN SQL AZURE ====================
 print("🗄️ Connecting to SQL Azure...")

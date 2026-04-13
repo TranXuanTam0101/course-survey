@@ -59,11 +59,25 @@ try:
     
     print(f"✅ Read {len(df):,} rows, {len(df.columns)} columns")
     
-    # ==================== 3. XỬ LÝ LOP ====================
-    df['Lop'] = df[0].astype(str).str.split(r'[\t ]').str[0]
+    # ==================== 3. XỬ LÝ LOP VÀ MASV ====================
+    # Lop là cụm đầu tiên trước dấu cách, sau dấu cách là MaSV
+    # Ví dụ: "45K05 91122E+11" -> Lop = "45K05", MaSV = "91122E+11"
     
-    # ==================== 4. XỬ LÝ MASV ====================
-    df['MaSV'] = df[1].apply(convert_masv)
+    # Tách cột 0 thành Lop và MaSV dựa trên dấu cách hoặc tab
+    lop_masv_split = df[0].astype(str).str.split(r'[\t ]', expand=True)
+    
+    # Lop: phần tử đầu tiên (trước dấu cách)
+    df['Lop'] = lop_masv_split[0]
+    
+    # MaSV: phần tử thứ hai (sau dấu cách), chuyển đổi từ E+ sang số
+    if len(lop_masv_split.columns) > 1:
+        df['MaSV_raw'] = lop_masv_split[1]
+        df['MaSV'] = df['MaSV_raw'].apply(convert_masv)
+    else:
+        df['MaSV'] = None
+    
+    # Xóa cột MaSV_raw tạm thời
+    df = df.drop(columns=['MaSV_raw']) if 'MaSV_raw' in df.columns else df
     
     # ==================== 5. TÌM NGÀY SINH ====================
     date_pattern = r'\d{1,2}/\d{1,2}/\d{4}'

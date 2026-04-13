@@ -167,11 +167,6 @@ print(f"\n🎉 Hoàn tất xử lý! Final dataset: {len(df_final):,} sinh viên
 # ==================== XUẤT FILE KẾT QUẢ ====================
 print("💾 Saving processed file...")
 
-# 1. Lưu file local (để kiểm tra)
-local_filename = f"{SURVEY_FILE.replace('.txt','').replace('.csv','')}_processed.csv"
-df_final.to_csv(local_filename, index=False, encoding='utf-8-sig')
-print(f"✅ Saved locally: {local_filename}")
-
 # 2. Upload lên Azure Blob
 print("📤 Uploading to Azure Storage...")
 output_path = f"{SEMESTER}/{SURVEY_FILE.replace('.txt','').replace('.csv','')}_processed.csv"

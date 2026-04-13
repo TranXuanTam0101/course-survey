@@ -6,8 +6,9 @@ import io
 from datetime import datetime
 import ftfy
 import re
+import numpy as np
 
-print("🚀 Starting ETL Pipeline...")
+print("🚀 Starting ETL Pipeline (Optimized)")
 
 # Lấy environment variables
 CONNECTION_STRING = os.environ.get("CONNECTION_STRING")
@@ -37,7 +38,7 @@ def convert_masv(value):
         return value
 
 try:
-    # ==================== 1. ĐỌC FILE ====================
+    # ==================== 1. ĐỌC FILE TỐI ƯU ====================
     print("📥 Connecting to Azure Storage...")
     blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
     blob_client = blob_service.get_container_client("rawdata").get_blob_client(f"{SEMESTER}/{SURVEY_FILE}")
@@ -45,9 +46,9 @@ try:
     data = blob_client.download_blob().readall()
     print(f"✅ Downloaded {len(data) / 1024 / 1024:.2f} MB")
     
-    # ==================== 2. ĐỌC CSV ====================
+    # ==================== 2. ĐỌC CSV TỐI ƯU ====================
     print("📊 Reading CSV...")
-
+    # Đọc toàn bộ với dtype object để tránh chậm
     df = pd.read_csv(
         io.BytesIO(data),
         sep='\t',
@@ -59,16 +60,17 @@ try:
     
     print(f"✅ Read {len(df):,} rows, {len(df.columns)} columns")
     
-    # ==================== 3. XỬ LÝ LOP ====================
-    # Lop là cụm đầu tiên trước dấu cách
+    # ==================== 3-11. XỬ LÝ CÁC CỘT CƠ BẢN ====================
+    # Vectorized operations thay vì apply
+    
+    # Lop
     df['Lop'] = df[0].astype(str).str.split(' ').str[0]
     
-    # ==================== 4. XỬ LÝ MASV ====================
-    # MaSV là cụm chuỗi số sau dấu cách đầu tiên trong cột 1
+    # MaSV
     df['MaSV_raw'] = df[1].astype(str).str.split(' ').str[0]
     df['MaSV'] = df['MaSV_raw'].apply(convert_masv)
     
-    # ==================== 5. TÌM NGÀY SINH ====================
+    # Tìm ngày sinh
     date_pattern = r'\d{1,2}/\d{1,2}/\d{4}'
     ngaysinh_col = -1
     for col in range(2, min(10, len(df.columns))):
@@ -80,47 +82,47 @@ try:
     if ngaysinh_col == -1:
         df['NgaySinh'] = None
     
-    # ==================== 6. XỬ LÝ HỌ TÊN SINH VIÊN ====================
+    # Họ tên SV
     if ngaysinh_col > 2:
-        hoten_sv = df[list(range(2, ngaysinh_col))].astype(str).apply(lambda x: ' '.join(x), axis=1)
+        hoten_sv = df[list(range(2, ngaysinh_col))].astype(str).agg(' '.join, axis=1)
         df['Ten'] = hoten_sv.str.split().str[-1].apply(clean_text)
         df['HoDem'] = hoten_sv.str.split().str[:-1].apply(lambda x: ' '.join(x) if len(x) > 0 else None).apply(clean_text)
     else:
         df['Ten'] = None
         df['HoDem'] = None
     
-    # ==================== 7. MÃ HỌC PHẦN ====================
+    # Mã HP
     maHP_col = ngaysinh_col + 1 if ngaysinh_col > 0 else 5
     df['MaHP'] = df[maHP_col] if maHP_col < len(df.columns) else None
     
-    # ==================== 8. TÌM MÃ GIẢNG VIÊN ====================
+    # Tìm mã GV
     magv_col = -1
     for col in range(maHP_col + 1, min(maHP_col + 10, len(df.columns))):
         if df[col].astype(str).str.match(r'^\d+$', na=False).any():
             magv_col = col
             break
     
-    # Tên học phần
+    # Tên HP
     if magv_col > maHP_col + 1:
         tenhp_cols = list(range(maHP_col + 1, magv_col))
-        df['TenHP'] = df[tenhp_cols].astype(str).apply(lambda x: ' '.join(x), axis=1).apply(clean_text)
+        df['TenHP'] = df[tenhp_cols].astype(str).agg(' '.join, axis=1).apply(clean_text)
     else:
         df['TenHP'] = None
     
     # Mã GV
     df['MaGV'] = df[magv_col] if magv_col > 0 else None
     
-    # ==================== 9. TÌM LỚP HỌC PHẦN ====================
+    # Tìm lớp HP
     lophp_col = -1
     for col in range(magv_col + 1, min(magv_col + 10, len(df.columns))):
         if df[col].astype(str).str.contains('_', na=False).any():
             lophp_col = col
             break
     
-    # Tên giảng viên
+    # Tên GV
     if lophp_col > magv_col + 1:
         hoten_gv_cols = list(range(magv_col + 1, lophp_col))
-        hoten_gv = df[hoten_gv_cols].astype(str).apply(lambda x: ' '.join(x), axis=1)
+        hoten_gv = df[hoten_gv_cols].astype(str).agg(' '.join, axis=1)
         df['TenGV'] = hoten_gv.str.split().str[-1].apply(clean_text)
         df['HoDemGV'] = hoten_gv.str.split().str[:-1].apply(lambda x: ' '.join(x) if len(x) > 0 else None).apply(clean_text)
     else:
@@ -130,36 +132,67 @@ try:
     # Lớp HP
     df['LopHP'] = df[lophp_col] if lophp_col > 0 else None
     
-    # ==================== 10. CÂU HỎI VÀ ĐÁNH GIÁ ====================
+    # ==================== 12. LẤY CÂU HỎI & ĐÁNH GIÁ ====================
     cauhoi_col = lophp_col + 1 if lophp_col > 0 else 11
     df['CauHoi'] = pd.to_numeric(df[cauhoi_col], errors='coerce') if cauhoi_col < len(df.columns) else None
     
     danhgia_col = cauhoi_col + 1
     df['DanhGia'] = pd.to_numeric(df[danhgia_col], errors='coerce') if danhgia_col < len(df.columns) else None
     
-    # ==================== 11. PHẢN HỒI FB1-FB4 ====================
+    # ==================== 13. ĐỔI TÊN FB1-FB4 THÀNH Q13-Q16 ====================
     fb_start = 14
     
-    df['FB1'] = df[fb_start].apply(clean_text) if fb_start < len(df.columns) else None
-    df['FB2'] = df[fb_start + 1].apply(clean_text) if fb_start + 1 < len(df.columns) else None
-    df['FB3'] = df[fb_start + 2].apply(clean_text) if fb_start + 2 < len(df.columns) else None
-    df['FB4'] = df[fb_start + 3].apply(clean_text) if fb_start + 3 < len(df.columns) else None
+    df['Q13'] = df[fb_start].apply(clean_text) if fb_start < len(df.columns) else None
+    df['Q14'] = df[fb_start + 1].apply(clean_text) if fb_start + 1 < len(df.columns) else None
+    df['Q15'] = df[fb_start + 2].apply(clean_text) if fb_start + 2 < len(df.columns) else None
+    df['Q16'] = df[fb_start + 3].apply(clean_text) if fb_start + 3 < len(df.columns) else None
     
-    # ==================== 12. THÊM METADATA ====================
+    # ==================== 14. THÊM METADATA ====================
     df['HocKy'] = 2 if "252" in SURVEY_FILE else 1
     df['NamHoc'] = SEMESTER
     df['ProcessedDate'] = datetime.now()
     
-    # ==================== 13. CHỌN CỘT ====================
-    final_cols = ['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
-                  'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 'CauHoi', 'DanhGia',
-                  'FB1', 'FB2', 'FB3', 'FB4', 'HocKy', 'NamHoc', 'ProcessedDate']
+    # ==================== 15. GỘP 12 DÒNG/SINH VIÊN (QUAN TRỌNG) ====================
+    print("🔄 Merging 12 questions per student...")
     
-    df = df[[c for c in final_cols if c in df.columns]]
+    # Lọc chỉ lấy các câu hỏi 1-12
+    df_q1_q12 = df[(df['CauHoi'] >= 1) & (df['CauHoi'] <= 12)].copy()
     
-    # ==================== 14. UPLOAD ====================
+    # Tạo cột Q{so_cau_hoi} từ DanhGia
+    df_q1_q12['Q_col'] = 'Q' + df_q1_q12['CauHoi'].astype(int).astype(str)
+    
+    # Pivot để chuyển 12 dòng thành cột
+    pivot_q = df_q1_q12.pivot_table(
+        index=['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP', 
+               'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 'HocKy', 'NamHoc'],
+        columns='Q_col',
+        values='DanhGia',
+        aggfunc='first'
+    ).reset_index()
+    
+    # Lấy các cột Q13-Q16 (chỉ 1 dòng mỗi SV, lấy giá trị đầu tiên)
+    df_q13_q16 = df.groupby(['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
+                              'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 'HocKy', 'NamHoc'])[['Q13', 'Q14', 'Q15', 'Q16']].first().reset_index()
+    
+    # Merge lại
+    df_final = pivot_q.merge(df_q13_q16, on=['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
+                                               'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 'HocKy', 'NamHoc'], how='left')
+    
+    # Đảm bảo có đủ các cột Q1-Q12 (nếu thiếu thì thêm NaN)
+    for i in range(1, 13):
+        col_name = f'Q{i}'
+        if col_name not in df_final.columns:
+            df_final[col_name] = np.nan
+    
+    # Sắp xếp cột theo đúng thứ tự yêu cầu
+    final_cols = ['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP', 
+                  'MaGV', 'HoDemGV', 'TenGV', 'LopHP'] + [f'Q{i}' for i in range(1, 17)] + ['HocKy', 'NamHoc']
+    
+    df_final = df_final[final_cols]
+    
+    # ==================== 16. UPLOAD ====================
     print("📤 Uploading to Azure...")
-    output = df.to_csv(index=False, encoding='utf-8-sig')
+    output = df_final.to_csv(index=False, encoding='utf-8-sig')
     output_path = f"{SEMESTER}/{SURVEY_FILE.replace('.csv', '_processed.csv')}"
     
     processed_container = blob_service.get_container_client("processed-data")
@@ -168,19 +201,18 @@ try:
     
     processed_container.get_blob_client(output_path).upload_blob(output, overwrite=True)
     
-    # ==================== 15. KẾT QUẢ ====================
+    # ==================== 17. KẾT QUẢ ====================
     print(f"\n{'='*50}")
     print(f"✅ SUCCESS!")
-    print(f"📊 Total rows: {len(df):,}")
+    print(f"📊 Original rows: {len(df):,}")
+    print(f"📊 Final rows (unique students): {len(df_final):,}")
     print(f"📤 Uploaded to: processed-data/{output_path}")
     
-    print(f"\n📋 Sample (first 3 rows):")
-    sample_cols = ['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
-    'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 'CauHoi', 'DanhGia',
-    'FB1', 'FB2', 'FB3', 'FB4']
-    sample_cols = [c for c in sample_cols if c in df.columns]
-    print(df[sample_cols].head(3).to_string(index=False))
+    print(f"\n📋 Sample (first 3 students):")
+    print(df_final.head(3).to_string(index=False))
     
 except Exception as e:
     print(f"❌ ERROR: {str(e)}")
+    import traceback
+    traceback.print_exc()
     sys.exit(1)

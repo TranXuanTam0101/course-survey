@@ -47,16 +47,18 @@ try:
     
     # ==================== 2. ĐỌC CSV ====================
     print("📊 Reading CSV...")
+    print("   - Encoding: UTF-8 (65001)")
+    print("   - Delimiter: Tab (\\t)")
+    print("   - Data type detection: Disabled (all columns as string)")
     
-    # OPTIMIZATION: Use chunking and only necessary columns
-    # First, read with low_memory=False but use specific dtypes
+    # Đọc với UTF-8 encoding và không tự động phát hiện kiểu dữ liệu
     df = pd.read_csv(
         io.BytesIO(data),
-        sep='\t',
-        header=None,
-        dtype=str,
-        encoding='cp1258',
-        low_memory=False
+        sep='\t',                    # Delimiter là Tab
+        header=None,                 # File không có header
+        dtype=str,                   # Không tự động phát hiện kiểu dữ liệu
+        encoding='utf-8',            # Đổi từ cp1258 sang utf-8 (65001)
+        low_memory=False             # Đọc toàn bộ vào memory
     )
     
     print(f"✅ Read {len(df):,} rows, {len(df.columns)} columns")
@@ -139,35 +141,33 @@ try:
     danhgia_col = cauhoi_col + 1
     df['DanhGia'] = pd.to_numeric(df[danhgia_col], errors='coerce') if danhgia_col < len(df.columns) else None
     
-    # OPTIMIZATION: Create Q1->Q12 from DanhGia based on CauHoi using vectorized operations
-    # Group by student and question to pivot the data
-    # First, filter out null values
+    # Tạo Q1->Q12 từ DanhGia dựa trên CauHoi
     mask = df['CauHoi'].notna() & df['DanhGia'].notna()
     
-    # Create temporary dataframe for pivoting
-    temp_df = df[mask].copy()
-    temp_df['CauHoi_int'] = temp_df['CauHoi'].astype(int)
+    if mask.any():
+        temp_df = df[mask].copy()
+        temp_df['CauHoi_int'] = temp_df['CauHoi'].astype(int)
+        
+        pivot_df = temp_df.pivot_table(
+            index=temp_df.index, 
+            columns='CauHoi_int', 
+            values='DanhGia',
+            aggfunc='first'
+        )
+        
+        for i in range(1, 13):
+            col_name = f'Q{i}'
+            if i in pivot_df.columns:
+                df[col_name] = pivot_df[i]
+            else:
+                df[col_name] = None
+    else:
+        for i in range(1, 13):
+            df[f'Q{i}'] = None
     
-    # Pivot to get Q1-Q12
-    pivot_df = temp_df.pivot_table(
-        index=temp_df.index, 
-        columns='CauHoi_int', 
-        values='DanhGia',
-        aggfunc='first'
-    )
-    
-    # Rename columns to Q1-Q12
-    for i in range(1, 13):
-        col_name = f'Q{i}'
-        if i in pivot_df.columns:
-            df[col_name] = pivot_df[i]
-        else:
-            df[col_name] = None
-    
-    # ==================== 11. PHẢN HỒI - ĐỔI TÊN FB1-FB4 THÀNH Q13-Q16 ====================
+    # ==================== 11. PHẢN HỒI Q13-Q16 ====================
     fb_start = 14
     
-    # Rename FB1->FB4 to Q13->Q16
     df['Q13'] = df[fb_start].apply(clean_text) if fb_start < len(df.columns) else None
     df['Q14'] = df[fb_start + 1].apply(clean_text) if fb_start + 1 < len(df.columns) else None
     df['Q15'] = df[fb_start + 2].apply(clean_text) if fb_start + 2 < len(df.columns) else None
@@ -179,18 +179,17 @@ try:
     df['ProcessedDate'] = datetime.now()
     
     # ==================== 13. CHỌN CỘT ====================
-    # Add Q1-Q16 to final columns
     q_columns = [f'Q{i}' for i in range(1, 17)]
     final_cols = ['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
                   'MaGV', 'HoDemGV', 'TenGV', 'LopHP'] + q_columns + ['HocKy', 'NamHoc', 'ProcessedDate']
     
     df = df[[c for c in final_cols if c in df.columns]]
     
-    # OPTIMIZATION: Drop intermediate columns to free memory
-    if 'MaSV_raw' in df.columns:
-        df.drop('MaSV_raw', axis=1, inplace=True)
-    if 'CauHoi_int' in df.columns:
-        df.drop('CauHoi_int', axis=1, inplace=True)
+    # Dọn dẹp các cột tạm thời
+    temp_cols = ['MaSV_raw', 'CauHoi_int']
+    for col in temp_cols:
+        if col in df.columns:
+            df.drop(col, axis=1, inplace=True)
     
     # ==================== 14. UPLOAD ====================
     print("📤 Uploading to Azure...")
@@ -210,11 +209,13 @@ try:
     print(f"📤 Uploaded to: processed-data/{output_path}")
     
     print(f"\n📋 Sample (first 3 rows):")
-    sample_cols = ['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP',
-                   'MaGV', 'HoDemGV', 'TenGV', 'LopHP'] + [f'Q{i}' for i in range(1, 5)]
+    sample_cols = ['Lop', 'MaSV', 'HoDem', 'Ten', 'MaHP', 'TenHP', 'Q1', 'Q2', 'Q13', 'Q14']
     sample_cols = [c for c in sample_cols if c in df.columns]
-    print(df[sample_cols].head(3).to_string(index=False))
+    if sample_cols:
+        print(df[sample_cols].head(3).to_string(index=False))
     
 except Exception as e:
     print(f"❌ ERROR: {str(e)}")
+    import traceback
+    traceback.print_exc()
     sys.exit(1)

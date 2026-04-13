@@ -180,7 +180,7 @@ try:
     'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 'CauHoi', 'DanhGia',
     'FB1', 'FB2', 'FB3', 'FB4']
     sample_cols = [c for c in sample_cols if c in df.columns]
-    print(df[sample_cols].head(3).to_string(index=False))
+    print(df[sample_cols].head(20).to_string(index=False))
     
 except Exception as e:
     print(f"❌ ERROR: {str(e)}")

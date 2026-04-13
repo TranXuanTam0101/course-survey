@@ -275,68 +275,46 @@ sql_server = os.environ.get("course-survey.database.windows.net")
 sql_db = os.environ.get("course-survey-db")
 sql_user = os.environ.get("sqladmin")
 sql_pass = os.environ.get("Due@2026")
-
-# Tạo Connection String cho SQLAlchemy
 params = urllib.parse.quote_plus(
-    f"DRIVER={{ODBC Driver 18 for SQL Server}};"
-    f"SERVER={sql_server};"
-    f"DATABASE={sql_db};"
-    f"UID={sql_user};"
-    f"PWD={sql_pass};"
-    "Encrypt=yes;"
-    "TrustServerCertificate=no;"
-    "Connection Timeout=30;"
-)
-engine = create_engine(f"mssql+pyodbc:///?odbc_connect={params}", fast_executemany=True)
+        f"DRIVER={{ODBC Driver 18 for SQL Server}};"
+        f"SERVER={sql_server};"
+        f"DATABASE={sql_db};"
+        f"UID={sql_user};"
+        f"PWD={sql_pass};"
+        "Encrypt=yes;"
+        "TrustServerCertificate=no;"
+        "Connection Timeout=30;"
+    )
+    engine = create_engine(f"mssql+pyodbc:///?odbc_connect={params}", fast_executemany=True)
 
-try:
     with engine.connect() as conn:
-        # 1. Đẩy vào bảng SINH_VIEN (Chỉ lấy các cột tương ứng trong bảng SINH_VIEN)
-        print("   - Upserting SINH_VIEN...")
-        df_sv = df_final[['ID', 'MaSV', 'Lop', 'HoDem', 'Ten', 'NgaySinh']].drop_duplicates()
-        # Lưu ý: Nếu muốn tránh lỗi trùng khóa chính, ta nên xử lý logic cập nhật 
-        # Ở đây dùng to_sql đơn giản (phù hợp nếu data sạch hoặc xóa bảng trước khi chạy)
-        df_sv.to_sql('SINH_VIEN', conn, if_exists='append', index=False)
-
-        # 2. Đẩy vào bảng HOC_PHAN
-        print("   - Upserting HOC_PHAN...")
+        print("   - Upserting Data Tables...")
+        # Sử dụng phương thức to_sql
+        df_final[['ID', 'MaSV', 'Lop', 'HoDem', 'Ten', 'NgaySinh']].drop_duplicates().to_sql('SINH_VIEN', conn, if_exists='append', index=False)
+        
         df_hp = df_final[['MaHP', 'TenHP']].drop_duplicates().dropna(subset=['MaHP'])
         df_hp.to_sql('HOC_PHAN', conn, if_exists='append', index=False)
-
-        # 3. Đẩy vào bảng GIANG_VIEN
-        print("   - Upserting GIANG_VIEN...")
+        
         df_gv = df_final[['MaGV', 'HoDemGV', 'TenGV']].drop_duplicates().dropna(subset=['MaGV'])
         df_gv.to_sql('GIANG_VIEN', conn, if_exists='append', index=False)
-
-        # 4. Đẩy vào bảng LOP_HOC_PHAN
-        print("   - Upserting LOP_HOC_PHAN...")
-        df_lhp = df_final[['LopHP', 'MaHP', 'MaGV', 'HocKy', 'NamHoc']].copy()
-        df_lhp.columns = ['MaLopHP', 'MaHP', 'MaGV', 'HocKy', 'NamHoc'] # Map lại tên cột
-        df_lhp = df_lhp.drop_duplicates().dropna(subset=['MaLopHP'])
-        df_lhp.to_sql('LOP_HOC_PHAN', conn, if_exists='append', index=False)
-
-        # 5. Đẩy vào bảng PHIEU_KHAO_SAT (Fact)
-        print("   - Inserting PHIEU_KHAO_SAT...")
-        # Map cột từ df_final sang cấu trúc bảng SQL
-        fact_cols = {
-            'ID': 'ID_SV',
-            'LopHP': 'MaLopHP',
-            'HocKy': 'HocKy',
-            'NamHoc': 'NamHoc'
-        }
-        # Thêm Q1-Q16
-        for i in range(1, 17):
-            fact_cols[f'Q{i}'] = f'Q{i}'
-            
-        df_fact = df_final[list(fact_cols.keys())].copy()
-        df_fact.rename(columns=fact_cols, inplace=True)
         
+        df_lhp = df_final[['LopHP', 'MaHP', 'MaGV', 'HocKy', 'NamHoc']].copy()
+        df_lhp.columns = ['MaLopHP', 'MaHP', 'MaGV', 'HocKy', 'NamHoc']
+        df_lhp.drop_duplicates().dropna(subset=['MaLopHP']).to_sql('LOP_HOC_PHAN', conn, if_exists='append', index=False)
+
+        # Đẩy vào bảng Fact
+        fact_cols = {'ID': 'ID_SV', 'LopHP': 'MaLopHP', 'HocKy': 'HocKy', 'NamHoc': 'NamHoc'}
+        for i in range(1, 17): fact_cols[f'Q{i}'] = f'Q{i}'
+        df_fact = df_final[list(fact_cols.keys())].copy().rename(columns=fact_cols)
         df_fact.to_sql('PHIEU_KHAO_SAT', conn, if_exists='append', index=False)
 
-    print("✅ All data pushed to SQL Azure successfully!")
+    print("✅ All steps completed successfully!")
 
-except Exception as sql_e:
-    print(f"❌ SQL ERROR: {str(sql_e)}")
+except Exception as e:
+    print(f"❌ ERROR: {str(e)}")
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
     # ==================== SỬA LỖI THỐNG KÊ ====================
     print(f"\n📊 Statistics:")
     # Đếm số sinh viên có ít nhất 1 câu trả lời (không null) cho Q1-Q12

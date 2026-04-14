@@ -8,7 +8,7 @@ import ftfy
 import sqlalchemy as sa
 import urllib
 
-print("🚀 Starting Optimized ETL Pipeline + SQL Load (Fixed Truncation Error)...")
+print("🚀 Starting Optimized ETL Pipeline for Clean Data + SQL Load...")
 
 # ==================== ENVIRONMENT VARIABLES ====================
 CONNECTION_STRING = os.environ.get("CONNECTION_STRING")
@@ -19,15 +19,14 @@ if not CONNECTION_STRING or not SEMESTER or not SURVEY_FILE:
     print("❌ Missing required environment variables!")
     sys.exit(1)
 
-# ==================== HÀM LÀM SẠCH (Cải tiến) ====================
+# ==================== CLEANING FUNCTIONS ====================
 def clean_text_vectorized(series, max_len=500):
     series = series.astype(str).str.strip()
-    series = series.replace(['NULL', 'nan', ''], None)
-    # Sửa encoding
+    series = series.replace(['NULL', 'nan', '', 'None'], None)
     series = series.apply(lambda x: ftfy.fix_text(str(x)) if pd.notna(x) else x)
     series = series.str.strip()
     if max_len:
-        series = series.str[:max_len]   # Giới hạn độ dài
+        series = series.str[:max_len]
     return series.where(series.notna() & (series != ''), None)
 
 def convert_masv_vectorized(series):
@@ -51,23 +50,25 @@ print(f"✅ Downloaded {len(data) / 1024 / 1024:.2f} MB")
 print("📊 Reading CSV...")
 df = pd.read_csv(
     io.BytesIO(data),
-    sep='\t',
+    sep=',',  # Dữ liệu mới dùng dấu phẩy, không phải tab
     header=None,
     dtype=str,
-    encoding='cp1258',
+    encoding='utf-8',  # Dữ liệu mới có vẻ là UTF-8
     on_bad_lines='skip',
     low_memory=False
 )
 print(f"✅ Read {len(df):,} rows, {len(df.columns)} columns")
 
+# Định nghĩa columns cho dữ liệu sạch (không có các cột rác Col13...)
 df.columns = [
-    'Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP', 'MaGV', 'HoDemGV', 'TenGV',
-    'LopHP', 'CauHoi', 'DanhGia', 'Col13', 'Q13', 'Q14', 'Q15', 'Q16',
-    'Col18','Col19','Col20','Col21','Col22','Col23','Col24','Col25','Col26','Col27',
-    'Col28','Col29','Col30','Col31'
+    'Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP', 'MaGV', 
+    'HoDemGV', 'TenGV', 'LopHP', 'CauHoi', 'DanhGia',
+    'Q13', 'Q14', 'Q15', 'Q16'  # Chỉ 4 cột mở rộng, không có Col13
 ]
 
-# ==================== CLEANING (Giới hạn độ dài tên GV) ====================
+print(f"✅ Columns mapped: {list(df.columns)}")
+
+# ==================== CLEANING ====================
 print("🧹 Cleaning data...")
 df['Lop']      = clean_text_vectorized(df['Lop'], 50)
 df['HoDem']    = clean_text_vectorized(df['HoDem'], 100)
@@ -76,25 +77,29 @@ df['NgaySinh'] = clean_text_vectorized(df['NgaySinh'])
 df['MaHP']     = clean_text_vectorized(df['MaHP'], 50)
 df['TenHP']    = clean_text_vectorized(df['TenHP'], 200)
 df['MaGV']     = clean_text_vectorized(df['MaGV'], 50)
-df['HoDemGV']  = clean_text_vectorized(df['HoDemGV'], 100)   # Giới hạn 100 ký tự
-df['TenGV']    = clean_text_vectorized(df['TenGV'], 100)     # Giới hạn 100 ký tự
+df['HoDemGV']  = clean_text_vectorized(df['HoDemGV'], 100)
+df['TenGV']    = clean_text_vectorized(df['TenGV'], 100)
 df['LopHP']    = clean_text_vectorized(df['LopHP'], 100)
 
 df['MaSV'] = convert_masv_vectorized(df['MaSV'])
 
+# Chuyển đổi số cho câu hỏi 1-12
 df['CauHoi']  = pd.to_numeric(df['CauHoi'], errors='coerce')
 df['DanhGia'] = pd.to_numeric(df['DanhGia'], errors='coerce')
 
+# Làm sạch Q13-Q16 (có thể chứa text như "Không")
 for q in ['Q13', 'Q14', 'Q15', 'Q16']:
     df[q] = clean_text_vectorized(df[q], max_len=1000)
 
 print("✅ Data cleaning completed.")
 
 # ==================== ETL LOGIC ====================
+# Xác định học kỳ dựa trên tên file
 df['HocKy'] = 2 if "252" in SURVEY_FILE else 1
 df['NamHoc'] = SEMESTER
 df['ProcessedDate'] = datetime.now()
 
+# Tạo StudentKey
 df['StudentKey'] = (
     df['Lop'].fillna('') + '|' +
     df['MaSV'].fillna('') + '|' +
@@ -103,10 +108,12 @@ df['StudentKey'] = (
     df['NgaySinh'].fillna('')
 )
 
+# Tạo ID sinh viên
 unique_students = df['StudentKey'].unique()
 student_id_map = {key: f"SV{idx+1:06d}" for idx, key in enumerate(unique_students)}
 df['ID'] = df['StudentKey'].map(student_id_map)
 
+# Lấy thông tin cơ bản mỗi sinh viên
 df_basic = df.groupby('StudentKey', as_index=False).first()
 
 print("🔄 Pivoting Q1-Q12...")
@@ -122,10 +129,12 @@ pivot_q = df_questions.pivot_table(
 pivot_q.columns = ['StudentKey'] + [f'Q{int(col)}' for col in pivot_q.columns[1:]]
 df_final = df_basic.merge(pivot_q, on='StudentKey', how='left')
 
+# Thêm Q13-Q16
 for q in ['Q13', 'Q14', 'Q15', 'Q16']:
     if q in df.columns:
         df_final[q] = df_final['StudentKey'].map(df.groupby('StudentKey')[q].first())
 
+# Chọn cột cho final dataset
 final_cols = ['ID', 'Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh',
               'MaHP', 'TenHP', 'MaGV', 'HoDemGV', 'TenGV', 'LopHP'] + \
              [f'Q{i}' for i in range(1, 17)] + ['HocKy', 'NamHoc']
@@ -133,11 +142,12 @@ final_cols = ['ID', 'Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh',
 df_final = df_final[[c for c in final_cols if c in df_final.columns]].copy()
 df_final = df_final.sort_values('ID').reset_index(drop=True)
 
-# Chuyển ngày sinh
+# Chuyển đổi ngày sinh
 print("📅 Converting NgaySinh to datetime...")
 df_final['NgaySinh'] = pd.to_datetime(df_final['NgaySinh'], format='%d/%m/%Y', errors='coerce')
 
 print(f"\n🎉 Final dataset: {len(df_final):,} sinh viên, {len(df_final.columns)} cột")
+print(f"📊 Columns: {list(df_final.columns)}")
 
 # ==================== SAVE & UPLOAD ====================
 local_filename = f"{SURVEY_FILE.replace('.txt','').replace('.csv','')}_processed.csv"
@@ -155,7 +165,7 @@ processed_container.get_blob_client(output_path).upload_blob(
 )
 print(f"✅ Uploaded to: processed-data/{output_path}")
 
-# ==================== LOAD VÀO SQL ====================
+# ==================== LOAD INTO SQL ====================
 print("\n🔄 Loading data into Azure SQL...")
 
 sql_server = "course-survey.database.windows.net"
@@ -170,7 +180,6 @@ params = urllib.parse.quote_plus(
     "Encrypt=yes;TrustServerCertificate=no;Connection Timeout=60;"
 )
 
-# Tắt fast_executemany tạm thời để tránh buffer issue (có thể bật lại sau khi sửa schema)
 engine = sa.create_engine(f"mssql+pyodbc:///?odbc_connect={params}", fast_executemany=False)
 
 try:
@@ -181,14 +190,17 @@ try:
             sv_cols = ['ID', 'MaSV', 'Lop', 'HoDem', 'Ten', 'NgaySinh']
             df_sv = df_final[[c for c in sv_cols if c in df_final.columns]].drop_duplicates(subset=['ID'])
             df_sv.to_sql('SINH_VIEN', conn, if_exists='append', index=False, chunksize=4000)
+            print(f"     ✅ Inserted {len(df_sv)} records")
 
             print("   - Inserting HOC_PHAN...")
             df_hp = df_final[['MaHP', 'TenHP']].drop_duplicates(subset=['MaHP']).dropna(subset=['MaHP'])
             df_hp.to_sql('HOC_PHAN', conn, if_exists='append', index=False, chunksize=1000)
+            print(f"     ✅ Inserted {len(df_hp)} records")
 
-            print("   - Inserting GIANG_VIEN...")   # Đây là chỗ lỗi trước
+            print("   - Inserting GIANG_VIEN...")
             df_gv = df_final[['MaGV', 'HoDemGV', 'TenGV']].drop_duplicates(subset=['MaGV']).dropna(subset=['MaGV'])
             df_gv.to_sql('GIANG_VIEN', conn, if_exists='append', index=False, chunksize=500)
+            print(f"     ✅ Inserted {len(df_gv)} records")
 
             print("   - Inserting LOP_HOC_PHAN...")
             lhp = df_final[['LopHP', 'MaHP', 'MaGV', 'HocKy', 'NamHoc']].copy()
@@ -196,6 +208,7 @@ try:
             lhp['TenLopHP'] = lhp['MaLopHP']
             lhp = lhp.drop_duplicates(subset=['MaLopHP']).dropna(subset=['MaLopHP'])
             lhp.to_sql('LOP_HOC_PHAN', conn, if_exists='append', index=False, chunksize=4000)
+            print(f"     ✅ Inserted {len(lhp)} records")
 
             print("   - Inserting PHIEU_KHAO_SAT...")
             fact_cols = ['ID', 'LopHP', 'HocKy', 'NamHoc']
@@ -206,6 +219,7 @@ try:
             df_fact = df_final[fact_cols].copy()
             df_fact = df_fact.rename(columns={'ID': 'ID_SV', 'LopHP': 'MaLopHP'})
             df_fact.to_sql('PHIEU_KHAO_SAT', conn, if_exists='append', index=False, chunksize=4000)
+            print(f"     ✅ Inserted {len(df_fact)} records")
 
     print("✅ All data successfully loaded into Azure SQL Database!")
 

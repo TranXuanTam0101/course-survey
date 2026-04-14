@@ -1,168 +1,181 @@
 import os
 import sys
-from azure.storage.blob import BlobServiceClient
-import pandas as pd
 import io
-from datetime import datetime
-import ftfy
+import pandas as pd
 import sqlalchemy as sa
 import urllib
+import ftfy
+from datetime import datetime
+from azure.storage.blob import BlobServiceClient
 
-print("🚀 Starting Optimized ETL Pipeline for New Data Format...")
+print("🚀 Starting Professional ETL Pipeline (MaSV as Primary Key)...")
 
-# ==================== ENVIRONMENT VARIABLES ====================
+# ==================== 1. CẤU HÌNH & BIẾN MÔI TRƯỜNG ====================
 CONNECTION_STRING = os.environ.get("CONNECTION_STRING")
 SEMESTER = os.environ.get("SEMESTER")
 SURVEY_FILE = os.environ.get("SURVEY_FILE")
 
+# Thông tin Azure SQL (Thay đổi nếu cần)
+sql_server = "course-survey.database.windows.net"
+sql_db     = "course-survey-db"
+sql_user   = "sqladmin"
+sql_pass   = "Due@2026"
+
 if not CONNECTION_STRING or not SEMESTER or not SURVEY_FILE:
-    print("❌ Missing required environment variables!")
+    print("❌ Missing environment variables!")
     sys.exit(1)
 
-# ==================== HELPER FUNCTIONS ====================
-def clean_text_vectorized(series, max_len=500):
+# ==================== 2. HÀM TRỢ GIÚP (CLEANING) ====================
+def clean_text(series, max_len=None):
     series = series.astype(str).str.strip()
     series = series.replace(['NULL', 'nan', 'None', ''], None)
-    # Sửa lỗi hiển thị tiếng Việt nếu có
     series = series.apply(lambda x: ftfy.fix_text(str(x)) if pd.notna(x) else x)
     if max_len:
         series = series.str[:max_len]
     return series
 
-def convert_masv_vectorized(series):
+def convert_masv(series):
     def safe_convert(x):
         if pd.isna(x) or str(x).strip() in ['', 'NULL', 'nan']:
             return None
         try:
-            # Xử lý trường hợp số khoa học hoặc số thực
             return str(int(float(str(x).replace(',', ''))))
         except:
             return str(x).strip()
     return series.map(safe_convert)
 
-# ==================== DOWNLOAD & READ ====================
-print("📥 Connecting to Azure Storage...")
+# ==================== 3. KẾT NỐI DATABASE & TẠO BẢNG ====================
+params = urllib.parse.quote_plus(
+    f"DRIVER={{ODBC Driver 18 for SQL Server}};"
+    f"SERVER={sql_server};DATABASE={sql_db};"
+    f"UID={sql_user};PWD={sql_pass};"
+    "Encrypt=yes;TrustServerCertificate=no;Connection Timeout=60;"
+)
+engine = sa.create_engine(f"mssql+pyodbc:///?odbc_connect={params}", fast_executemany=True)
+
+schema_sql = f"""
+-- Tạo bảng Sinh Viên (MaSV là PK)
+IF OBJECT_ID('PHIEU_KHAO_SAT', 'U') IS NOT NULL DROP TABLE PHIEU_KHAO_SAT;
+IF OBJECT_ID('LOP_HOC_PHAN', 'U') IS NOT NULL DROP TABLE LOP_HOC_PHAN;
+IF OBJECT_ID('SINH_VIEN', 'U') IS NOT NULL DROP TABLE SINH_VIEN;
+IF OBJECT_ID('GIANG_VIEN', 'U') IS NOT NULL DROP TABLE GIANG_VIEN;
+IF OBJECT_ID('HOC_PHAN', 'U') IS NOT NULL DROP TABLE HOC_PHAN;
+
+CREATE TABLE SINH_VIEN (
+    MaSV VARCHAR(50) PRIMARY KEY,
+    Lop NVARCHAR(50),
+    HoDem NVARCHAR(100),
+    Ten NVARCHAR(50),
+    NgaySinh DATE
+);
+
+CREATE TABLE HOC_PHAN (
+    MaHP VARCHAR(50) PRIMARY KEY,
+    TenHP NVARCHAR(200)
+);
+
+CREATE TABLE GIANG_VIEN (
+    MaGV VARCHAR(50) PRIMARY KEY,
+    HoDemGV NVARCHAR(100),
+    TenGV NVARCHAR(100)
+);
+
+CREATE TABLE LOP_HOC_PHAN (
+    MaLopHP VARCHAR(100) PRIMARY KEY,
+    MaHP VARCHAR(50) REFERENCES HOC_PHAN(MaHP),
+    MaGV VARCHAR(50) REFERENCES GIANG_VIEN(MaGV),
+    TenLopHP NVARCHAR(200),
+    HocKy INT,
+    NamHoc NVARCHAR(20)
+);
+
+CREATE TABLE PHIEU_KHAO_SAT (
+    MaSV VARCHAR(50) REFERENCES SINH_VIEN(MaSV),
+    MaLopHP VARCHAR(100) REFERENCES LOP_HOC_PHAN(MaLopHP),
+    HocKy INT,
+    NamHoc NVARCHAR(20),
+    Q1 INT, Q2 INT, Q3 INT, Q4 INT, Q5 INT, Q6 INT, 
+    Q7 INT, Q8 INT, Q9 INT, Q10 INT, Q11 INT, Q12 INT,
+    Q13 NVARCHAR(MAX), Q14 NVARCHAR(MAX), Q15 NVARCHAR(MAX), Q16 NVARCHAR(MAX),
+    PRIMARY KEY (MaSV, MaLopHP)
+);
+"""
+
+print("🛠 Re-creating database schema...")
+with engine.connect() as conn:
+    conn.execute(sa.text(schema_sql))
+    conn.commit()
+
+# ==================== 4. DOWNLOAD & XỬ LÝ DỮ LIỆU ====================
+print("📥 Fetching raw data from Azure...")
 blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
 blob_client = blob_service.get_container_client("rawdata").get_blob_client(f"{SEMESTER}/{SURVEY_FILE}")
 data = blob_client.download_blob().readall()
 
-print("📊 Reading CSV (New Format: Comma Separated)...")
-# Chuyển sang dùng sep=',' và encoding utf-8
-df = pd.read_csv(
+df_raw = pd.read_csv(
     io.BytesIO(data),
-    sep=',', 
+    sep=',',
     header=None,
+    names=['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP', 'MaGV', 'HoDemGV', 'TenGV',
+           'LopHP', 'CauHoi', 'DanhGia', 'Col13', 'Q13', 'Q14', 'Q15', 'Q16'],
     dtype=str,
-    encoding='utf-8', 
-    on_bad_lines='skip',
-    low_memory=False
+    encoding='utf-8'
 )
 
-# Mapping lại chính xác theo file mẫu bạn gửi
-df.columns = [
-    'Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP', 'MaGV', 'HoDemGV', 'TenGV',
-    'LopHP', 'CauHoi', 'DanhGia', 'Col13', 'Q13', 'Q14', 'Q15', 'Q16'
-]
+# Làm sạch dữ liệu cơ bản
+df_raw['MaSV'] = convert_masv(df_raw['MaSV'])
+df_raw['NgaySinh'] = pd.to_datetime(df_raw['NgaySinh'], format='%d/%m/%Y', errors='coerce')
+df_raw['CauHoi'] = pd.to_numeric(df_raw['CauHoi'], errors='coerce')
+df_raw['DanhGia'] = pd.to_numeric(df_raw['DanhGia'], errors='coerce')
 
-print(f"✅ Read {len(df):,} rows. Sample: {df.iloc[0]['HoDem']} {df.iloc[0]['Ten']}")
-
-# ==================== CLEANING ====================
-print("🧹 Cleaning data...")
-cols_to_clean = {
-    'Lop': 50, 'HoDem': 100, 'Ten': 50, 'MaHP': 50, 'TenHP': 200, 
-    'MaGV': 50, 'HoDemGV': 100, 'TenGV': 100, 'LopHP': 100
-}
-
-for col, length in cols_to_clean.items():
-    df[col] = clean_text_vectorized(df[col], length)
-
-df['MaSV'] = convert_masv_vectorized(df['MaSV'])
-df['CauHoi'] = pd.to_numeric(df['CauHoi'], errors='coerce')
-df['DanhGia'] = pd.to_numeric(df['DanhGia'], errors='coerce')
-
-# Làm sạch các câu hỏi tự luận
-for q in ['Q13', 'Q14', 'Q15', 'Q16']:
-    df[q] = clean_text_vectorized(df[q], max_len=1000)
-
-# ==================== ETL LOGIC ====================
-df['HocKy'] = 2 if "252" in SURVEY_FILE else 1
-df['NamHoc'] = SEMESTER
-
-# Tạo Key duy nhất để gộp 12 dòng của 1 sinh viên thành 1 dòng ngang
-df['StudentKey'] = (
-    df['LopHP'].fillna('') + '|' + 
-    df['MaSV'].fillna('') + '|' + 
-    df['MaHP'].fillna('')
-)
-
-# Tạo ID duy nhất (SV000001...)
-unique_keys = df['StudentKey'].unique()
-key_to_id = {key: f"SV{idx+1:06d}" for idx, key in enumerate(unique_keys)}
-df['ID'] = df['StudentKey'].map(key_to_id)
-
-print("🔄 Pivoting Q1-Q12...")
-# Chỉ lấy các dòng từ câu hỏi 1-12 để pivot
-df_pivot = df[df['CauHoi'].between(1, 12)].pivot_table(
-    index='ID',
+# Xoay ngang dữ liệu (Pivot) từ 12 dòng thành 1 dòng
+print("🔄 Pivoting survey answers...")
+df_pivot = df_raw[df_raw['CauHoi'].between(1, 12)].pivot_table(
+    index=['MaSV', 'LopHP'],
     columns='CauHoi',
     values='DanhGia',
     aggfunc='first'
 ).reset_index()
+df_pivot.columns = ['MaSV', 'LopHP'] + [f'Q{int(i)}' for i in range(1, 13)]
 
-df_pivot.columns = ['ID'] + [f'Q{int(c)}' for c in df_pivot.columns[1:]]
+# Lấy các thông tin còn lại (Thông tin SV, GV, HP và Q13-Q16)
+df_info = df_raw.groupby(['MaSV', 'LopHP']).first().reset_index()
+df_final = df_info.merge(df_pivot, on=['MaSV', 'LopHP'], how='left')
 
-# Lấy thông tin gốc (tên, mã môn...) bằng cách group by ID
-df_info = df.groupby('ID').first().reset_index()
-df_info = df_info.drop(columns=[f'Q{i}' for i in range(13, 17)] + ['CauHoi', 'DanhGia', 'Col13'], errors='ignore')
+# Gán thông tin học kỳ
+df_final['HocKy'] = 2 if "252" in SURVEY_FILE else 1
+df_final['NamHoc'] = SEMESTER
 
-# Merge lại thành bảng cuối cùng
-df_final = df_info.merge(df_pivot, on='ID', how='left')
-
-# Đảm bảo các cột Q13-Q16 có dữ liệu
-final_cols = ['ID', 'Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh',
-              'MaHP', 'TenHP', 'MaGV', 'HoDemGV', 'TenGV', 'LopHP'] + \
-             [f'Q{i}' for i in range(1, 17)] + ['HocKy', 'NamHoc']
-
-df_final = df_final[[c for c in final_cols if c in df_final.columns]]
-df_final['NgaySinh'] = pd.to_datetime(df_final['NgaySinh'], format='%d/%m/%Y', errors='coerce')
-
-print(f"✅ Processing complete: {len(df_final)} survey records.")
-
-# ==================== SQL LOAD ====================
-print("\n🔄 Loading into Azure SQL...")
-sql_params = urllib.parse.quote_plus(
-    f"DRIVER={{ODBC Driver 18 for SQL Server}};"
-    f"SERVER=course-survey.database.windows.net;DATABASE=course-survey-db;"
-    f"UID=sqladmin;PWD=Due@2026;"
-    "Encrypt=yes;TrustServerCertificate=no;Connection Timeout=60;"
-)
-engine = sa.create_engine(f"mssql+pyodbc:///?odbc_connect={sql_params}", fast_executemany=True)
-
+# ==================== 5. CHÈN DỮ LIỆU VÀO SQL ====================
+print("📤 Inserting data into SQL Server...")
 try:
     with engine.connect() as conn:
-        # 1. Sinh Viên
-        df_sv = df_final[['ID', 'MaSV', 'Lop', 'HoDem', 'Ten', 'NgaySinh']].drop_duplicates('ID')
-        df_sv.to_sql('SINH_VIEN', conn, if_exists='append', index=False, chunksize=1000)
-        
-        # 2. Học Phần
-        df_hp = df_final[['MaHP', 'TenHP']].drop_duplicates('MaHP')
-        df_hp.to_sql('HOC_PHAN', conn, if_exists='append', index=False)
-        
-        # 3. Giảng Viên
-        df_gv = df_final[['MaGV', 'HoDemGV', 'TenGV']].drop_duplicates('MaGV')
-        df_gv.to_sql('GIANG_VIEN', conn, if_exists='append', index=False)
-        
-        # 4. Lớp Học Phần
-        df_lhp = df_final[['LopHP', 'MaHP', 'MaGV', 'HocKy', 'NamHoc']].drop_duplicates('LopHP')
-        df_lhp = df_lhp.rename(columns={'LopHP': 'MaLopHP'})
-        df_lhp['TenLopHP'] = df_lhp['MaLopHP']
-        df_lhp.to_sql('LOP_HOC_PHAN', conn, if_exists='append', index=False)
-        
-        # 5. Phiếu Khảo Sát
-        df_ks = df_final.rename(columns={'ID': 'ID_SV', 'LopHP': 'MaLopHP'})
-        ks_cols = ['ID_SV', 'MaLopHP', 'HocKy', 'NamHoc'] + [f'Q{i}' for i in range(1, 17)]
-        df_ks[ks_cols].to_sql('PHIEU_KHAO_SAT', conn, if_exists='append', index=False, chunksize=1000)
+        with conn.begin():
+            # 1. SINH_VIEN
+            df_sv = df_final[['MaSV', 'Lop', 'HoDem', 'Ten', 'NgaySinh']].drop_duplicates('MaSV')
+            df_sv.to_sql('SINH_VIEN', conn, if_exists='append', index=False)
 
-    print("🎯 ALL DONE!")
+            # 2. HOC_PHAN
+            df_hp = df_final[['MaHP', 'TenHP']].drop_duplicates('MaHP')
+            df_hp.to_sql('HOC_PHAN', conn, if_exists='append', index=False)
+
+            # 3. GIANG_VIEN
+            df_gv = df_final[['MaGV', 'HoDemGV', 'TenGV']].drop_duplicates('MaGV')
+            df_gv.to_sql('GIANG_VIEN', conn, if_exists='append', index=False)
+
+            # 4. LOP_HOC_PHAN
+            df_lhp = df_final[['LopHP', 'MaHP', 'MaGV', 'HocKy', 'NamHoc']].drop_duplicates('LopHP')
+            df_lhp = df_lhp.rename(columns={'LopHP': 'MaLopHP'})
+            df_lhp['TenLopHP'] = df_lhp['MaLopHP']
+            df_lhp.to_sql('LOP_HOC_PHAN', conn, if_exists='append', index=False)
+
+            # 5. PHIEU_KHAO_SAT
+            ks_cols = ['MaSV', 'LopHP', 'HocKy', 'NamHoc'] + [f'Q{i}' for i in range(1, 17)]
+            df_ks = df_final[ks_cols].rename(columns={'LopHP': 'MaLopHP'})
+            df_ks.to_sql('PHIEU_KHAO_SAT', conn, if_exists='append', index=False)
+
+    print("🎯 ETL PROCESS COMPLETED SUCCESSFULLY!")
+
 except Exception as e:
-    print(f"❌ Error: {e}")
+    print(f"❌ Critical Error: {str(e)}")
+    sys.exit(1)

@@ -54,8 +54,6 @@ def extract_and_transform_survey(file_path: str):
     
     # Dictionary lưu dữ liệu theo SubmissionID
     survey_data = {}
-    # Dictionary để theo dõi các câu hỏi đã được xử lý cho mỗi SubmissionID
-    processed_questions = {}
 
     with open(file_path, 'r', encoding='utf-8') as f:
         lines = f.readlines()
@@ -68,8 +66,8 @@ def extract_and_transform_survey(file_path: str):
         parts = [p.strip() for p in line.split(',')]
 
         try:
-            # Lấy Lop từ phần tử đầu tiên của dòng (loại bỏ ký tự BOM nếu có)
-            Lop = parts[0].lstrip('\ufeff') if len(parts) > 0 else ''
+            # Lấy Lop từ phần tử đầu tiên của dòng
+            Lop = parts[0] if len(parts) > 0 else ''
             
             MaSV = parts[1]
 
@@ -119,8 +117,13 @@ def extract_and_transform_survey(file_path: str):
             danhgia_idx = cauhoi_idx + 1
             danhgia = int(parts[danhgia_idx]) if danhgia_idx < len(parts) and parts[danhgia_idx].isdigit() else None
             
-            # Đọc 4 cột góp ý (câu hỏi 13-16) - nằm ở cuối mỗi dòng
+            # Đọc 4 cột góp ý (câu hỏi 13-16) - SỬA: lấy từ vị trí cố định sau danhgia
+            # Bỏ qua cột NULL nếu có
             gopy_start_idx = danhgia_idx + 1
+            # Kiểm tra nếu cột hiện tại là NULL thì nhích lên 1
+            if gopy_start_idx < len(parts) and parts[gopy_start_idx].upper() == 'NULL':
+                gopy_start_idx += 1
+            
             gopy_values = []
             for i in range(4):
                 if gopy_start_idx + i < len(parts):
@@ -156,64 +159,27 @@ def extract_and_transform_survey(file_path: str):
                     'CauHoi13': None, 'CauHoi14': None, 'CauHoi15': None, 'CauHoi16': None,
                     'Col13': None
                 }
-                processed_questions[SubmissionID] = set()
             
             # Điền giá trị cho câu hỏi
             if cauhoi_num is not None:
-                # Chỉ xử lý nếu câu hỏi này chưa được xử lý
-                if cauhoi_num not in processed_questions[SubmissionID]:
-                    if 1 <= cauhoi_num <= 12:
-                        # Điền điểm đánh giá cho câu hỏi 1-12
-                        if danhgia is not None:
-                            survey_data[SubmissionID][f'CauHoi{cauhoi_num}'] = int(danhgia)
-                            processed_questions[SubmissionID].add(cauhoi_num)
-                    elif 13 <= cauhoi_num <= 16:
-                        # Điền góp ý cho câu hỏi 13-16 (chỉ lấy 1 lần duy nhất)
-                        idx = cauhoi_num - 13
-                        if idx < len(gopy_values) and survey_data[SubmissionID][f'CauHoi{cauhoi_num}'] is None:
-                            val = gopy_values[idx]
+                if 1 <= cauhoi_num <= 12:
+                    # Điền điểm đánh giá cho câu hỏi 1-12
+                    if danhgia is not None:
+                        survey_data[SubmissionID][f'CauHoi{cauhoi_num}'] = int(danhgia)
+                elif 13 <= cauhoi_num <= 16:
+                    # Điền góp ý cho câu hỏi 13-16
+                    idx = cauhoi_num - 13
+                    if idx < len(gopy_values):
+                        val = gopy_values[idx]
+                        # CHỈ GHI NẾU CHƯA CÓ GIÁ TRỊ (giữ giá trị đầu tiên)
+                        if survey_data[SubmissionID][f'CauHoi{cauhoi_num}'] is None:
                             survey_data[SubmissionID][f'CauHoi{cauhoi_num}'] = val
                             if cauhoi_num == 13:
                                 survey_data[SubmissionID]['Col13'] = val
-                            processed_questions[SubmissionID].add(cauhoi_num)
-            
-            # TRƯỜNG HỢP ĐẶC BIỆT: Nếu là câu hỏi 12, lấy giá trị góp ý 13-16 từ dòng này
-            if cauhoi_num == 12:
-                for i in range(4):
-                    cauhoi_13_16 = 13 + i
-                    if cauhoi_13_16 not in processed_questions[SubmissionID]:
-                        val = gopy_values[i] if i < len(gopy_values) else None
-                        if val is not None and survey_data[SubmissionID][f'CauHoi{cauhoi_13_16}'] is None:
-                            survey_data[SubmissionID][f'CauHoi{cauhoi_13_16}'] = val
-                            if cauhoi_13_16 == 13:
-                                survey_data[SubmissionID]['Col13'] = val
-                            processed_questions[SubmissionID].add(cauhoi_13_16)
 
         except Exception as e:
             logging.warning(f"Bỏ qua dòng {line_num} do lỗi định dạng: {e}")
             continue
-
-    # SAU KHI XỬ LÝ XONG: Kiểm tra và xử lý các sinh viên không có đủ 12 câu hỏi
-    logging.info("🔍 Kiểm tra dữ liệu không đầy đủ...")
-    incomplete_students = []
-    for submission_id, data in survey_data.items():
-        missing_questions = []
-        for i in range(1, 13):
-            if data[f'CauHoi{i}'] is None:
-                missing_questions.append(i)
-        if missing_questions:
-            incomplete_students.append({
-                'SubmissionID': submission_id,
-                'MaSV': data['MaSV'],
-                'Missing': missing_questions,
-                'Count': len(missing_questions)
-            })
-            logging.warning(f"⚠️ SV {data['MaSV']} thiếu {len(missing_questions)} câu hỏi: {missing_questions}")
-    
-    if incomplete_students:
-        logging.info(f"📊 Tổng số sinh viên bị thiếu dữ liệu: {len(incomplete_students)}")
-    else:
-        logging.info("✅ Tất cả sinh viên đều có đủ 12 câu hỏi")
 
     # Chuyển đổi thành DataFrame
     survey_df = pd.DataFrame(list(survey_data.values()))
@@ -238,7 +204,7 @@ def extract_and_transform_survey(file_path: str):
     
     logging.info(f"✅ Hoàn tất xử lý: {len(survey_df)} hàng dữ liệu survey")
     
-    return survey_df, incomplete_students
+    return survey_df
 
 # ==================== MAIN ====================
 if __name__ == "__main__":
@@ -258,19 +224,12 @@ if __name__ == "__main__":
     download_from_blob(blob_service)
 
     # 2. Xử lý ETL
-    survey_df, incomplete_students = extract_and_transform_survey(SURVEY_FILE)
+    survey_df = extract_and_transform_survey(SURVEY_FILE)
 
     # 3. Xuất file CSV và Upload lên Azure
     output_file = f"survey_cleaned_{FILE_NAME}.csv"
     survey_df.to_csv(output_file, index=False, encoding='utf-8-sig')
     logging.info(f"📁 Đã xuất file local: {output_file}")
-    
-    # Xuất file báo cáo sinh viên thiếu dữ liệu
-    if incomplete_students:
-        incomplete_df = pd.DataFrame(incomplete_students)
-        incomplete_file = f"incomplete_data_{FILE_NAME}.csv"
-        incomplete_df.to_csv(incomplete_file, index=False, encoding='utf-8-sig')
-        logging.info(f"📁 Đã xuất file báo cáo thiếu dữ liệu: {incomplete_file}")
 
     # ==================== 4. UPLOAD ====================
     print("📤 Uploading to Azure...")
@@ -285,14 +244,6 @@ if __name__ == "__main__":
         
         processed_container.get_blob_client(output_path).upload_blob(output, overwrite=True)
         logging.info(f"✅ Upload thành công lên Azure: {output_path}")
-        
-        # Upload file báo cáo nếu có
-        if incomplete_students:
-            incomplete_output = incomplete_df.to_csv(index=False, encoding='utf-8-sig')
-            incomplete_path = f"{SEMESTER}/incomplete_{SURVEY_FILE.replace('.csv', '_report.csv')}"
-            processed_container.get_blob_client(incomplete_path).upload_blob(incomplete_output, overwrite=True)
-            logging.info(f"✅ Upload báo cáo thiếu dữ liệu: {incomplete_path}")
-            
     except Exception as e:
         logging.error(f"❌ Lỗi upload lên Azure: {e}")
         sys.exit(1)
@@ -328,14 +279,6 @@ if __name__ == "__main__":
             col = f'CauHoi{i}'
             val = first_row.get(col, 'N/A')
             print(f"  {col}: {val} (type: {type(val).__name__})")
-    
-    # In báo cáo thiếu dữ liệu
-    if incomplete_students:
-        print("\n" + "="*150)
-        print("⚠️ DANH SÁCH SINH VIÊN THIẾU DỮ LIỆU")
-        print("="*150)
-        for student in incomplete_students[:10]:  # Chỉ hiển thị 10 sinh viên đầu
-            print(f"MaSV: {student['MaSV']} - Thiếu {student['Count']} câu hỏi: {student['Missing']}")
 
     logging.info("=" * 90)
     logging.info("🎉 HOÀN TẤT SURVEY ETL PIPELINE")

@@ -43,6 +43,7 @@ def download_from_blob():
             f.write(data)
 
         logging.info(f"✅ Download thành công: {SURVEY_FILE} ({len(data)/1024:.1f} KB)")
+        return blob_service
 
     except Exception as e:
         logging.error(f"❌ Lỗi download từ Azure Blob: {e}")
@@ -113,10 +114,14 @@ def extract_and_transform_survey(file_path: str):
             CauHoi = int(parts[cau_hoi_idx]) if cau_hoi_idx < len(parts) and str(parts[cau_hoi_idx]).isdigit() else None
             DanhGia = int(parts[cau_hoi_idx + 1]) if cau_hoi_idx + 1 < len(parts) and str(parts[cau_hoi_idx + 1]).isdigit() else None
 
-            # 4 cột góp ý mở (câu 13-16)
+            # 4 cột góp ý mở (câu 13-16) được lấy theo thứ tự cuối dòng dữ liệu
             gopy_start = cau_hoi_idx + 3
-            gopy_values = parts[gopy_start:gopy_start + 4] + [None] * 4
-            gopy_values = gopy_values[:4]
+            gopy_values = []
+            for i in range(4):
+                if gopy_start + i < len(parts):
+                    gopy_values.append(parts[gopy_start + i])
+                else:
+                    gopy_values.append(None)
 
             SubmissionID = f"{MaSV}_{LopHP}_{MaGV}_{FILE_NAME}"
 
@@ -124,7 +129,7 @@ def extract_and_transform_survey(file_path: str):
             if SubmissionID not in student_data:
                 student_data[SubmissionID] = {
                     'SubmissionID': SubmissionID,
-                    'Lop': Lop,  # Thêm cột Lop
+                    'Lop': Lop,
                     'MaSV': MaSV,
                     'HoDem': HoDem,
                     'Ten': Ten,
@@ -136,12 +141,11 @@ def extract_and_transform_survey(file_path: str):
                     'TenGV': TenGV,
                     'LopHP': LopHP,
                     'Semester': SEMESTER,
-                    'SubmittedAt': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     # Khởi tạo 12 câu hỏi
                     'CauHoi1': None, 'CauHoi2': None, 'CauHoi3': None, 'CauHoi4': None,
                     'CauHoi5': None, 'CauHoi6': None, 'CauHoi7': None, 'CauHoi8': None,
                     'CauHoi9': None, 'CauHoi10': None, 'CauHoi11': None, 'CauHoi12': None,
-                    # Khởi tạo 4 câu hỏi mở
+                    # Khởi tạo 4 câu hỏi mở được lấy theo thứ tự cuối dòng dữ liệu
                     'CauHoi13': None, 'CauHoi14': None, 'CauHoi15': None, 'CauHoi16': None
                 }
             
@@ -161,7 +165,7 @@ def extract_and_transform_survey(file_path: str):
     column_order = [
         'SubmissionID', 'Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 
         'MaHP', 'TenHP', 'MaGV', 'HoDemGV', 'TenGV', 'LopHP', 
-        'Semester', 'SubmittedAt',
+        'Semester',
         'CauHoi1', 'CauHoi2', 'CauHoi3', 'CauHoi4', 
         'CauHoi5', 'CauHoi6', 'CauHoi7', 'CauHoi8', 
         'CauHoi9', 'CauHoi10', 'CauHoi11', 'CauHoi12',
@@ -174,6 +178,26 @@ def extract_and_transform_survey(file_path: str):
     return result_df
 
 
+# ==================== UPLOAD TO AZURE ====================
+def upload_to_blob(blob_service, df):
+    print("📤 Uploading to Azure...")
+    try:
+        output = df.to_csv(index=False, encoding='utf-8-sig')
+        output_path = f"{SEMESTER}/{SURVEY_FILE.replace('.csv', '_processed.csv')}"
+        
+        processed_container = blob_service.get_container_client("processed-data")
+        if not processed_container.exists():
+            processed_container.create_container()
+            logging.info(f"✅ Đã tạo container 'processed-data'")
+        
+        processed_container.get_blob_client(output_path).upload_blob(output, overwrite=True)
+        logging.info(f"✅ Upload thành công: {output_path}")
+        
+    except Exception as e:
+        logging.error(f"❌ Lỗi upload lên Azure Blob: {e}")
+        sys.exit(1)
+
+
 # ==================== MAIN ====================
 if __name__ == "__main__":
     logging.info("=" * 90)
@@ -181,16 +205,13 @@ if __name__ == "__main__":
     logging.info("=" * 90)
 
     # 1. Download file từ Azure Blob
-    download_from_blob()
+    blob_service = download_from_blob()
 
     # 2. Xử lý ETL
     result_df = extract_and_transform_survey(SURVEY_FILE)
 
-    # 3. Xuất file CSV
-    output_file = f"survey_data_cleaned_{FILE_NAME}.csv"
-    result_df.to_csv(output_file, index=False, encoding='utf-8-sig')
-
-    logging.info(f"📁 Đã xuất file: {output_file}")
+    # 3. Upload lên Azure
+    upload_to_blob(blob_service, result_df)
 
     # 4. In 10 dòng mẫu để kiểm tra
     print("\n" + "="*130)

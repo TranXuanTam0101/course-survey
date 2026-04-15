@@ -64,7 +64,7 @@ def extract_and_transform_survey(file_path: str):
     
     # Dictionary lưu dữ liệu tạm thời theo SubmissionID
     temp_data = {}
-    # Dictionary lưu dữ liệu cuối cùng sau khi đủ 12 dòng
+    # Dictionary lưu dữ liệu cuối cùng
     final_data = {}
 
     with open(file_path, 'r', encoding='utf-8') as f:
@@ -124,21 +124,20 @@ def extract_and_transform_survey(file_path: str):
             CauHoi = int(parts[cau_hoi_idx]) if cau_hoi_idx < len(parts) and str(parts[cau_hoi_idx]).isdigit() else None
             DanhGia = int(parts[cau_hoi_idx + 1]) if cau_hoi_idx + 1 < len(parts) and str(parts[cau_hoi_idx + 1]).isdigit() else None
 
-            # XỬ LÝ CỘT NULL SAU CỘT DanhGia VÀ TRƯỚC CÂU HỎI 13
-            after_danhgia_idx = cau_hoi_idx + 2
-            if after_danhgia_idx < len(parts) and parts[after_danhgia_idx].upper() == 'NULL':
-                gopy_start = after_danhgia_idx + 1
-            else:
-                gopy_start = after_danhgia_idx
+            # BỎ QUA KHÔNG DÙNG CỘT CÓ GIÁ TRỊ ĐIỀN 'NULL' SAU CỘT DanhGia VÀ TRƯỚC CÂU HỎI 13
+            # Tìm vị trí bắt đầu của 4 cột góp ý (bỏ qua các cột NULL)
+            gopy_start = cau_hoi_idx + 2
+            while gopy_start < len(parts) and parts[gopy_start].upper() == 'NULL':
+                gopy_start += 1
             
             # 4 cột góp ý mở (dành cho CauHoi 13-16)
             gopy_values = parts[gopy_start:gopy_start + 4] + [None] * 4
             gopy_values = gopy_values[:4]
 
-            # TẠO SUBMISSIONID TRƯỚC KHI XỬ LÝ CÁC CỘT CAUHOI
+            # TẠO SUBMISSIONID
             SubmissionID = f"{MaSV}_{LopHP}_{MaGV}_{FILE_NAME}"
 
-            # Khởi tạo hoặc cập nhật dữ liệu tạm thời cho SubmissionID
+            # Khởi tạo dữ liệu cho SubmissionID
             if SubmissionID not in temp_data:
                 temp_data[SubmissionID] = {
                     'Lop': Lop,
@@ -154,7 +153,7 @@ def extract_and_transform_survey(file_path: str):
                     'LopHP': LopHP,
                     'Semester': SEMESTER,
                     'SubmittedAt': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    'responses': [],  # Lưu các câu trả lời tạm thời
+                    'responses': {},  # Dictionary lưu câu trả lời theo số câu hỏi
                     'gopy_values': None  # Lưu góp ý từ dòng đầu tiên
                 }
             
@@ -162,63 +161,68 @@ def extract_and_transform_survey(file_path: str):
             if temp_data[SubmissionID]['gopy_values'] is None and CauHoi and 13 <= CauHoi <= 16:
                 temp_data[SubmissionID]['gopy_values'] = gopy_values
             
-            # Thêm câu trả lời vào danh sách (chỉ cho CauHoi 1-12)
-            if CauHoi and 1 <= CauHoi <= 12:
-                temp_data[SubmissionID]['responses'].append({
-                    'CauHoi': CauHoi,
-                    'DanhGia': DanhGia
-                })
-            
-            # Kiểm tra nếu đã có đủ 12 câu trả lời (CauHoi 1-12)
-            if len(temp_data[SubmissionID]['responses']) == 12:
-                # Tạo bản ghi cuối cùng cho SubmissionID này
-                record = {
-                    'SubmissionID': SubmissionID,
-                    'Lop': temp_data[SubmissionID]['Lop'],
-                    'MaSV': temp_data[SubmissionID]['MaSV'],
-                    'HoDem': temp_data[SubmissionID]['HoDem'],
-                    'Ten': temp_data[SubmissionID]['Ten'],
-                    'NgaySinh': temp_data[SubmissionID]['NgaySinh'],
-                    'MaHP': temp_data[SubmissionID]['MaHP'],
-                    'TenHP': temp_data[SubmissionID]['TenHP'],
-                    'MaGV': temp_data[SubmissionID]['MaGV'],
-                    'HoDemGV': temp_data[SubmissionID]['HoDemGV'],
-                    'TenGV': temp_data[SubmissionID]['TenGV'],
-                    'LopHP': temp_data[SubmissionID]['LopHP'],
-                    'Semester': temp_data[SubmissionID]['Semester'],
-                    'SubmittedAt': temp_data[SubmissionID]['SubmittedAt'],
-                }
-                
-                # Khởi tạo các cột CauHoi 1-12
-                for i in range(1, 13):
-                    record[f'CauHoi{i}'] = None
-                
-                # Điền giá trị cho CauHoi 1-12 từ responses
-                for resp in temp_data[SubmissionID]['responses']:
-                    record[f'CauHoi{resp["CauHoi"]}'] = resp['DanhGia']
-                
-                # Điền giá trị cho CauHoi 13-16 từ gopy_values
-                gopy_vals = temp_data[SubmissionID]['gopy_values'] if temp_data[SubmissionID]['gopy_values'] else [None, None, None, None]
-                record['CauHoi13'] = gopy_vals[0] if len(gopy_vals) > 0 else None
-                record['CauHoi14'] = gopy_vals[1] if len(gopy_vals) > 1 else None
-                record['CauHoi15'] = gopy_vals[2] if len(gopy_vals) > 2 else None
-                record['CauHoi16'] = gopy_vals[3] if len(gopy_vals) > 3 else None
-                record['Col13'] = gopy_vals[0] if len(gopy_vals) > 0 else None  # Col13 giống CauHoi13
-                
-                # Lưu vào final_data
-                final_data[SubmissionID] = record
-                
-                # Xóa khỏi temp_data để giải phóng bộ nhớ
-                del temp_data[SubmissionID]
-                
-                print(f"✅ Đã xử lý xong SubmissionID: {SubmissionID} (đủ 12 câu trả lời)")
+            # Lưu câu trả lời (cho cả CauHoi 1-12 và 13-16)
+            if CauHoi:
+                if 1 <= CauHoi <= 12:
+                    temp_data[SubmissionID]['responses'][CauHoi] = DanhGia
+                elif 13 <= CauHoi <= 16:
+                    # Lưu góp ý cho câu hỏi 13-16
+                    idx = CauHoi - 13
+                    if idx < len(gopy_values):
+                        temp_data[SubmissionID]['responses'][CauHoi] = gopy_values[idx]
 
         except Exception as e:
             print(f"⚠️ Bỏ qua dòng {line_num} do lỗi định dạng: {e}")
 
-    # Xử lý các SubmissionID chưa đủ 12 câu trả lời (nếu có)
+    # XỬ LÝ TẤT CẢ SUBMISSIONID (kể cả không đủ 12 câu)
     for SubmissionID, data in temp_data.items():
-        print(f"⚠️ SubmissionID {SubmissionID} chỉ có {len(data['responses'])}/12 câu trả lời, bỏ qua")
+        # Tạo bản ghi cho SubmissionID
+        record = {
+            'SubmissionID': SubmissionID,
+            'Lop': data['Lop'],
+            'MaSV': data['MaSV'],
+            'HoDem': data['HoDem'],
+            'Ten': data['Ten'],
+            'NgaySinh': data['NgaySinh'],
+            'MaHP': data['MaHP'],
+            'TenHP': data['TenHP'],
+            'MaGV': data['MaGV'],
+            'HoDemGV': data['HoDemGV'],
+            'TenGV': data['TenGV'],
+            'LopHP': data['LopHP'],
+            'Semester': data['Semester'],
+            'SubmittedAt': data['SubmittedAt'],
+        }
+        
+        # Khởi tạo các cột CauHoi 1-16
+        for i in range(1, 17):
+            record[f'CauHoi{i}'] = None
+        
+        # Điền giá trị cho CauHoi 1-12 từ responses
+        for cauhoi in range(1, 13):
+            if cauhoi in data['responses']:
+                record[f'CauHoi{cauhoi}'] = data['responses'][cauhoi]
+        
+        # Điền giá trị cho CauHoi 13-16
+        gopy_vals = data['gopy_values'] if data['gopy_values'] else [None, None, None, None]
+        record['CauHoi13'] = gopy_vals[0] if len(gopy_vals) > 0 else None
+        record['CauHoi14'] = gopy_vals[1] if len(gopy_vals) > 1 else None
+        record['CauHoi15'] = gopy_vals[2] if len(gopy_vals) > 2 else None
+        record['CauHoi16'] = gopy_vals[3] if len(gopy_vals) > 3 else None
+        record['Col13'] = gopy_vals[0] if len(gopy_vals) > 0 else None
+        
+        # Cập nhật từ responses nếu có câu hỏi 13-16 được lưu riêng
+        for cauhoi in range(13, 17):
+            if cauhoi in data['responses']:
+                record[f'CauHoi{cauhoi}'] = data['responses'][cauhoi]
+                if cauhoi == 13:
+                    record['Col13'] = data['responses'][cauhoi]
+        
+        # Lưu vào final_data
+        final_data[SubmissionID] = record
+        
+        response_count = len([k for k in data['responses'].keys() if 1 <= k <= 12])
+        print(f"✅ Đã xử lý SubmissionID: {SubmissionID} ({response_count}/12 câu trả lời)")
     
     # Chuyển đổi thành DataFrame
     survey_df = pd.DataFrame(list(final_data.values()))

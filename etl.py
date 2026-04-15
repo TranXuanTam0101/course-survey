@@ -109,36 +109,21 @@ def extract_and_transform_survey(file_path: str):
 
             LopHP = parts[LopHP_idx]
 
-            # Tìm vị trí bắt đầu của câu hỏi (sau LopHP)
-            # Bỏ qua cột NULL nếu có
-            current_idx = LopHP_idx + 1
-            if current_idx < len(parts) and parts[current_idx].upper() == 'NULL':
-                current_idx += 1
+            # Đọc số thứ tự câu hỏi (sau LopHP)
+            cauhoi_idx = LopHP_idx + 1
+            cauhoi_num = int(parts[cauhoi_idx]) if cauhoi_idx < len(parts) and parts[cauhoi_idx].isdigit() else None
             
-            # Đọc số thứ tự câu hỏi (1-16)
-            cauhoi_num = None
-            if current_idx < len(parts) and parts[current_idx].isdigit():
-                cauhoi_num = int(parts[current_idx])
-                current_idx += 1
+            # Đọc điểm đánh giá
+            danhgia_idx = cauhoi_idx + 1
+            danhgia = int(parts[danhgia_idx]) if danhgia_idx < len(parts) and parts[danhgia_idx].isdigit() else None
             
-            # Đọc điểm đánh giá (nếu có)
-            danhgia = None
-            if current_idx < len(parts) and parts[current_idx] and parts[current_idx] != 'NULL':
-                if parts[current_idx].isdigit():
-                    danhgia = int(parts[current_idx])
-                else:
-                    danhgia = parts[current_idx]  # Có thể là text
-                current_idx += 1
-            
-            # Bỏ qua cột NULL tiếp theo nếu có
-            if current_idx < len(parts) and parts[current_idx].upper() == 'NULL':
-                current_idx += 1
-            
-            # Đọc 4 cột góp ý (cauhoi 13-16)
+            # Đọc 4 cột góp ý (câu hỏi 13-16) - nằm ở cuối mỗi dòng
+            # Vị trí bắt đầu của 4 cột góp ý
+            gopy_start_idx = danhgia_idx + 1
             gopy_values = []
             for i in range(4):
-                if current_idx + i < len(parts):
-                    val = parts[current_idx + i]
+                if gopy_start_idx + i < len(parts):
+                    val = parts[gopy_start_idx + i]
                     gopy_values.append(val if val and val != 'NULL' else None)
                 else:
                     gopy_values.append(None)
@@ -146,10 +131,10 @@ def extract_and_transform_survey(file_path: str):
             # Tạo SubmissionID
             SubmissionID = f"{MaSV}_{LopHP}_{MaGV}_{FILE_NAME}"
 
-            # Khởi tạo hoặc cập nhật dữ liệu cho SubmissionID
+            # Khởi tạo nếu chưa có
             if SubmissionID not in survey_data:
                 survey_data[SubmissionID] = {
-                    'SubmissionID': SubmissionID,  # Thêm cột SubmissionID
+                    'SubmissionID': SubmissionID,
                     'Lop': Lop,
                     'MaSV': MaSV,
                     'HoDem': HoDem,
@@ -171,21 +156,20 @@ def extract_and_transform_survey(file_path: str):
                     'Col13': None
                 }
             
-            # Điền giá trị cho câu hỏi tương ứng
+            # Điền giá trị cho câu hỏi
             if cauhoi_num is not None:
                 if 1 <= cauhoi_num <= 12:
-                    # Câu hỏi 1-12: lấy điểm đánh giá
-                    if danhgia is not None and str(danhgia).isdigit():
+                    # Điền điểm đánh giá cho câu hỏi 1-12
+                    if danhgia is not None:
                         survey_data[SubmissionID][f'CauHoi{cauhoi_num}'] = int(danhgia)
-                    else:
-                        survey_data[SubmissionID][f'CauHoi{cauhoi_num}'] = danhgia
                 elif 13 <= cauhoi_num <= 16:
-                    # Câu hỏi 13-16: lấy từ gopy_values
+                    # Điền góp ý cho câu hỏi 13-16
                     idx = cauhoi_num - 13
                     if idx < len(gopy_values):
-                        survey_data[SubmissionID][f'CauHoi{cauhoi_num}'] = gopy_values[idx]
+                        val = gopy_values[idx]
+                        survey_data[SubmissionID][f'CauHoi{cauhoi_num}'] = val
                         if cauhoi_num == 13:
-                            survey_data[SubmissionID]['Col13'] = gopy_values[idx]
+                            survey_data[SubmissionID]['Col13'] = val
 
         except Exception as e:
             logging.warning(f"Bỏ qua dòng {line_num} do lỗi định dạng: {e}")
@@ -196,8 +180,8 @@ def extract_and_transform_survey(file_path: str):
     
     # Sắp xếp lại các cột theo đúng thứ tự yêu cầu
     column_order = [
-        'Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP', 'MaGV', 
-        'HoDemGV', 'TenGV', 'LopHP', 'SubmissionID', 'CauHoi1', 'CauHoi2', 'CauHoi3', 'CauHoi4', 
+        'SubmissionID', 'Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP', 'MaGV', 
+        'HoDemGV', 'TenGV', 'LopHP', 'CauHoi1', 'CauHoi2', 'CauHoi3', 'CauHoi4', 
         'CauHoi5', 'CauHoi6', 'CauHoi7', 'CauHoi8', 'CauHoi9', 'CauHoi10', 
         'CauHoi11', 'CauHoi12', 'Col13', 'CauHoi13', 'CauHoi14', 'CauHoi15', 'CauHoi16'
     ]
@@ -206,11 +190,11 @@ def extract_and_transform_survey(file_path: str):
     existing_columns = [col for col in column_order if col in survey_df.columns]
     survey_df = survey_df[existing_columns]
     
-    # Đảm bảo các cột CauHoi1-12 là integer nếu có thể
+    # Chuyển đổi CauHoi1-12 sang Int64 (nullable integer) để tránh .0
     for i in range(1, 13):
         col_name = f'CauHoi{i}'
         if col_name in survey_df.columns:
-            survey_df[col_name] = pd.to_numeric(survey_df[col_name], errors='ignore')
+            survey_df[col_name] = pd.to_numeric(survey_df[col_name], errors='coerce').astype('Int64')
     
     logging.info(f"✅ Hoàn tất xử lý: {len(survey_df)} hàng dữ liệu survey")
     
@@ -266,10 +250,10 @@ if __name__ == "__main__":
     pd.set_option('display.width', None)
     print(survey_df.head(10).to_string(index=False))
     
-    # Kiểm tra dữ liệu cho một sinh viên cụ thể
+    # Kiểm tra dữ liệu chi tiết cho sinh viên đầu tiên
     if len(survey_df) > 0:
         print("\n" + "="*150)
-        print("🔍 KIỂM TRA DỮ LIỆU SINH VIÊN ĐẦU TIÊN")
+        print("🔍 KIỂM TRA CHI TIẾT SINH VIÊN ĐẦU TIÊN")
         print("="*150)
         first_row = survey_df.iloc[0]
         print(f"SubmissionID: {first_row.get('SubmissionID', 'N/A')}")
@@ -277,11 +261,18 @@ if __name__ == "__main__":
         print(f"MaSV: {first_row.get('MaSV', 'N/A')}")
         print(f"HoDem: {first_row.get('HoDem', 'N/A')}")
         print(f"Ten: {first_row.get('Ten', 'N/A')}")
-        print("\nĐiểm đánh giá các câu hỏi:")
-        for i in range(1, 17):
+        print(f"LopHP: {first_row.get('LopHP', 'N/A')}")
+        print("\n📊 Điểm đánh giá các câu hỏi 1-12:")
+        for i in range(1, 13):
             col = f'CauHoi{i}'
             val = first_row.get(col, 'N/A')
-            print(f"  {col}: {val}")
+            print(f"  {col}: {val} (type: {type(val).__name__})")
+        
+        print("\n💬 Góp ý câu hỏi 13-16:")
+        for i in range(13, 17):
+            col = f'CauHoi{i}'
+            val = first_row.get(col, 'N/A')
+            print(f"  {col}: {val} (type: {type(val).__name__})")
 
     logging.info("=" * 90)
     logging.info("🎉 HOÀN TẤT SURVEY ETL PIPELINE")

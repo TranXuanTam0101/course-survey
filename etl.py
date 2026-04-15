@@ -3,6 +3,7 @@ import sys
 import logging
 from datetime import datetime
 import pandas as pd
+import numpy as np
 from azure.storage.blob import BlobServiceClient
 
 # ==================== CẤU HÌNH LOGGING ====================
@@ -119,11 +120,16 @@ def extract_and_transform_survey(file_path: str):
             CauHoi = int(parts[cau_hoi_idx]) if cau_hoi_idx < len(parts) and str(parts[cau_hoi_idx]).isdigit() else None
             DanhGia = int(parts[cau_hoi_idx + 1]) if cau_hoi_idx + 1 < len(parts) and str(parts[cau_hoi_idx + 1]).isdigit() else None
 
-            # 4 cột góp ý mở (giữ nguyên)
+            # 4 cột góp ý mở (giữ nguyên - KHÔNG XỬ LÝ)
             gopy_start = cau_hoi_idx + 3
-            gopy_values = parts[gopy_start:gopy_start + 4] + [None] * 4
-            gopy_values = gopy_values[:4]
+            gopy_values = []
+            for i in range(4):
+                if gopy_start + i < len(parts):
+                    gopy_values.append(parts[gopy_start + i])
+                else:
+                    gopy_values.append(None)
 
+            # Tạo SubmissionID
             SubmissionID = f"{MaSV}_{LopHP}_{MaGV}_{FILE_NAME}"
 
             # Khởi tạo hoặc cập nhật dữ liệu cho SubmissionID
@@ -142,27 +148,35 @@ def extract_and_transform_survey(file_path: str):
                     'LopHP': LopHP,
                     'Semester': SEMESTER,
                     'SubmittedAt': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    # Khởi tạo các cột câu hỏi
+                    # Khởi tạo các cột câu hỏi (dùng integer để tránh .0)
                     'CauHoi1': None, 'CauHoi2': None, 'CauHoi3': None, 'CauHoi4': None,
                     'CauHoi5': None, 'CauHoi6': None, 'CauHoi7': None, 'CauHoi8': None,
                     'CauHoi9': None, 'CauHoi10': None, 'CauHoi11': None, 'CauHoi12': None,
+                    # CauHoi13-16 lưu dưới dạng string (giữ nguyên không xử lý)
                     'CauHoi13': None, 'CauHoi14': None, 'CauHoi15': None, 'CauHoi16': None,
                     'Col13': None
                 }
             
             # Điền giá trị cho câu hỏi tương ứng
-            if CauHoi:
+            if CauHoi is not None:
                 if 1 <= CauHoi <= 12:
-                    survey_data[SubmissionID][f'CauHoi{CauHoi}'] = DanhGia
+                    # Đảm bảo DanhGia là integer, không phải float
+                    if DanhGia is not None:
+                        survey_data[SubmissionID][f'CauHoi{CauHoi}'] = int(DanhGia)
                 elif CauHoi == 13:
-                    survey_data[SubmissionID]['CauHoi13'] = gopy_values[0] if len(gopy_values) > 0 else None
-                    survey_data[SubmissionID]['Col13'] = gopy_values[0] if len(gopy_values) > 0 else None
+                    # CHỈ LẤY KẾT QUẢ, KHÔNG XỬ LÝ - giữ nguyên giá trị gốc
+                    raw_value = gopy_values[0] if len(gopy_values) > 0 and gopy_values[0] is not None else None
+                    survey_data[SubmissionID]['CauHoi13'] = raw_value
+                    survey_data[SubmissionID]['Col13'] = raw_value  # Giữ nguyên Col13
                 elif CauHoi == 14:
-                    survey_data[SubmissionID]['CauHoi14'] = gopy_values[1] if len(gopy_values) > 1 else None
+                    # CHỈ LẤY KẾT QUẢ, KHÔNG XỬ LÝ
+                    survey_data[SubmissionID]['CauHoi14'] = gopy_values[1] if len(gopy_values) > 1 and gopy_values[1] is not None else None
                 elif CauHoi == 15:
-                    survey_data[SubmissionID]['CauHoi15'] = gopy_values[2] if len(gopy_values) > 2 else None
+                    # CHỈ LẤY KẾT QUẢ, KHÔNG XỬ LÝ
+                    survey_data[SubmissionID]['CauHoi15'] = gopy_values[2] if len(gopy_values) > 2 and gopy_values[2] is not None else None
                 elif CauHoi == 16:
-                    survey_data[SubmissionID]['CauHoi16'] = gopy_values[3] if len(gopy_values) > 3 else None
+                    # CHỈ LẤY KẾT QUẢ, KHÔNG XỬ LÝ
+                    survey_data[SubmissionID]['CauHoi16'] = gopy_values[3] if len(gopy_values) > 3 and gopy_values[3] is not None else None
 
         except Exception as e:
             logging.warning(f"Bỏ qua dòng {line_num} do lỗi định dạng: {e}")
@@ -181,8 +195,26 @@ def extract_and_transform_survey(file_path: str):
     # Chỉ giữ các cột có trong DataFrame
     existing_columns = [col for col in column_order if col in survey_df.columns]
     survey_df = survey_df[existing_columns]
+    
+    # Đảm bảo các cột CauHoi1-12 là integer (không có .0)
+    for i in range(1, 13):
+        col_name = f'CauHoi{i}'
+        if col_name in survey_df.columns:
+            # Chuyển đổi sang Int64 (nullable integer) để tránh .0
+            survey_df[col_name] = pd.to_numeric(survey_df[col_name], errors='coerce').astype('Int64')
+    
+    # CauHoi13-16 giữ nguyên kiểu string (không xử lý)
 
     logging.info(f"✅ Hoàn tất xử lý: {len(survey_df)} hàng dữ liệu survey")
+    
+    # In thông tin về kiểu dữ liệu
+    logging.info("📊 Kiểu dữ liệu các cột:")
+    for i in range(1, 17):
+        col_name = f'CauHoi{i}'
+        if col_name in survey_df.columns:
+            sample_val = survey_df[col_name].iloc[0] if len(survey_df) > 0 else None
+            logging.info(f"   {col_name}: {type(sample_val).__name__} - Ví dụ: {sample_val}")
+    
     return survey_df
 
 # ==================== MAIN ====================
@@ -232,6 +264,17 @@ if __name__ == "__main__":
     print("📋 10 DÒNG MẪU - SURVEY DATA (PIVOTED)")
     print("="*130)
     print(survey_df.head(10).to_string(index=False))
+    
+    # Kiểm tra giá trị của CauHoi5 và CauHoi13-16
+    print("\n" + "="*130)
+    print("🔍 KIỂM TRA DỮ LIỆU CÂU HỎI")
+    print("="*130)
+    if 'CauHoi5' in survey_df.columns:
+        print(f"CauHoi5 - Kiểu: {survey_df['CauHoi5'].dtype}, Giá trị mẫu: {survey_df['CauHoi5'].iloc[0] if len(survey_df) > 0 else 'N/A'}")
+    for i in range(13, 17):
+        col = f'CauHoi{i}'
+        if col in survey_df.columns:
+            print(f"{col} - Kiểu: {survey_df[col].dtype}, Giá trị mẫu: {survey_df[col].iloc[0] if len(survey_df) > 0 else 'N/A'}")
 
     logging.info("=" * 90)
     logging.info("🎉 HOÀN TẤT SURVEY ETL PIPELINE")

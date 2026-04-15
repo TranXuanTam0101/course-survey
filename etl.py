@@ -71,7 +71,7 @@ def extract_and_transform_survey(file_path: str):
             
             MaSV = parts[1]
 
-            # Tìm NgaySinh
+            # Tìm NgaySinh (có định dạng dd/mm/yyyy)
             ngay_sinh_idx = next((i for i, x in enumerate(parts) 
                                 if '/' in str(x) and len(str(x).split('/')) == 3), None)
             if ngay_sinh_idx is None:
@@ -80,52 +80,66 @@ def extract_and_transform_survey(file_path: str):
             # Họ tên Sinh viên
             ho_ten_sv = parts[2:ngay_sinh_idx]
             HoDem = ho_ten_sv[0] if ho_ten_sv else ''
-            Ten = ','.join(ho_ten_sv[1:]) if len(ho_ten_sv) > 1 else ''
+            Ten = ' '.join(ho_ten_sv[1:]) if len(ho_ten_sv) > 1 else ''
 
-            # Tên học phần
+            # Mã học phần
             MaHP_idx = ngay_sinh_idx + 1
             MaHP = parts[MaHP_idx] if MaHP_idx < len(parts) else ''
 
-            # Tìm MaGV
+            # Tìm MaGV (số có 7 chữ số)
             MaGV_idx = next((i for i in range(MaHP_idx + 1, len(parts)) 
                            if str(parts[i]).isdigit() and len(str(parts[i])) >= 6), None)
             if MaGV_idx is None:
                 continue
 
+            # Tên học phần (các phần tử giữa MaHP và MaGV)
             TenHP = ','.join(parts[MaHP_idx + 1:MaGV_idx]).strip()
             MaGV = parts[MaGV_idx]
 
-            # Họ tên Giảng viên
+            # Tìm LopHP (có dạng xxx_xxx chứa dấu _ và số)
             LopHP_idx = next((i for i in range(MaGV_idx + 1, len(parts)) 
                             if '_' in str(parts[i]) and any(c.isdigit() for c in str(parts[i]))), None)
             if LopHP_idx is None:
                 continue
 
+            # Họ tên Giảng viên (các phần tử giữa MaGV và LopHP)
             ho_ten_gv = parts[MaGV_idx + 1:LopHP_idx]
             HoDemGV = ho_ten_gv[0] if ho_ten_gv else ''
-            TenGV = ','.join(ho_ten_gv[1:]) if len(ho_ten_gv) > 1 else ''
+            TenGV = ' '.join(ho_ten_gv[1:]) if len(ho_ten_gv) > 1 else ''
 
             LopHP = parts[LopHP_idx]
 
-            # BỎ QUA CỘT NULL SAU LopHP (cột toàn giá trị NULL)
-            # Tìm vị trí bắt đầu của câu hỏi (sau cột NULL)
-            null_col_idx = LopHP_idx + 1
-            # Kiểm tra nếu cột đó là NULL thì bỏ qua, chuyển sang cột tiếp theo
-            if null_col_idx < len(parts) and parts[null_col_idx].upper() == 'NULL':
-                cau_hoi_idx = null_col_idx + 1
-            else:
-                cau_hoi_idx = null_col_idx
+            # Tìm vị trí bắt đầu của câu hỏi (sau LopHP)
+            # Bỏ qua cột NULL nếu có
+            current_idx = LopHP_idx + 1
+            if current_idx < len(parts) and parts[current_idx].upper() == 'NULL':
+                current_idx += 1
             
-            # Xử lý CauHoi và DanhGia
-            CauHoi = int(parts[cau_hoi_idx]) if cau_hoi_idx < len(parts) and str(parts[cau_hoi_idx]).isdigit() else None
-            DanhGia = int(parts[cau_hoi_idx + 1]) if cau_hoi_idx + 1 < len(parts) and str(parts[cau_hoi_idx + 1]).isdigit() else None
-
-            # 4 cột góp ý mở (giữ nguyên - KHÔNG XỬ LÝ)
-            gopy_start = cau_hoi_idx + 3
+            # Đọc số thứ tự câu hỏi (1-16)
+            cauhoi_num = None
+            if current_idx < len(parts) and parts[current_idx].isdigit():
+                cauhoi_num = int(parts[current_idx])
+                current_idx += 1
+            
+            # Đọc điểm đánh giá (nếu có)
+            danhgia = None
+            if current_idx < len(parts) and parts[current_idx] and parts[current_idx] != 'NULL':
+                if parts[current_idx].isdigit():
+                    danhgia = int(parts[current_idx])
+                else:
+                    danhgia = parts[current_idx]  # Có thể là text
+                current_idx += 1
+            
+            # Bỏ qua cột NULL tiếp theo nếu có
+            if current_idx < len(parts) and parts[current_idx].upper() == 'NULL':
+                current_idx += 1
+            
+            # Đọc 4 cột góp ý (cauhoi 13-16)
             gopy_values = []
             for i in range(4):
-                if gopy_start + i < len(parts):
-                    gopy_values.append(parts[gopy_start + i])
+                if current_idx + i < len(parts):
+                    val = parts[current_idx + i]
+                    gopy_values.append(val if val and val != 'NULL' else None)
                 else:
                     gopy_values.append(None)
 
@@ -135,6 +149,7 @@ def extract_and_transform_survey(file_path: str):
             # Khởi tạo hoặc cập nhật dữ liệu cho SubmissionID
             if SubmissionID not in survey_data:
                 survey_data[SubmissionID] = {
+                    'SubmissionID': SubmissionID,  # Thêm cột SubmissionID
                     'Lop': Lop,
                     'MaSV': MaSV,
                     'HoDem': HoDem,
@@ -148,46 +163,41 @@ def extract_and_transform_survey(file_path: str):
                     'LopHP': LopHP,
                     'Semester': SEMESTER,
                     'SubmittedAt': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    # Khởi tạo các cột câu hỏi (dùng integer để tránh .0)
+                    # Khởi tạo các cột câu hỏi
                     'CauHoi1': None, 'CauHoi2': None, 'CauHoi3': None, 'CauHoi4': None,
                     'CauHoi5': None, 'CauHoi6': None, 'CauHoi7': None, 'CauHoi8': None,
                     'CauHoi9': None, 'CauHoi10': None, 'CauHoi11': None, 'CauHoi12': None,
-                    # CauHoi13-16 lưu dưới dạng string (giữ nguyên không xử lý)
                     'CauHoi13': None, 'CauHoi14': None, 'CauHoi15': None, 'CauHoi16': None,
                     'Col13': None
                 }
             
             # Điền giá trị cho câu hỏi tương ứng
-            if CauHoi is not None:
-                if 1 <= CauHoi <= 12:
-                    # Đảm bảo DanhGia là integer, không phải float
-                    if DanhGia is not None:
-                        survey_data[SubmissionID][f'CauHoi{CauHoi}'] = int(DanhGia)
-                elif CauHoi == 13:
-                    # CHỈ LẤY KẾT QUẢ, KHÔNG XỬ LÝ - giữ nguyên giá trị gốc
-                    raw_value = gopy_values[0] if len(gopy_values) > 0 and gopy_values[0] is not None else None
-                    survey_data[SubmissionID]['CauHoi13'] = raw_value
-                    survey_data[SubmissionID]['Col13'] = raw_value  # Giữ nguyên Col13
-                elif CauHoi == 14:
-                    # CHỈ LẤY KẾT QUẢ, KHÔNG XỬ LÝ
-                    survey_data[SubmissionID]['CauHoi14'] = gopy_values[1] if len(gopy_values) > 1 and gopy_values[1] is not None else None
-                elif CauHoi == 15:
-                    # CHỈ LẤY KẾT QUẢ, KHÔNG XỬ LÝ
-                    survey_data[SubmissionID]['CauHoi15'] = gopy_values[2] if len(gopy_values) > 2 and gopy_values[2] is not None else None
-                elif CauHoi == 16:
-                    # CHỈ LẤY KẾT QUẢ, KHÔNG XỬ LÝ
-                    survey_data[SubmissionID]['CauHoi16'] = gopy_values[3] if len(gopy_values) > 3 and gopy_values[3] is not None else None
+            if cauhoi_num is not None:
+                if 1 <= cauhoi_num <= 12:
+                    # Câu hỏi 1-12: lấy điểm đánh giá
+                    if danhgia is not None and str(danhgia).isdigit():
+                        survey_data[SubmissionID][f'CauHoi{cauhoi_num}'] = int(danhgia)
+                    else:
+                        survey_data[SubmissionID][f'CauHoi{cauhoi_num}'] = danhgia
+                elif 13 <= cauhoi_num <= 16:
+                    # Câu hỏi 13-16: lấy từ gopy_values
+                    idx = cauhoi_num - 13
+                    if idx < len(gopy_values):
+                        survey_data[SubmissionID][f'CauHoi{cauhoi_num}'] = gopy_values[idx]
+                        if cauhoi_num == 13:
+                            survey_data[SubmissionID]['Col13'] = gopy_values[idx]
 
         except Exception as e:
             logging.warning(f"Bỏ qua dòng {line_num} do lỗi định dạng: {e}")
+            continue
 
     # Chuyển đổi thành DataFrame
     survey_df = pd.DataFrame(list(survey_data.values()))
     
-    # Sắp xếp lại các cột theo đúng thứ tự yêu cầu (Lop ở vị trí đầu tiên)
+    # Sắp xếp lại các cột theo đúng thứ tự yêu cầu
     column_order = [
         'Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP', 'MaGV', 
-        'HoDemGV', 'TenGV', 'LopHP', 'CauHoi1', 'CauHoi2', 'CauHoi3', 'CauHoi4', 
+        'HoDemGV', 'TenGV', 'LopHP', 'SubmissionID', 'CauHoi1', 'CauHoi2', 'CauHoi3', 'CauHoi4', 
         'CauHoi5', 'CauHoi6', 'CauHoi7', 'CauHoi8', 'CauHoi9', 'CauHoi10', 
         'CauHoi11', 'CauHoi12', 'Col13', 'CauHoi13', 'CauHoi14', 'CauHoi15', 'CauHoi16'
     ]
@@ -196,24 +206,13 @@ def extract_and_transform_survey(file_path: str):
     existing_columns = [col for col in column_order if col in survey_df.columns]
     survey_df = survey_df[existing_columns]
     
-    # Đảm bảo các cột CauHoi1-12 là integer (không có .0)
+    # Đảm bảo các cột CauHoi1-12 là integer nếu có thể
     for i in range(1, 13):
         col_name = f'CauHoi{i}'
         if col_name in survey_df.columns:
-            # Chuyển đổi sang Int64 (nullable integer) để tránh .0
-            survey_df[col_name] = pd.to_numeric(survey_df[col_name], errors='coerce').astype('Int64')
+            survey_df[col_name] = pd.to_numeric(survey_df[col_name], errors='ignore')
     
-    # CauHoi13-16 giữ nguyên kiểu string (không xử lý)
-
     logging.info(f"✅ Hoàn tất xử lý: {len(survey_df)} hàng dữ liệu survey")
-    
-    # In thông tin về kiểu dữ liệu
-    logging.info("📊 Kiểu dữ liệu các cột:")
-    for i in range(1, 17):
-        col_name = f'CauHoi{i}'
-        if col_name in survey_df.columns:
-            sample_val = survey_df[col_name].iloc[0] if len(survey_df) > 0 else None
-            logging.info(f"   {col_name}: {type(sample_val).__name__} - Ví dụ: {sample_val}")
     
     return survey_df
 
@@ -260,21 +259,29 @@ if __name__ == "__main__":
         sys.exit(1)
 
     # 5. In 10 dòng mẫu để kiểm tra
-    print("\n" + "="*130)
-    print("📋 10 DÒNG MẪU - SURVEY DATA (PIVOTED)")
-    print("="*130)
+    print("\n" + "="*150)
+    print("📋 DỮ LIỆU MẪU - SURVEY DATA (PIVOTED)")
+    print("="*150)
+    pd.set_option('display.max_columns', None)
+    pd.set_option('display.width', None)
     print(survey_df.head(10).to_string(index=False))
     
-    # Kiểm tra giá trị của CauHoi5 và CauHoi13-16
-    print("\n" + "="*130)
-    print("🔍 KIỂM TRA DỮ LIỆU CÂU HỎI")
-    print("="*130)
-    if 'CauHoi5' in survey_df.columns:
-        print(f"CauHoi5 - Kiểu: {survey_df['CauHoi5'].dtype}, Giá trị mẫu: {survey_df['CauHoi5'].iloc[0] if len(survey_df) > 0 else 'N/A'}")
-    for i in range(13, 17):
-        col = f'CauHoi{i}'
-        if col in survey_df.columns:
-            print(f"{col} - Kiểu: {survey_df[col].dtype}, Giá trị mẫu: {survey_df[col].iloc[0] if len(survey_df) > 0 else 'N/A'}")
+    # Kiểm tra dữ liệu cho một sinh viên cụ thể
+    if len(survey_df) > 0:
+        print("\n" + "="*150)
+        print("🔍 KIỂM TRA DỮ LIỆU SINH VIÊN ĐẦU TIÊN")
+        print("="*150)
+        first_row = survey_df.iloc[0]
+        print(f"SubmissionID: {first_row.get('SubmissionID', 'N/A')}")
+        print(f"Lop: {first_row.get('Lop', 'N/A')}")
+        print(f"MaSV: {first_row.get('MaSV', 'N/A')}")
+        print(f"HoDem: {first_row.get('HoDem', 'N/A')}")
+        print(f"Ten: {first_row.get('Ten', 'N/A')}")
+        print("\nĐiểm đánh giá các câu hỏi:")
+        for i in range(1, 17):
+            col = f'CauHoi{i}'
+            val = first_row.get(col, 'N/A')
+            print(f"  {col}: {val}")
 
     logging.info("=" * 90)
     logging.info("🎉 HOÀN TẤT SURVEY ETL PIPELINE")

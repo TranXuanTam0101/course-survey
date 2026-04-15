@@ -161,7 +161,6 @@ def extract_and_transform_survey(file_path: str):
                     'TenGV': TenGV,
                     'LopHP': LopHP,
                     'Semester': SEMESTER,
-                    'SubmittedAt': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     'responses': {},  # Dictionary lưu câu trả lời cho CauHoi 1-12
                     'gopy_values': [None, None, None, None]  # Mảng 4 phần tử cho góp ý CauHoi 13-16
                 }

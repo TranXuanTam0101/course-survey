@@ -51,10 +51,10 @@ def download_from_blob():
 
 # ==================== ETL: EXTRACT + TRANSFORM ====================
 def extract_and_transform_survey(file_path: str):
-    logging.info("🔄 Bắt đầu xử lý dữ liệu raw...")
+    logging.info("🔄 Bắt đầu xử lý dữ liệu (Pivot 12 dòng thành 1 hàng)...")
 
-    submissions = []
-    responses = []
+    # Dictionary để nhóm dữ liệu theo cặp (Sinh viên, Lớp học phần)
+    data_map = {}
 
     with open(file_path, 'r', encoding='utf-8') as f:
         lines = f.readlines()
@@ -67,133 +67,108 @@ def extract_and_transform_survey(file_path: str):
         parts = [p.strip() for p in line.split(',')]
 
         try:
+            # Nhận diện các thông tin cố định
+            Lop = parts[0]
             MaSV = parts[1]
-
-            # Tìm NgaySinh
+            
+            # Tìm NgaySinh để xác định vị trí các cột động
             ngay_sinh_idx = next((i for i, x in enumerate(parts) 
                                 if '/' in str(x) and len(str(x).split('/')) == 3), None)
             if ngay_sinh_idx is None:
                 continue
 
-            # Họ tên Sinh viên
-            ho_ten_sv = parts[2:ngay_sinh_idx]
-            HoDem = ho_ten_sv[0] if ho_ten_sv else ''
-            Ten = ','.join(ho_ten_sv[1:]) if len(ho_ten_sv) > 1 else ''
+            HoDem = parts[2]
+            Ten = " ".join(parts[3:ngay_sinh_idx])
+            NgaySinh = parts[ngay_sinh_idx]
 
-            # Tên học phần
-            MaHP_idx = ngay_sinh_idx + 1
-            MaHP = parts[MaHP_idx] if MaHP_idx < len(parts) else ''
-
-            # Tìm MaGV
-            MaGV_idx = next((i for i in range(MaHP_idx + 1, len(parts)) 
-                           if str(parts[i]).isdigit() and len(str(parts[i])) >= 6), None)
-            if MaGV_idx is None:
-                continue
-
-            TenHP = ','.join(parts[MaHP_idx + 1:MaGV_idx]).strip()
+            MaHP = parts[ngay_sinh_idx + 1]
+            
+            # Tìm MaGV (số >= 6 chữ số)
+            MaGV_idx = next((i for i in range(ngay_sinh_idx + 2, len(parts)) 
+                           if parts[i].isdigit() and len(parts[i]) >= 6), None)
+            TenHP = " ".join(parts[ngay_sinh_idx + 2:MaGV_idx])
             MaGV = parts[MaGV_idx]
 
-            # Họ tên Giảng viên
+            # Tìm LopHP
             LopHP_idx = next((i for i in range(MaGV_idx + 1, len(parts)) 
-                            if '_' in str(parts[i]) and any(c.isdigit() for c in str(parts[i]))), None)
-            if LopHP_idx is None:
-                continue
-
-            ho_ten_gv = parts[MaGV_idx + 1:LopHP_idx]
-            HoDemGV = ho_ten_gv[0] if ho_ten_gv else ''
-            TenGV = ','.join(ho_ten_gv[1:]) if len(ho_ten_gv) > 1 else ''
-
+                            if '_' in parts[i]), None)
+            HoDemGV = parts[MaGV_idx + 1]
+            TenGV = " ".join(parts[MaGV_idx + 2:LopHP_idx])
             LopHP = parts[LopHP_idx]
 
-            # Cột sau LopHP
-            cau_hoi_idx = LopHP_idx + 1
-            CauHoi = int(parts[cau_hoi_idx]) if cau_hoi_idx < len(parts) and str(parts[cau_hoi_idx]).isdigit() else None
-            DanhGia = int(parts[cau_hoi_idx + 1]) if cau_hoi_idx + 1 < len(parts) and str(parts[cau_hoi_idx + 1]).isdigit() else None
+            # Thông tin câu hỏi likert (1-12)
+            cau_hoi_id = parts[LopHP_idx + 1] # Giá trị 1, 2, ..., 12
+            danh_gia_val = parts[LopHP_idx + 2] # Điểm đánh giá (5, 4, ...)
+            
+            # 4 câu hỏi mở cuối cùng (lặp lại ở mỗi dòng)
+            gopy_start = LopHP_idx + 4
+            gopy_values = parts[gopy_start:]
 
-            # 4 cột góp ý mở (giữ nguyên)
-            gopy_start = cau_hoi_idx + 3
-            gopy_values = parts[gopy_start:gopy_start + 4] + [None] * 4
-            gopy_values = gopy_values[:4]
+            # Tạo key định danh duy nhất cho mỗi bài khảo sát của 1 SV cho 1 GV
+            group_key = f"{MaSV}_{LopHP}_{MaGV}"
 
-            SubmissionID = f"{MaSV}_{LopHP}_{MaGV}_{FILE_NAME}"
+            if group_key not in data_map:
+                data_map[group_key] = {
+                    'SubmissionID': f"{group_key}_{FILE_NAME}",
+                    'Lop': Lop, 'MaSV': MaSV, 'HoDem': HoDem, 'Ten': Ten, 'NgaySinh': NgaySinh,
+                    'MaHP': MaHP, 'TenHP': TenHP, 'MaGV': MaGV, 'HoDemGV': HoDemGV, 'TenGV': TenGV,
+                    'LopHP': LopHP, 'Col13': 'NULL',
+                    'CauHoi13': gopy_values[0] if len(gopy_values) > 0 else '',
+                    'CauHoi14': gopy_values[1] if len(gopy_values) > 1 else '',
+                    'CauHoi15': gopy_values[2] if len(gopy_values) > 2 else '',
+                    'CauHoi16': gopy_values[3] if len(gopy_values) > 3 else ''
+                }
+                # Khởi tạo các cột CauHoi1 -> CauHoi12 là rỗng
+                for i in range(1, 13):
+                    data_map[group_key][f'CauHoi{i}'] = None
 
-            # Submission
-            submissions.append({
-                'SubmissionID': SubmissionID,
-                'MaSV': MaSV,
-                'HoDem': HoDem,
-                'Ten': Ten,
-                'NgaySinh': parts[ngay_sinh_idx],
-                'MaHP': MaHP,
-                'TenHP': TenHP,
-                'MaGV': MaGV,
-                'HoDemGV': HoDemGV,
-                'TenGV': TenGV,
-                'LopHP': LopHP,
-                'Semester': SEMESTER,
-                'SubmittedAt': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            })
+            # Điền giá trị đánh giá vào cột tương ứng
+            data_map[group_key][f'CauHoi{cau_hoi_id}'] = danh_gia_val
 
-            # Response
-            if CauHoi:
-                if 1 <= CauHoi <= 12:
-                    responses.append({
-                        'SubmissionID': SubmissionID,
-                        'CauHoi': CauHoi,
-                        'DanhGia': DanhGia,
-                        'GopY': None
-                    })
-                elif 13 <= CauHoi <= 16:
-                    responses.append({
-                        'SubmissionID': SubmissionID,
-                        'CauHoi': CauHoi,
-                        'DanhGia': None,
-                        'GopY': gopy_values[CauHoi - 13]
-                    })
+        except Exception as e:
+            logging.warning(f"Bỏ qua dòng {line_num} do lỗi định dạng: {e}")
 
-        except:
-            logging.warning(f"Bỏ qua dòng {line_num} do lỗi định dạng")
+    # Chuyển từ dictionary sang DataFrame
+    df = pd.DataFrame(data_map.values())
 
-    submissions_df = pd.DataFrame(submissions).drop_duplicates(subset=['SubmissionID']).reset_index(drop=True)
-    responses_df = pd.DataFrame(responses).reset_index(drop=True)
+    # Sắp xếp lại thứ tự cột đúng yêu cầu
+    ordered_columns = [
+        'SubmissionID', 'Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP', 'MaGV', 'HoDemGV', 'TenGV', 'LopHP',
+        'CauHoi1', 'CauHoi2', 'CauHoi3', 'CauHoi4', 'CauHoi5', 'CauHoi6', 'CauHoi7', 'CauHoi8', 'CauHoi9', 'CauHoi10', 'CauHoi11', 'CauHoi12',
+        'Col13', 'CauHoi13', 'CauHoi14', 'CauHoi15', 'CauHoi16'
+    ]
+    
+    # Chỉ lấy các cột có trong ordered_columns (tránh lỗi nếu dữ liệu thiếu cột)
+    df = df.reindex(columns=ordered_columns)
 
-    logging.info(f"✅ Hoàn tất xử lý: {len(submissions_df)} submissions | {len(responses_df)} responses")
-    return submissions_df, responses_df
+    logging.info(f"✅ Hoàn tất xử lý: {len(df)} hàng dữ liệu sau khi pivot.")
+    return df
 
 
 # ==================== MAIN ====================
 if __name__ == "__main__":
     logging.info("=" * 90)
-    logging.info("     BẮT ĐẦU SURVEY ETL PIPELINE")
+    logging.info("     BẮT ĐẦU SURVEY ETL PIPELINE (PIVOT MODE)")
     logging.info("=" * 90)
 
     # 1. Download file từ Azure Blob
     download_from_blob()
 
-    # 2. Xử lý ETL
-    submissions_df, responses_df = extract_and_transform_survey(SURVEY_FILE)
+    # 2. Xử lý ETL (Trả về 1 dataframe duy nhất đã pivot)
+    final_df = extract_and_transform_survey(SURVEY_FILE)
 
     # 3. Xuất file CSV
-    sub_file = f"submissions_cleaned_{FILE_NAME}.csv"
-    res_file = f"responses_cleaned_{FILE_NAME}.csv"
+    output_file = f"survey_cleaned_pivot_{FILE_NAME}.csv"
+    final_df.to_csv(output_file, index=False, encoding='utf-8-sig')
 
-    submissions_df.to_csv(sub_file, index=False, encoding='utf-8-sig')
-    responses_df.to_csv(res_file, index=False, encoding='utf-8-sig')
+    logging.info(f"📁 Đã xuất file: {output_file}")
 
-    logging.info(f"📁 Đã xuất file:")
-    logging.info(f"   • {sub_file}")
-    logging.info(f"   • {res_file}")
-
-    # 4. In 10 dòng mẫu để kiểm tra
+    # 4. In 5 dòng mẫu để kiểm tra
     print("\n" + "="*110)
-    print("📋 10 DÒNG MẪU - SUBMISSIONS")
+    print("📋 5 DÒNG MẪU DỮ LIỆU ĐÃ PIVOT")
     print("="*110)
-    print(submissions_df.head(10).to_string(index=False))
-
-    print("\n" + "="*110)
-    print("📋 10 DÒNG MẪU - RESPONSES")
-    print("="*110)
-    print(responses_df.head(10).to_string(index=False))
+    if not final_df.empty:
+        print(final_df.head(5).to_string(index=False))
 
     logging.info("=" * 90)
     logging.info("🎉 HOÀN TẤT SURVEY ETL PIPELINE")

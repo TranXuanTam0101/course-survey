@@ -15,51 +15,43 @@ logging.basicConfig(
 # ==================== BIẾN MÔI TRƯỜNG ====================
 CONNECTION_STRING = os.environ.get("CONNECTION_STRING")
 SEMESTER = os.environ.get("SEMESTER")
-SURVEY_FILE = os.environ.get("SURVEY_FILE")   # Ví dụ: khaosat_252.csv
+SURVEY_FILE = os.environ.get("SURVEY_FILE")
 
-if not SURVEY_FILE or not SEMESTER:
-    logging.error("Thiếu SEMESTER hoặc SURVEY_FILE")
+if not SEMESTER or not SURVEY_FILE:
+    logging.error("❌ Thiếu SEMESTER hoặc SURVEY_FILE")
     sys.exit(1)
 
 FILE_NAME = os.path.splitext(os.path.basename(SURVEY_FILE))[0]
 
-logging.info(f"Semester         : {SEMESTER}")
-logging.info(f"Survey file      : {SURVEY_FILE}")
-logging.info(f"File name for ID : {FILE_NAME}")
+logging.info(f"Semester    : {SEMESTER}")
+logging.info(f"Survey File : {SURVEY_FILE}")
+logging.info(f"File Name   : {FILE_NAME}")
 
 # ==================== DOWNLOAD FILE TỪ AZURE BLOB ====================
 def download_from_blob():
-    if not CONNECTION_STRING:
-        logging.error("Thiếu CONNECTION_STRING")
-        sys.exit(1)
-
-    logging.info(f"Đang tải file từ Azure Blob: {SURVEY_FILE}")
-
+    print("📥 Connecting to Azure Storage...")
     try:
-        blob_service_client = BlobServiceClient.from_connection_string(CONNECTION_STRING)
-        
-        # Container thường là "processed-data" hoặc bạn cần chỉnh nếu khác
-        container_name = "processed-data"
-        # Nếu file nằm trong thư mục con theo semester
-        blob_path = f"{SEMESTER}/{SURVEY_FILE}" if SEMESTER else SURVEY_FILE
+        blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
+        blob_client = blob_service.get_container_client("rawdata").get_blob_client(f"{SEMESTER}/{SURVEY_FILE}")
 
-        blob_client = blob_service_client.get_blob_client(container=container_name, blob=blob_path)
+        logging.info(f"📤 Downloading blob: {SEMESTER}/{SURVEY_FILE}")
 
-        # Tải về thư mục hiện tại
-        with open(SURVEY_FILE, "wb") as download_file:
-            download_stream = blob_client.download_blob()
-            download_file.write(download_stream.readall())
+        data = blob_client.download_blob().readall()
 
-        logging.info(f"✅ Tải thành công: {SURVEY_FILE} ({os.path.getsize(SURVEY_FILE)/1024:.1f} KB)")
-        
+        # Lưu file vào thư mục hiện tại
+        with open(SURVEY_FILE, "wb") as f:
+            f.write(data)
+
+        logging.info(f"✅ Download thành công: {SURVEY_FILE} ({len(data)/1024:.1f} KB)")
+
     except Exception as e:
-        logging.error(f"❌ Lỗi tải file từ Blob: {e}")
-        logging.error("Kiểm tra: Container name, đường dẫn blob, và quyền truy cập.")
+        logging.error(f"❌ Lỗi download từ Azure Blob: {e}")
         sys.exit(1)
+
 
 # ==================== ETL: EXTRACT + TRANSFORM ====================
 def extract_and_transform_survey(file_path: str):
-    logging.info("Bắt đầu xử lý dữ liệu raw...")
+    logging.info("🔄 Bắt đầu xử lý dữ liệu raw...")
 
     submissions = []
     responses = []
@@ -83,7 +75,7 @@ def extract_and_transform_survey(file_path: str):
             if ngay_sinh_idx is None:
                 continue
 
-            # Họ tên SV
+            # Họ tên Sinh viên
             ho_ten_sv = parts[2:ngay_sinh_idx]
             HoDem = ho_ten_sv[0] if ho_ten_sv else ''
             Ten = ','.join(ho_ten_sv[1:]) if len(ho_ten_sv) > 1 else ''
@@ -92,6 +84,7 @@ def extract_and_transform_survey(file_path: str):
             MaHP_idx = ngay_sinh_idx + 1
             MaHP = parts[MaHP_idx] if MaHP_idx < len(parts) else ''
 
+            # Tìm MaGV
             MaGV_idx = next((i for i in range(MaHP_idx + 1, len(parts)) 
                            if str(parts[i]).isdigit() and len(str(parts[i])) >= 6), None)
             if MaGV_idx is None:
@@ -100,7 +93,7 @@ def extract_and_transform_survey(file_path: str):
             TenHP = ','.join(parts[MaHP_idx + 1:MaGV_idx]).strip()
             MaGV = parts[MaGV_idx]
 
-            # Họ tên GV
+            # Họ tên Giảng viên
             LopHP_idx = next((i for i in range(MaGV_idx + 1, len(parts)) 
                             if '_' in str(parts[i]) and any(c.isdigit() for c in str(parts[i]))), None)
             if LopHP_idx is None:
@@ -112,17 +105,19 @@ def extract_and_transform_survey(file_path: str):
 
             LopHP = parts[LopHP_idx]
 
-            # Cột sau
+            # Cột sau LopHP
             cau_hoi_idx = LopHP_idx + 1
             CauHoi = int(parts[cau_hoi_idx]) if cau_hoi_idx < len(parts) and str(parts[cau_hoi_idx]).isdigit() else None
             DanhGia = int(parts[cau_hoi_idx + 1]) if cau_hoi_idx + 1 < len(parts) and str(parts[cau_hoi_idx + 1]).isdigit() else None
 
+            # 4 cột góp ý mở (giữ nguyên)
             gopy_start = cau_hoi_idx + 3
-            gopy_values = parts[gopy_start:gopy_start+4]
-            CauHoi13, CauHoi14, CauHoi15, CauHoi16 = (gopy_values + [None]*4)[:4]
+            gopy_values = parts[gopy_start:gopy_start + 4] + [None] * 4
+            gopy_values = gopy_values[:4]
 
             SubmissionID = f"{MaSV}_{LopHP}_{MaGV}_{FILE_NAME}"
 
+            # Submission
             submissions.append({
                 'SubmissionID': SubmissionID,
                 'MaSV': MaSV,
@@ -139,53 +134,67 @@ def extract_and_transform_survey(file_path: str):
                 'SubmittedAt': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             })
 
+            # Response
             if CauHoi:
                 if 1 <= CauHoi <= 12:
-                    responses.append({'SubmissionID': SubmissionID, 'CauHoi': CauHoi, 'DanhGia': DanhGia, 'GopY': None})
+                    responses.append({
+                        'SubmissionID': SubmissionID,
+                        'CauHoi': CauHoi,
+                        'DanhGia': DanhGia,
+                        'GopY': None
+                    })
                 elif 13 <= CauHoi <= 16:
-                    gopy = gopy_values[CauHoi - 13]
-                    responses.append({'SubmissionID': SubmissionID, 'CauHoi': CauHoi, 'DanhGia': None, 'GopY': gopy})
+                    responses.append({
+                        'SubmissionID': SubmissionID,
+                        'CauHoi': CauHoi,
+                        'DanhGia': None,
+                        'GopY': gopy_values[CauHoi - 13]
+                    })
 
         except:
-            logging.warning(f"Bỏ qua dòng {line_num}")
+            logging.warning(f"Bỏ qua dòng {line_num} do lỗi định dạng")
 
     submissions_df = pd.DataFrame(submissions).drop_duplicates(subset=['SubmissionID']).reset_index(drop=True)
     responses_df = pd.DataFrame(responses).reset_index(drop=True)
 
-    logging.info(f"Hoàn tất ETL → Submissions: {len(submissions_df)} | Responses: {len(responses_df)}")
+    logging.info(f"✅ Hoàn tất xử lý: {len(submissions_df)} submissions | {len(responses_df)} responses")
     return submissions_df, responses_df
 
 
 # ==================== MAIN ====================
 if __name__ == "__main__":
     logging.info("=" * 90)
-    logging.info("     BẮT ĐẦU ETL PIPELINE")
+    logging.info("     BẮT ĐẦU SURVEY ETL PIPELINE")
     logging.info("=" * 90)
 
-    # Bước 1: Tải file từ Azure Blob
+    # 1. Download file từ Azure Blob
     download_from_blob()
 
-    # Bước 2: Xử lý ETL
+    # 2. Xử lý ETL
     submissions_df, responses_df = extract_and_transform_survey(SURVEY_FILE)
 
-    # Xuất file CSV
+    # 3. Xuất file CSV
     sub_file = f"submissions_cleaned_{FILE_NAME}.csv"
     res_file = f"responses_cleaned_{FILE_NAME}.csv"
 
     submissions_df.to_csv(sub_file, index=False, encoding='utf-8-sig')
     responses_df.to_csv(res_file, index=False, encoding='utf-8-sig')
 
-    logging.info(f"Đã xuất: {sub_file} và {res_file}")
+    logging.info(f"📁 Đã xuất file:")
+    logging.info(f"   • {sub_file}")
+    logging.info(f"   • {res_file}")
 
-    # In mẫu
-    print("\n" + "="*100)
-    print("10 DÒNG MẪU - SUBMISSIONS")
-    print("="*100)
+    # 4. In 10 dòng mẫu để kiểm tra
+    print("\n" + "="*110)
+    print("📋 10 DÒNG MẪU - SUBMISSIONS")
+    print("="*110)
     print(submissions_df.head(10).to_string(index=False))
 
-    print("\n" + "="*100)
-    print("10 DÒNG MẪU - RESPONSES")
-    print("="*100)
+    print("\n" + "="*110)
+    print("📋 10 DÒNG MẪU - RESPONSES")
+    print("="*110)
     print(responses_df.head(10).to_string(index=False))
 
-    logging.info("=== HOÀN TẤT ETL ===")
+    logging.info("=" * 90)
+    logging.info("🎉 HOÀN TẤT SURVEY ETL PIPELINE")
+    logging.info("=" * 90)

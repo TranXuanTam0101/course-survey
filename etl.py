@@ -76,7 +76,7 @@ def extract_and_transform_survey(file_path: str):
             
             MaSV = parts[1]
             
-            # Tìm NgaySinh (tìm phần tử có chứa /)
+            # Tìm NgaySinh (tìm phần tử có chứa / và có độ dài 8-10 ký tự)
             ngay_sinh_idx = None
             for i, val in enumerate(parts):
                 if '/' in str(val) and len(str(val).strip()) >= 8:
@@ -145,7 +145,7 @@ def extract_and_transform_survey(file_path: str):
             gopy_start = len(parts) - 4
             for i in range(gopy_start, len(parts)):
                 if i >= 0 and i < len(parts):
-                    val = parts[i] if parts[i] and parts[i] != 'NULL' else None
+                    val = parts[i] if parts[i] and parts[i].lower() not in ['null', 'none'] else None
                     gopy_values.append(val)
                 else:
                     gopy_values.append(None)

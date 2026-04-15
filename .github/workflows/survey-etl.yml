@@ -20,36 +20,23 @@ jobs:
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       PYTHONIOENCODING: utf-8
-      
     steps:
-      # 1. Checkout code
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
       
-      # 2. Setup Python với caching để tăng tốc
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
           cache: 'pip'
-      
-      # 3. Cài đặt dependencies 
+
       - name: Install dependencies
         run: |
           pip install --no-cache-dir \
             pandas>=2.0.0 \
             azure-storage-blob>=12.19.0
       
-      # 4. Hiển thị thông tin đầu vào (debug)
-      - name: Show input parameters
-        run: |
-          echo "Semester: ${{ github.event.inputs.semester }}"
-          echo "Survey file: ${{ github.event.inputs.survey_file }}"
-      
-      # 5. Chạy ETL với timeout protection
-      - name: Run ETL Pipeline
+      - name: Run ETL
         run: python etl.py
-        timeout-minutes: 30
         env:
           SEMESTER: ${{ github.event.inputs.semester }}
           SURVEY_FILE: ${{ github.event.inputs.survey_file }}

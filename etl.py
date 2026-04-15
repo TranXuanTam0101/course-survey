@@ -1,187 +1,201 @@
 import os
 import sys
-import io
-import pandas as pd
-import sqlalchemy as sa
-import urllib.parse
-import ftfy
+import logging
 from datetime import datetime
-from azure.storage.blob import BlobServiceClient
 
-print("🚀 Starting Professional ETL Pipeline (Fixed ParserError & MaSV PK)...")
+# ==================== CẤU HÌNH THƯ VIỆN ====================
+import pandas as pd
 
-# ==================== 1. CẤU HÌNH & BIẾN MÔI TRƯỜNG ====================
+# Cấu hình Logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s | %(levelname)s | %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+
+# ==================== BIẾN MÔI TRƯỜNG (BẮT BUỘC) ====================
 CONNECTION_STRING = os.environ.get("CONNECTION_STRING")
 SEMESTER = os.environ.get("SEMESTER")
 SURVEY_FILE = os.environ.get("SURVEY_FILE")
 
-sql_server = "course-survey.database.windows.net"
-sql_db     = "course-survey-db"
-sql_user   = "sqladmin"
-sql_pass   = "Due@2026"
+# Kiểm tra các biến môi trường bắt buộc
+missing_vars = []
+if not CONNECTION_STRING:
+    missing_vars.append("CONNECTION_STRING")
+if not SEMESTER:
+    missing_vars.append("SEMESTER")
+if not SURVEY_FILE:
+    missing_vars.append("SURVEY_FILE")
 
-if not CONNECTION_STRING or not SEMESTER or not SURVEY_FILE:
-    print("❌ Missing environment variables!")
+if missing_vars:
+    logging.error("Thiếu biến môi trường bắt buộc: " + ", ".join(missing_vars))
+    logging.error("Vui lòng thiết lập các biến này trước khi chạy.")
     sys.exit(1)
 
-# ==================== 2. HÀM TRỢ GIÚP (CLEANING) ====================
-def clean_text(series, max_len=None):
-    series = series.astype(str).str.strip()
-    series = series.replace(['NULL', 'nan', 'None', ''], None)
-    series = series.apply(lambda x: ftfy.fix_text(str(x)) if pd.notna(x) else x)
-    if max_len:
-        series = series.str[:max_len]
-    return series
+# Lấy tên file để tạo SubmissionID
+FILE_NAME = os.path.splitext(os.path.basename(SURVEY_FILE))[0]
 
-def convert_masv(series):
-    def safe_convert(x):
-        val = str(x).strip()
-        if pd.isna(x) or val in ['', 'NULL', 'nan']:
-            return None
+logging.info(f"File input       : {SURVEY_FILE}")
+logging.info(f"Semester         : {SEMESTER}")
+logging.info(f"File name for ID : {FILE_NAME}")
+
+# ==================== ETL: EXTRACT + TRANSFORM ====================
+def extract_and_transform_survey(file_path: str):
+    if not os.path.exists(file_path):
+        logging.error(f"Không tìm thấy file: {file_path}")
+        sys.exit(1)
+
+    logging.info("Đang đọc và xử lý file raw...")
+
+    submissions = []
+    responses = []
+
+    with open(file_path, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
+
+    for line_num, line in enumerate(lines, 1):
+        line = line.strip()
+        if not line:
+            continue
+
+        parts = [p.strip() for p in line.split(',')]
+
         try:
-            return str(int(float(val.replace(',', ''))))
-        except:
-            return val
-    return series.map(safe_convert)
+            # Các trường cố định
+            Lop = parts[0]
+            MaSV = parts[1]
 
-# ==================== 3. KẾT NỐI DATABASE & TẠO BẢNG ====================
-params = urllib.parse.quote_plus(
-    f"DRIVER={{ODBC Driver 18 for SQL Server}};"
-    f"SERVER={sql_server};DATABASE={sql_db};"
-    f"UID={sql_user};PWD={sql_pass};"
-    "Encrypt=yes;TrustServerCertificate=no;Connection Timeout=60;"
-)
-engine = sa.create_engine(f"mssql+pyodbc:///?odbc_connect={params}", fast_executemany=True)
+            # Tìm NgaySinh
+            ngay_sinh_idx = next((i for i, x in enumerate(parts) 
+                                if isinstance(x, str) and '/' in x and len(x.split('/')) == 3), None)
+            if ngay_sinh_idx is None:
+                logging.warning(f"Dòng {line_num}: Không tìm thấy NgaySinh")
+                continue
 
-schema_sql = """
--- Xóa bảng cũ theo thứ tự ràng buộc khóa ngoại
-IF OBJECT_ID('PHIEU_KHAO_SAT', 'U') IS NOT NULL DROP TABLE PHIEU_KHAO_SAT;
-IF OBJECT_ID('LOP_HOC_PHAN', 'U') IS NOT NULL DROP TABLE LOP_HOC_PHAN;
-IF OBJECT_ID('SINH_VIEN', 'U') IS NOT NULL DROP TABLE SINH_VIEN;
-IF OBJECT_ID('GIANG_VIEN', 'U') IS NOT NULL DROP TABLE GIANG_VIEN;
-IF OBJECT_ID('HOC_PHAN', 'U') IS NOT NULL DROP TABLE HOC_PHAN;
+            # Họ tên Sinh viên
+            ho_ten_sv_list = parts[2:ngay_sinh_idx]
+            HoDem = ho_ten_sv_list[0] if ho_ten_sv_list else ''
+            Ten = ','.join(ho_ten_sv_list[1:]) if len(ho_ten_sv_list) > 1 else ''
 
-CREATE TABLE SINH_VIEN (
-    MaSV VARCHAR(50) PRIMARY KEY,
-    Lop NVARCHAR(50),
-    HoDem NVARCHAR(100),
-    Ten NVARCHAR(50),
-    NgaySinh DATE
-);
+            # Tên học phần
+            MaHP_idx = ngay_sinh_idx + 1
+            MaHP = parts[MaHP_idx] if MaHP_idx < len(parts) else ''
 
-CREATE TABLE HOC_PHAN (
-    MaHP VARCHAR(50) PRIMARY KEY,
-    TenHP NVARCHAR(200)
-);
+            # Tìm MaGV
+            MaGV_idx = next((i for i in range(MaHP_idx + 1, len(parts)) 
+                           if str(parts[i]).isdigit() and len(str(parts[i])) >= 6), None)
+            if MaGV_idx is None:
+                logging.warning(f"Dòng {line_num}: Không tìm thấy MaGV")
+                continue
 
-CREATE TABLE GIANG_VIEN (
-    MaGV VARCHAR(50) PRIMARY KEY,
-    HoDemGV NVARCHAR(100),
-    TenGV NVARCHAR(100)
-);
+            TenHP = ','.join(parts[MaHP_idx + 1:MaGV_idx]).strip()
+            MaGV = parts[MaGV_idx]
 
-CREATE TABLE LOP_HOC_PHAN (
-    MaLopHP VARCHAR(100) PRIMARY KEY,
-    MaHP VARCHAR(50) REFERENCES HOC_PHAN(MaHP),
-    MaGV VARCHAR(50) REFERENCES GIANG_VIEN(MaGV),
-    TenLopHP NVARCHAR(200),
-    HocKy INT,
-    NamHoc NVARCHAR(20)
-);
+            # Họ tên Giảng viên
+            LopHP_idx = next((i for i in range(MaGV_idx + 1, len(parts)) 
+                            if '_' in str(parts[i]) and any(c.isdigit() for c in str(parts[i]))), None)
+            if LopHP_idx is None:
+                logging.warning(f"Dòng {line_num}: Không tìm thấy LopHP")
+                continue
 
-CREATE TABLE PHIEU_KHAO_SAT (
-    MaSV VARCHAR(50) REFERENCES SINH_VIEN(MaSV),
-    MaLopHP VARCHAR(100) REFERENCES LOP_HOC_PHAN(MaLopHP),
-    HocKy INT,
-    NamHoc NVARCHAR(20),
-    Q1 INT, Q2 INT, Q3 INT, Q4 INT, Q5 INT, Q6 INT, 
-    Q7 INT, Q8 INT, Q9 INT, Q10 INT, Q11 INT, Q12 INT,
-    Q13 NVARCHAR(MAX), Q14 NVARCHAR(MAX), Q15 NVARCHAR(MAX), Q16 NVARCHAR(MAX),
-    PRIMARY KEY (MaSV, MaLopHP)
-);
-"""
+            ho_ten_gv_list = parts[MaGV_idx + 1:LopHP_idx]
+            HoDemGV = ho_ten_gv_list[0] if ho_ten_gv_list else ''
+            TenGV = ','.join(ho_ten_gv_list[1:]) if len(ho_ten_gv_list) > 1 else ''
 
-print("🛠 Re-creating database schema...")
-with engine.connect() as conn:
-    conn.execute(sa.text(schema_sql))
-    conn.commit()
+            LopHP = parts[LopHP_idx]
 
-# ==================== 4. DOWNLOAD & XỬ LÝ DỮ LIỆU ====================
-print("📥 Fetching raw data from Azure...")
-blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
-blob_client = blob_service.get_container_client("rawdata").get_blob_client(f"{SEMESTER}/{SURVEY_FILE}")
-data = blob_client.download_blob().readall()
+            # Cột sau LopHP
+            cau_hoi_idx = LopHP_idx + 1
+            CauHoi = int(parts[cau_hoi_idx]) if cau_hoi_idx < len(parts) and str(parts[cau_hoi_idx]).isdigit() else None
+            DanhGia = int(parts[cau_hoi_idx + 1]) if (cau_hoi_idx + 1 < len(parts) and str(parts[cau_hoi_idx + 1]).isdigit()) else None
 
-print("📊 Reading CSV and handling potential bad lines...")
-# Sử dụng engine='python' và on_bad_lines='skip' để xử lý dòng có dấu phẩy dư thừa
-df_raw = pd.read_csv(
-    io.BytesIO(data),
-    sep=',',
-    header=None,
-    names=['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP', 'MaGV', 'HoDemGV', 'TenGV',
-           'LopHP', 'CauHoi', 'DanhGia', 'Col13', 'Q13', 'Q14', 'Q15', 'Q16'],
-    dtype=str,
-    encoding='utf-8',
-    on_bad_lines='skip',
-    engine='python'
-)
+            # 4 cột góp ý mở (giữ nguyên nguyên bản)
+            gopy_start = cau_hoi_idx + 3
+            CauHoi13 = parts[gopy_start] if gopy_start < len(parts) else None
+            CauHoi14 = parts[gopy_start + 1] if gopy_start + 1 < len(parts) else None
+            CauHoi15 = parts[gopy_start + 2] if gopy_start + 2 < len(parts) else None
+            CauHoi16 = parts[gopy_start + 3] if gopy_start + 3 < len(parts) else None
 
-print(f"✅ Loaded {len(df_raw):,} rows. Cleaning and Transforming...")
+            # Tạo SubmissionID
+            SubmissionID = f"{MaSV}_{LopHP}_{MaGV}_{FILE_NAME}"
 
-# Cleaning
-df_raw['MaSV'] = convert_masv(df_raw['MaSV'])
-df_raw['NgaySinh'] = pd.to_datetime(df_raw['NgaySinh'], format='%d/%m/%Y', errors='coerce')
-df_raw['CauHoi'] = pd.to_numeric(df_raw['CauHoi'], errors='coerce')
-df_raw['DanhGia'] = pd.to_numeric(df_raw['DanhGia'], errors='coerce')
+            # Submission
+            submissions.append({
+                'SubmissionID': SubmissionID,
+                'MaSV': MaSV,
+                'HoDem': HoDem,
+                'Ten': Ten,
+                'NgaySinh': parts[ngay_sinh_idx],
+                'MaHP': MaHP,
+                'TenHP': TenHP,
+                'MaGV': MaGV,
+                'HoDemGV': HoDemGV,
+                'TenGV': TenGV,
+                'LopHP': LopHP,
+                'Semester': SEMESTER,
+                'SubmittedAt': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            })
 
-# Xử lý Pivot
-print("🔄 Pivoting survey answers (Q1-Q12)...")
-df_pivot = df_raw[df_raw['CauHoi'].between(1, 12)].pivot_table(
-    index=['MaSV', 'LopHP'],
-    columns='CauHoi',
-    values='DanhGia',
-    aggfunc='first'
-).reset_index()
+            # Response
+            if CauHoi:
+                if 1 <= CauHoi <= 12:
+                    responses.append({
+                        'SubmissionID': SubmissionID,
+                        'CauHoi': CauHoi,
+                        'DanhGia': DanhGia,
+                        'GopY': None
+                    })
+                elif 13 <= CauHoi <= 16:
+                    gopy = [CauHoi13, CauHoi14, CauHoi15, CauHoi16][CauHoi - 13]
+                    responses.append({
+                        'SubmissionID': SubmissionID,
+                        'CauHoi': CauHoi,
+                        'DanhGia': None,
+                        'GopY': gopy
+                    })
 
-df_pivot.columns = ['MaSV', 'LopHP'] + [f'Q{int(i)}' for i in range(1, 13)]
+        except Exception as e:
+            logging.error(f"Lỗi xử lý dòng {line_num}: {e}")
 
-# Lấy thông tin chung và câu tự luận
-df_info = df_raw.groupby(['MaSV', 'LopHP']).first().reset_index()
-df_final = df_info.merge(df_pivot, on=['MaSV', 'LopHP'], how='left')
+    # Tạo DataFrame
+    submissions_df = pd.DataFrame(submissions).drop_duplicates(subset=['SubmissionID']).reset_index(drop=True)
+    responses_df = pd.DataFrame(responses).reset_index(drop=True)
 
-df_final['HocKy'] = 2 if "252" in SURVEY_FILE else 1
-df_final['NamHoc'] = SEMESTER
+    logging.info(f"Hoàn tất xử lý: {len(submissions_df)} submissions | {len(responses_df)} responses")
 
-# ==================== 5. CHÈN DỮ LIỆU VÀO SQL ====================
-print(f"📤 Inserting {len(df_final):,} records into Azure SQL...")
-try:
-    with engine.connect() as conn:
-        with conn.begin():
-            # 1. SINH_VIEN
-            df_sv = df_final[['MaSV', 'Lop', 'HoDem', 'Ten', 'NgaySinh']].drop_duplicates('MaSV')
-            df_sv.to_sql('SINH_VIEN', conn, if_exists='append', index=False, chunksize=500)
+    return submissions_df, responses_df
 
-            # 2. HOC_PHAN
-            df_hp = df_final[['MaHP', 'TenHP']].drop_duplicates('MaHP')
-            df_hp.to_sql('HOC_PHAN', conn, if_exists='append', index=False)
 
-            # 3. GIANG_VIEN
-            df_gv = df_final[['MaGV', 'HoDemGV', 'TenGV']].drop_duplicates('MaGV')
-            df_gv.to_sql('GIANG_VIEN', conn, if_exists='append', index=False)
+# ==================== CHẠY CHƯƠNG TRÌNH ====================
+if __name__ == "__main__":
+    logging.info("=" * 90)
+    logging.info("          BẮT ĐẦU XỬ LÝ DỮ LIỆU KHẢO SÁT")
+    logging.info("=" * 90)
 
-            # 4. LOP_HOC_PHAN
-            df_lhp = df_final[['LopHP', 'MaHP', 'MaGV', 'HocKy', 'NamHoc']].drop_duplicates('LopHP')
-            df_lhp = df_lhp.rename(columns={'LopHP': 'MaLopHP'})
-            df_lhp['TenLopHP'] = df_lhp['MaLopHP']
-            df_lhp.to_sql('LOP_HOC_PHAN', conn, if_exists='append', index=False)
+    submissions_df, responses_df = extract_and_transform_survey(SURVEY_FILE)
 
-            # 5. PHIEU_KHAO_SAT
-            ks_cols = ['MaSV', 'LopHP', 'HocKy', 'NamHoc'] + [f'Q{i}' for i in range(1, 17)]
-            df_ks = df_final[ks_cols].rename(columns={'LopHP': 'MaLopHP'})
-            df_ks.to_sql('PHIEU_KHAO_SAT', conn, if_exists='append', index=False, chunksize=1000)
+    # Xuất file CSV
+    sub_file = f"submissions_cleaned_{FILE_NAME}.csv"
+    res_file = f"responses_cleaned_{FILE_NAME}.csv"
 
-    print("🎯 ETL PROCESS COMPLETED SUCCESSFULLY!")
+    submissions_df.to_csv(sub_file, index=False, encoding='utf-8-sig')
+    responses_df.to_csv(res_file, index=False, encoding='utf-8-sig')
 
-except Exception as e:
-    print(f"❌ SQL Insert Error: {str(e)}")
-    sys.exit(1)
+    logging.info(f"Đã xuất file:")
+    logging.info(f"   • {sub_file}")
+    logging.info(f"   • {res_file}")
+
+    # In 10 dòng mẫu để kiểm tra
+    print("\n" + "="*100)
+    print("10 DÒNG DỮ LIỆU MẪU - SUBMISSIONS")
+    print("="*100)
+    print(submissions_df.head(10).to_string(index=False))
+
+    print("\n" + "="*100)
+    print("10 DÒNG DỮ LIỆU MẪU - RESPONSES")
+    print("="*100)
+    print(responses_df.head(10).to_string(index=False))
+
+    logging.info("=" * 90)
+    logging.info("HOÀN TẤT XỬ LÝ DỮ LIỆU KHẢO SÁT")
+    logging.info("=" * 90)

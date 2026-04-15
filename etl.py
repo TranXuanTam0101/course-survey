@@ -3,6 +3,7 @@ import sys
 import logging
 from datetime import datetime
 import pandas as pd
+import numpy as np
 from azure.storage.blob import BlobServiceClient
 
 # ==================== CẤU HÌNH LOGGING ====================
@@ -49,83 +50,114 @@ def download_from_blob():
         logging.error(f"❌ Lỗi download từ Azure Blob: {e}")
         sys.exit(1)
 
-
 # ==================== ETL: EXTRACT + TRANSFORM ====================
 def extract_and_transform_survey(file_path: str):
     logging.info("🔄 Bắt đầu xử lý dữ liệu raw...")
     
+    # Đọc file CSV với encoding phù hợp
+    df_raw = pd.read_csv(file_path, encoding='utf-8-sig', header=None)
+    
+    logging.info(f"📊 Đọc được {len(df_raw)} dòng dữ liệu raw")
+    
     # Dictionary để lưu dữ liệu của mỗi sinh viên
     student_data = {}
-
-    with open(file_path, 'r', encoding='utf-8') as f:
-        lines = f.readlines()
-
-    for line_num, line in enumerate(lines, 1):
-        line = line.strip()
-        if not line:
-            continue
-
-        parts = [p.strip() for p in line.split(',')]
-
+    
+    for idx, row in df_raw.iterrows():
         try:
-            # Lấy Lop từ cột đầu tiên
+            # Chuyển row thành list và loại bỏ các giá trị NaN
+            parts = [str(x).strip() if pd.notna(x) else '' for x in row.values]
+            
+            # Bỏ qua dòng trống
+            if len(parts) < 10 or not parts[0]:
+                continue
+            
+            # Lấy Lop
             Lop = parts[0] if len(parts) > 0 else ''
             
             MaSV = parts[1]
-
-            # Tìm NgaySinh
-            ngay_sinh_idx = next((i for i, x in enumerate(parts) 
-                                if '/' in str(x) and len(str(x).split('/')) == 3), None)
+            
+            # Tìm NgaySinh (tìm phần tử có chứa /)
+            ngay_sinh_idx = None
+            for i, val in enumerate(parts):
+                if '/' in str(val) and len(str(val).strip()) >= 8:
+                    ngay_sinh_idx = i
+                    break
+            
             if ngay_sinh_idx is None:
                 continue
-
+            
             # Họ tên Sinh viên
-            ho_ten_sv = parts[2:ngay_sinh_idx]
-            HoDem = ho_ten_sv[0] if ho_ten_sv else ''
-            Ten = ','.join(ho_ten_sv[1:]) if len(ho_ten_sv) > 1 else ''
-
-            # Tên học phần
-            MaHP_idx = ngay_sinh_idx + 1
-            MaHP = parts[MaHP_idx] if MaHP_idx < len(parts) else ''
-
-            # Tìm MaGV
-            MaGV_idx = next((i for i in range(MaHP_idx + 1, len(parts)) 
-                           if str(parts[i]).isdigit() and len(str(parts[i])) >= 6), None)
+            HoDem = parts[2] if len(parts) > 2 else ''
+            Ten = parts[3] if len(parts) > 3 else ''
+            NgaySinh = parts[ngay_sinh_idx]
+            
+            # Mã học phần
+            MaHP = parts[ngay_sinh_idx + 1] if ngay_sinh_idx + 1 < len(parts) else ''
+            
+            # Tìm MaGV (tìm số có 7 chữ số)
+            MaGV_idx = None
+            for i in range(ngay_sinh_idx + 2, min(ngay_sinh_idx + 15, len(parts))):
+                val = str(parts[i]).strip()
+                if val.isdigit() and len(val) >= 6:
+                    MaGV_idx = i
+                    break
+            
             if MaGV_idx is None:
                 continue
-
-            TenHP = ','.join(parts[MaHP_idx + 1:MaGV_idx]).strip()
+            
+            TenHP = parts[ngay_sinh_idx + 2] if ngay_sinh_idx + 2 < len(parts) else ''
             MaGV = parts[MaGV_idx]
-
-            # Họ tên Giảng viên
-            LopHP_idx = next((i for i in range(MaGV_idx + 1, len(parts)) 
-                            if '_' in str(parts[i]) and any(c.isdigit() for c in str(parts[i]))), None)
+            
+            # Tìm LopHP (tìm phần tử có chứa _ )
+            LopHP_idx = None
+            for i in range(MaGV_idx + 1, min(MaGV_idx + 10, len(parts))):
+                val = str(parts[i]).strip()
+                if '_' in val and any(c.isdigit() for c in val):
+                    LopHP_idx = i
+                    break
+            
             if LopHP_idx is None:
                 continue
-
-            ho_ten_gv = parts[MaGV_idx + 1:LopHP_idx]
-            HoDemGV = ho_ten_gv[0] if ho_ten_gv else ''
-            TenGV = ','.join(ho_ten_gv[1:]) if len(ho_ten_gv) > 1 else ''
-
+            
+            HoDemGV = parts[MaGV_idx + 1] if MaGV_idx + 1 < len(parts) else ''
+            TenGV = parts[MaGV_idx + 2] if MaGV_idx + 2 < len(parts) else ''
             LopHP = parts[LopHP_idx]
-
-            # Cột sau LopHP
-            cau_hoi_idx = LopHP_idx + 1
-            CauHoi = int(parts[cau_hoi_idx]) if cau_hoi_idx < len(parts) and str(parts[cau_hoi_idx]).isdigit() else None
-            DanhGia = int(parts[cau_hoi_idx + 1]) if cau_hoi_idx + 1 < len(parts) and str(parts[cau_hoi_idx + 1]).isdigit() else None
-
-            # 4 cột góp ý mở (câu 13-16) được lấy theo thứ tự cuối dòng dữ liệu
-            gopy_start = cau_hoi_idx + 3
+            
+            # Số thứ tự câu hỏi (cột sau LopHP)
+            cauhoi_idx = LopHP_idx + 1
+            if cauhoi_idx >= len(parts):
+                continue
+                
+            try:
+                CauHoi = int(float(parts[cauhoi_idx])) if parts[cauhoi_idx] and parts[cauhoi_idx] != '' else None
+            except:
+                CauHoi = None
+            
+            # Đánh giá (cột tiếp theo)
+            danhgia_idx = cauhoi_idx + 1
+            try:
+                DanhGia = int(float(parts[danhgia_idx])) if danhgia_idx < len(parts) and parts[danhgia_idx] and parts[danhgia_idx] != '' else None
+            except:
+                DanhGia = None
+            
+            # 4 câu hỏi mở (câu 13-16) - lấy 4 giá trị cuối cùng
             gopy_values = []
-            for i in range(4):
-                if gopy_start + i < len(parts):
-                    gopy_values.append(parts[gopy_start + i])
+            gopy_start = len(parts) - 4
+            for i in range(gopy_start, len(parts)):
+                if i >= 0 and i < len(parts):
+                    val = parts[i] if parts[i] and parts[i] != 'NULL' else None
+                    gopy_values.append(val)
                 else:
                     gopy_values.append(None)
-
+            
+            # Đảm bảo có đúng 4 giá trị
+            while len(gopy_values) < 4:
+                gopy_values.append(None)
+            gopy_values = gopy_values[:4]
+            
             SubmissionID = f"{MaSV}_{LopHP}_{MaGV}_{FILE_NAME}"
-
-            # Khởi tạo key cho student_data nếu chưa có
+            
+            # Khởi tạo hoặc cập nhật dữ liệu sinh viên
             if SubmissionID not in student_data:
                 student_data[SubmissionID] = {
                     'SubmissionID': SubmissionID,
@@ -133,7 +165,7 @@ def extract_and_transform_survey(file_path: str):
                     'MaSV': MaSV,
                     'HoDem': HoDem,
                     'Ten': Ten,
-                    'NgaySinh': parts[ngay_sinh_idx],
+                    'NgaySinh': NgaySinh,
                     'MaHP': MaHP,
                     'TenHP': TenHP,
                     'MaGV': MaGV,
@@ -141,11 +173,11 @@ def extract_and_transform_survey(file_path: str):
                     'TenGV': TenGV,
                     'LopHP': LopHP,
                     'Semester': SEMESTER,
-                    # Khởi tạo 12 câu hỏi
+                    # Khởi tạo 12 câu hỏi đánh giá
                     'CauHoi1': None, 'CauHoi2': None, 'CauHoi3': None, 'CauHoi4': None,
                     'CauHoi5': None, 'CauHoi6': None, 'CauHoi7': None, 'CauHoi8': None,
                     'CauHoi9': None, 'CauHoi10': None, 'CauHoi11': None, 'CauHoi12': None,
-                    # Khởi tạo 4 câu hỏi mở được lấy theo thứ tự cuối dòng dữ liệu
+                    # Khởi tạo 4 câu hỏi mở
                     'CauHoi13': None, 'CauHoi14': None, 'CauHoi15': None, 'CauHoi16': None
                 }
             
@@ -154,12 +186,18 @@ def extract_and_transform_survey(file_path: str):
                 student_data[SubmissionID][f'CauHoi{CauHoi}'] = DanhGia
             elif CauHoi and 13 <= CauHoi <= 16:
                 student_data[SubmissionID][f'CauHoi{CauHoi}'] = gopy_values[CauHoi - 13]
-
+                
         except Exception as e:
-            logging.warning(f"Bỏ qua dòng {line_num} do lỗi định dạng: {e}")
-
+            logging.warning(f"Bỏ qua dòng {idx + 1} do lỗi: {e}")
+            continue
+    
     # Chuyển dictionary thành DataFrame
     result_df = pd.DataFrame(list(student_data.values()))
+    
+    # Kiểm tra nếu DataFrame rỗng
+    if len(result_df) == 0:
+        logging.error("❌ Không có dữ liệu nào được xử lý!")
+        return pd.DataFrame()
     
     # Sắp xếp lại thứ tự các cột
     column_order = [
@@ -172,11 +210,20 @@ def extract_and_transform_survey(file_path: str):
         'CauHoi13', 'CauHoi14', 'CauHoi15', 'CauHoi16'
     ]
     
-    result_df = result_df[column_order]
-
+    # Chỉ lấy các cột có tồn tại
+    existing_columns = [col for col in column_order if col in result_df.columns]
+    result_df = result_df[existing_columns]
+    
+    # Chuyển đổi kiểu dữ liệu cho các câu hỏi 1-12 sang số
+    for i in range(1, 13):
+        col = f'CauHoi{i}'
+        if col in result_df.columns:
+            result_df[col] = pd.to_numeric(result_df[col], errors='coerce')
+    
     logging.info(f"✅ Hoàn tất xử lý: {len(result_df)} sinh viên (mỗi sinh viên 1 hàng dữ liệu)")
+    logging.info(f"📊 Các cột dữ liệu: {list(result_df.columns)}")
+    
     return result_df
-
 
 # ==================== UPLOAD TO AZURE ====================
 def upload_to_blob(blob_service, df):
@@ -197,7 +244,6 @@ def upload_to_blob(blob_service, df):
         logging.error(f"❌ Lỗi upload lên Azure Blob: {e}")
         sys.exit(1)
 
-
 # ==================== MAIN ====================
 if __name__ == "__main__":
     logging.info("=" * 90)
@@ -209,6 +255,10 @@ if __name__ == "__main__":
 
     # 2. Xử lý ETL
     result_df = extract_and_transform_survey(SURVEY_FILE)
+    
+    if len(result_df) == 0:
+        logging.error("❌ Không có dữ liệu để xử lý!")
+        sys.exit(1)
 
     # 3. Upload lên Azure
     upload_to_blob(blob_service, result_df)
@@ -217,6 +267,8 @@ if __name__ == "__main__":
     print("\n" + "="*130)
     print("📋 10 DÒNG MẪU - KẾT QUẢ XỬ LÝ (1 HÀNG/SINH VIÊN)")
     print("="*130)
+    pd.set_option('display.max_columns', None)
+    pd.set_option('display.width', None)
     print(result_df.head(10).to_string(index=False))
 
     logging.info("=" * 90)

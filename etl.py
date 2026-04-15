@@ -124,13 +124,13 @@ def extract_and_transform_survey(file_path: str):
             CauHoi = int(parts[cau_hoi_idx]) if cau_hoi_idx < len(parts) and str(parts[cau_hoi_idx]).isdigit() else None
             DanhGia = int(parts[cau_hoi_idx + 1]) if cau_hoi_idx + 1 < len(parts) and str(parts[cau_hoi_idx + 1]).isdigit() else None
 
-            # BỎ QUA CỘT CÓ GIÁ TRỊ 'NULL' SAU CỘT DanhGia VÀ TRƯỚC CÂU HỎI 13
-            # Tìm vị trí bắt đầu của 4 cột góp ý (bỏ qua các cột NULL)
-            gopy_start = cau_hoi_idx + 2
-            while gopy_start < len(parts) and parts[gopy_start].upper() == 'NULL':
-                gopy_start += 1
+            # XỬ LÝ CauHoi 13-16: Biết chắc chắn có 1 cột NULL sau cột DanhGia
+            # Vị trí cột NULL: cau_hoi_idx + 2
+            null_col_idx = cau_hoi_idx + 2
+            # Dữ liệu CauHoi 13-16 bắt đầu sau cột NULL
+            gopy_start = null_col_idx + 1
             
-            # 4 cột góp ý mở (dành cho CauHoi 13-16)
+            # Lấy 4 cột góp ý (CauHoi 13, 14, 15, 16)
             gopy_values = parts[gopy_start:gopy_start + 4] + [None] * 4
             gopy_values = gopy_values[:4]
 
@@ -153,24 +153,25 @@ def extract_and_transform_survey(file_path: str):
                     'LopHP': LopHP,
                     'Semester': SEMESTER,
                     'SubmittedAt': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    'responses': {},  # Dictionary lưu câu trả lời theo số câu hỏi
-                    'gopy_values': [None, None, None, None]  # Mảng 4 phần tử cho góp ý
+                    'responses': {},  # Dictionary lưu câu trả lời cho CauHoi 1-12
+                    'gopy_values': [None, None, None, None]  # Mảng 4 phần tử cho CauHoi 13-16
                 }
             
-            # Lưu góp ý từ các dòng (CauHoi 13-16)
-            if CauHoi and 13 <= CauHoi <= 16:
-                idx = CauHoi - 13
-                if idx < len(gopy_values) and gopy_values[idx] is not None:
-                    temp_data[SubmissionID]['gopy_values'][idx] = gopy_values[idx]
-            
-            # Lưu câu trả lời cho CauHoi 1-12
-            if CauHoi and 1 <= CauHoi <= 12:
-                temp_data[SubmissionID]['responses'][CauHoi] = DanhGia
+            # XỬ LÝ THEO LOẠI CÂU HỎI
+            if CauHoi:
+                if 1 <= CauHoi <= 12:
+                    # Lưu câu trả lời đánh giá cho CauHoi 1-12
+                    temp_data[SubmissionID]['responses'][CauHoi] = DanhGia
+                elif 13 <= CauHoi <= 16:
+                    # Lưu góp ý cho CauHoi 13-16
+                    idx = CauHoi - 13  # 13→0, 14→1, 15→2, 16→3
+                    if idx < len(gopy_values):
+                        temp_data[SubmissionID]['gopy_values'][idx] = gopy_values[idx]
 
         except Exception as e:
             print(f"⚠️ Bỏ qua dòng {line_num} do lỗi định dạng: {e}")
 
-    # XỬ LÝ TẤT CẢ SUBMISSIONID (kể cả không đủ 12 câu)
+    # XỬ LÝ TẤT CẢ SUBMISSIONID
     for SubmissionID, data in temp_data.items():
         # Tạo bản ghi cho SubmissionID
         record = {
@@ -200,22 +201,21 @@ def extract_and_transform_survey(file_path: str):
                 record[f'CauHoi{cauhoi}'] = data['responses'][cauhoi]
         
         # Điền giá trị cho CauHoi 13-16 từ gopy_values
-        gopy_vals = data['gopy_values'] if data['gopy_values'] else [None, None, None, None]
         for i in range(4):
             cauhoi = 13 + i
-            if i < len(gopy_vals) and gopy_vals[i] is not None:
-                record[f'CauHoi{cauhoi}'] = gopy_vals[i]
+            if data['gopy_values'][i] is not None:
+                record[f'CauHoi{cauhoi}'] = data['gopy_values'][i]
         
         # Lưu vào final_data
         final_data[SubmissionID] = record
         
-        response_count = len([k for k in data['responses'].keys() if 1 <= k <= 12])
+        response_count = len(data['responses'])
         print(f"✅ Đã xử lý SubmissionID: {SubmissionID} ({response_count}/12 câu trả lời đánh giá)")
     
     # Chuyển đổi thành DataFrame
     survey_df = pd.DataFrame(list(final_data.values()))
     
-    # Sắp xếp lại các cột theo đúng thứ tự yêu cầu (KHÔNG CÓ Col13)
+    # Sắp xếp lại các cột theo đúng thứ tự yêu cầu
     column_order = [
         'SubmissionID', 'Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP', 'MaGV', 
         'HoDemGV', 'TenGV', 'LopHP', 'CauHoi1', 'CauHoi2', 'CauHoi3', 'CauHoi4', 

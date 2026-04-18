@@ -58,15 +58,12 @@ def is_ma_gv_format(value):
         return False
     value = value.strip()
     
-    # Trường hợp 1: 7 ký tự và toàn số
     if len(value) == 7 and value.isdigit():
         return True
     
-    # Trường hợp 2: 7 ký tự và bắt đầu bằng "TG"
     if len(value) == 7 and value.startswith("TG"):
         return True
     
-    # Trường hợp 3: Bằng "gvDacThu_TKTH"
     if value == "gvDacThu_TKTH":
         return True
     
@@ -148,117 +145,76 @@ def split_by_condition_3(text):
     
     return [p for p in parts if p]
 
-def handle_3_columns_case(parts, original_text, row_number, step_name):
-    """Xử lý trường hợp tách được 3 cột: lấy thêm phần tử cuối cùng sau dấu phẩy của cột bên cạnh"""
+def take_last_element_from_previous_column(parts):
+    """Lấy phần tử cuối cùng sau dấu phẩy của cột cuối cùng để tạo cột thứ 4"""
     if len(parts) == 3:
-        # Tìm phần tử cuối cùng trong cột thứ 3
         last_col = parts[-1]
         if ',' in last_col:
-            # Tách phần tử cuối cùng sau dấu phẩy
             sub_parts = last_col.split(',')
             if len(sub_parts) >= 2:
-                # Cột cuối lấy phần tử cuối cùng
                 last_element = sub_parts[-1].strip()
-                # Cột thứ 3 lấy phần còn lại
                 parts[-1] = ','.join(sub_parts[:-1]).strip()
                 parts.append(last_element)
-                return parts[:4], None
-        # Nếu không tách được, thêm cột rỗng
-        parts.append('')
-        return parts[:4], None
-    return parts, None
+                return parts
+    # Nếu không tách được, thêm cột rỗng
+    parts.append('')
+    return parts
 
 def split_after_null_by_rules(after_null_list, row_number=None):
     """
     Xử lý các cột sau cột NULL theo logic 3 cấp:
     Cấp 1: Tách với điều kiện "trước và sau dấu phẩy đều không có khoảng trắng"
-    Cấp 2: Nếu >4, tách với điều kiện "sau dấu phẩy không có khoảng trắng"
-    Cấp 3: Nếu >4, tách với điều kiện "sau dấu phẩy không có khoảng trắng VÀ chữ in hoa đầu tiên"
+    Cấp 2: Nếu ≠4, tách với điều kiện "sau dấu phẩy không có khoảng trắng"
+    Cấp 3: Nếu ≠4, tách với điều kiện "sau dấu phẩy không có khoảng trắng VÀ chữ in hoa đầu tiên"
     """
     if not after_null_list:
         return ['', '', '', ''], None
     
-    # Ghép lại thành chuỗi để xử lý
     original_text = ','.join(after_null_list)
     
     # ===== CẤP 1: Tách với điều kiện trước và sau dấu phẩy đều không có khoảng trắng =====
     parts_level1 = split_by_condition_1(original_text)
     
-    # Nếu kết quả có đúng 4 cột -> trả về
     if len(parts_level1) == 4:
         return parts_level1[:4], None
     
-    # Nếu kết quả có 3 cột -> xử lý lấy thêm phần tử cuối
-    if len(parts_level1) == 3:
-        parts_level1, _ = handle_3_columns_case(parts_level1, original_text, row_number, "Cấp 1")
-        if len(parts_level1) == 4:
-            return parts_level1[:4], None
+    # Nếu ≠4 (có thể <4 hoặc >4) -> chuyển sang Cấp 2
+    # ===== CẤP 2: Tách với điều kiện sau dấu phẩy không có khoảng trắng =====
+    parts_level2 = split_by_condition_2(original_text)
     
-    # Nếu kết quả < 4 cột -> thêm cột rỗng
-    if len(parts_level1) < 4:
-        while len(parts_level1) < 4:
-            parts_level1.append('')
-        return parts_level1[:4], None
+    if len(parts_level2) == 4:
+        return parts_level2[:4], None
     
-    # Nếu kết quả > 4 cột -> chuyển sang Cấp 2
-    if len(parts_level1) > 4:
-        # ===== CẤP 2: Tách với điều kiện sau dấu phẩy không có khoảng trắng =====
-        parts_level2 = split_by_condition_2(original_text)
-        
-        # Nếu kết quả có đúng 4 cột -> trả về
+    if len(parts_level2) == 3:
+        parts_level2 = take_last_element_from_previous_column(parts_level2)
         if len(parts_level2) == 4:
             return parts_level2[:4], None
-        
-        # Nếu kết quả có 3 cột -> xử lý lấy thêm phần tử cuối
-        if len(parts_level2) == 3:
-            parts_level2, _ = handle_3_columns_case(parts_level2, original_text, row_number, "Cấp 2")
-            if len(parts_level2) == 4:
-                return parts_level2[:4], None
-        
-        # Nếu kết quả < 4 cột -> thêm cột rỗng
-        if len(parts_level2) < 4:
-            while len(parts_level2) < 4:
-                parts_level2.append('')
-            return parts_level2[:4], None
-        
-        # Nếu kết quả > 4 cột -> chuyển sang Cấp 3
-        if len(parts_level2) > 4:
-            # ===== CẤP 3: Tách với điều kiện sau dấu phẩy không có khoảng trắng VÀ chữ in hoa đầu tiên =====
-            parts_level3 = split_by_condition_3(original_text)
-            
-            # Nếu kết quả có đúng 4 cột -> trả về
-            if len(parts_level3) == 4:
-                return parts_level3[:4], None
-            
-            # Nếu kết quả có 3 cột -> xử lý lấy thêm phần tử cuối
-            if len(parts_level3) == 3:
-                parts_level3, _ = handle_3_columns_case(parts_level3, original_text, row_number, "Cấp 3")
-                if len(parts_level3) == 4:
-                    return parts_level3[:4], None
-            
-            # Nếu vẫn > 4 cột -> in ra kiểm tra thủ công và để hết vào cột đầu tiên
-            if len(parts_level3) > 4:
-                error_info = {
-                    'row_number': row_number,
-                    'original_after_null': original_text,
-                    'level1_result': parts_level1,
-                    'level2_result': parts_level2,
-                    'level3_result': parts_level3,
-                    'split_count': len(parts_level3),
-                    'message': f'Tách được {len(parts_level3)} cột (>4) sau Cấp 3 - cần kiểm tra thủ công'
-                }
-                # Để hết vào cột đầu tiên sau cột NULL
-                return [original_text, '', '', ''], error_info
-            
-            # Nếu < 4 cột -> thêm cột rỗng
-            while len(parts_level3) < 4:
-                parts_level3.append('')
+    
+    # Nếu ≠4 (có thể <4 hoặc >4) -> chuyển sang Cấp 3
+    # ===== CẤP 3: Tách với điều kiện sau dấu phẩy không có khoảng trắng VÀ chữ in hoa đầu tiên =====
+    parts_level3 = split_by_condition_3(original_text)
+    
+    if len(parts_level3) == 4:
+        return parts_level3[:4], None
+    
+    if len(parts_level3) == 3:
+        parts_level3 = take_last_element_from_previous_column(parts_level3)
+        if len(parts_level3) == 4:
             return parts_level3[:4], None
     
-    # Trường hợp không xảy ra
-    while len(parts_level1) < 4:
-        parts_level1.append('')
-    return parts_level1[:4], None
+    # Nếu vẫn ≠4 (có thể <4 hoặc >4) -> in ra kiểm tra và để hết vào cột đầu tiên
+    if len(parts_level3) != 4:
+        error_info = {
+            'row_number': row_number,
+            'original_after_null': original_text,
+            'level1_result': parts_level1,
+            'level2_result': parts_level2,
+            'level3_result': parts_level3,
+            'final_count': len(parts_level3),
+            'message': f'Kết quả sau Cấp 3 có {len(parts_level3)} cột (không phải 4) - cần kiểm tra thủ công'
+        }
+        # Để hết vào cột đầu tiên sau cột NULL
+        return [original_text, '', '', ''], error_info
 
 def process_row(row, row_number=None):
     """
@@ -301,7 +257,7 @@ def process_row(row, row_number=None):
         if ngay_sinh_index >= 0 and ngay_sinh_index + 1 < len(row):
             ma_hp = row[ngay_sinh_index + 1].strip()
         
-        # Bước 5: Dò tìm MaGV (theo điều kiện mới)
+        # Bước 5: Dò tìm MaGV
         ma_gv = ''
         ma_gv_index = -1
         start_idx = ngay_sinh_index + 2 if ngay_sinh_index >= 0 else 0
@@ -311,38 +267,32 @@ def process_row(row, row_number=None):
                 ma_gv_index = i
                 break
         
-        # Bước 6: Xác định TenHP (các cột nằm giữa MaHP và MaGV)
+        # Bước 6: Xác định TenHP
         ten_hp = ''
         if ngay_sinh_index >= 0 and ma_gv_index > ngay_sinh_index + 1:
             ten_hp_parts = row[ngay_sinh_index + 2:ma_gv_index]
             ten_hp = ' '.join([p.strip() for p in ten_hp_parts if p and p.strip()])
         
-        # Bước 7: Xác định HoDemGV (cột ngay sau TenHP)
+        # Bước 7-11: Gán các cột tiếp theo
         ho_dem_gv = ''
-        if ma_gv_index >= 0 and ma_gv_index + 1 < len(row):
-            ho_dem_gv = row[ma_gv_index + 1].strip()
-        
-        # Bước 8: Xác định TenGV (cột ngay sau HoDemGV)
         ten_gv = ''
-        if ma_gv_index >= 0 and ma_gv_index + 2 < len(row):
-            ten_gv = row[ma_gv_index + 2].strip()
-        
-        # Bước 9: Xác định LopHP (cột ngay sau TenGV)
         lop_hp = ''
-        if ma_gv_index >= 0 and ma_gv_index + 3 < len(row):
-            lop_hp = row[ma_gv_index + 3].strip()
-        
-        # Bước 10: Xác định CauHoi (cột ngay sau LopHP)
         cau_hoi = ''
-        if ma_gv_index >= 0 and ma_gv_index + 4 < len(row):
-            cau_hoi = row[ma_gv_index + 4].strip()
-        
-        # Bước 11: Xác định GiaTri (cột ngay sau CauHoi)
         gia_tri = ''
-        if ma_gv_index >= 0 and ma_gv_index + 5 < len(row):
-            gia_tri = row[ma_gv_index + 5].strip()
         
-        # Bước 12: Xác định cột NULL (cột ngay sau GiaTri)
+        if ma_gv_index >= 0:
+            if ma_gv_index + 1 < len(row):
+                ho_dem_gv = row[ma_gv_index + 1].strip()
+            if ma_gv_index + 2 < len(row):
+                ten_gv = row[ma_gv_index + 2].strip()
+            if ma_gv_index + 3 < len(row):
+                lop_hp = row[ma_gv_index + 3].strip()
+            if ma_gv_index + 4 < len(row):
+                cau_hoi = row[ma_gv_index + 4].strip()
+            if ma_gv_index + 5 < len(row):
+                gia_tri = row[ma_gv_index + 5].strip()
+        
+        # Bước 12: Xác định cột NULL
         null_index = -1
         null_value = ''
         gia_tri_index = ma_gv_index + 5 if ma_gv_index >= 0 else -1
@@ -480,16 +430,18 @@ def main():
     print(f"Số dòng xử lý thành công: {len(processed_rows)}")
     print(f"Số dòng xử lý lỗi: {len(process_errors)}")
     
-    # In các dòng có lỗi tách >4 cột
+    # In các dòng có lỗi tách ≠4 cột
     if split_errors:
         print(f"\n{'='*60}")
-        print("CÁC DÒNG CÓ KẾT QUẢ TÁCH >4 CỘT SAU CẤP 3 - CẦN KIỂM TRA THỦ CÔNG")
+        print("CÁC DÒNG CÓ KẾT QUẢ TÁCH ≠4 CỘT SAU CẤP 3 - CẦN KIỂM TRA THỦ CÔNG")
         print(f"{'='*60}")
         for err in split_errors:
             print(f"\nDòng {err['row_number']}:")
             print(f"  Chuỗi sau NULL: {err['original_after_null'][:200]}")
-            print(f"  Số cột tách được: {err['split_count']}")
-            print(f"  Kết quả tách Cấp 3: {err['level3_result']}")
+            print(f"  Số cột sau Cấp 3: {err['final_count']}")
+            print(f"  Kết quả Cấp 1: {err['level1_result']}")
+            print(f"  Kết quả Cấp 2: {err['level2_result']}")
+            print(f"  Kết quả Cấp 3: {err['level3_result']}")
         
         # Lưu file lỗi tách
         split_error_df = pd.DataFrame(split_errors)

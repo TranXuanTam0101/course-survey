@@ -33,6 +33,7 @@ jobs:
         run: |
           pip install pandas
           pip install azure-storage-blob
+          pip install google-generativeai
 
       
       - name: Run ETL

@@ -48,26 +48,28 @@ def is_date_format(value):
     return bool(re.match(r'^\d{2}/\d{2}/\d{4}$', value.strip()))
 
 def is_ma_gv_format(value):
-    """Kiểm tra định dạng MaGV: đúng 7 ký tự và toàn số"""
+    """Kiểm tra định dạng MaGV: chuỗi có đúng 7 ký tự"""
     if not isinstance(value, str):
         return False
     value = value.strip()
-    return len(value) == 7 and value.isdigit()
+    return len(value) == 7
 
 def split_after_null_by_rules(after_null_list):
     """
-    Áp dụng quy tắc tách cho phần sau cột NULL
-    Đầu vào: list các phần tử sau NULL (đã được split bằng dấu phẩy)
-    Trả về: list 4 cột Cau13, Cau14, Cau15, Cau16
+    Xử lý các cột sau cột NULL theo logic:
+    - Cấp 1: Tách bằng dấu phẩy (sau dấu phẩy không khoảng trắng → tách)
+    - Nếu kết quả có ≤4 câu → dừng, trả về
+    - Nếu kết quả có >4 câu → Cấp 2: Tách lại với điều kiện thêm 
+      (sau dấu phẩy không khoảng trắng + chữ viết hoa)
     """
     if not after_null_list:
         return ['', '', '', '']
     
-    # Lưu lại bản gốc để xử lý
+    # Ghép lại thành chuỗi để xử lý
     original_text = ','.join(after_null_list)
     
-    # Quy tắc 1: Ngay sau dấu phẩy không có khoảng trắng
-    parts_rule1 = []
+    # ===== CẤP 1: Tách bằng dấu phẩy (sau dấu phẩy không khoảng trắng → tách) =====
+    parts_level1 = []
     current = []
     i = 0
     
@@ -75,29 +77,32 @@ def split_after_null_by_rules(after_null_list):
         if original_text[i] == ',':
             # Kiểm tra ký tự sau dấu phẩy
             if i + 1 < len(original_text) and original_text[i + 1] == ' ':
-                # Có khoảng trắng -> không tách, giữ nguyên dấu phẩy
+                # Có khoảng trắng → KHÔNG tách, giữ nguyên dấu phẩy
                 current.append(',')
             else:
-                # Không có khoảng trắng -> tách thành cột mới
+                # Không có khoảng trắng → TÁCH thành cột mới
                 if current:
-                    parts_rule1.append(''.join(current).strip())
+                    parts_level1.append(''.join(current).strip())
                     current = []
         else:
             current.append(original_text[i])
         i += 1
     
     if current:
-        parts_rule1.append(''.join(current).strip())
+        parts_level1.append(''.join(current).strip())
     
     # Loại bỏ phần tử rỗng
-    parts_rule1 = [p for p in parts_rule1 if p]
+    parts_level1 = [p for p in parts_level1 if p]
     
-    # Nếu tách được đúng 4 cột thì trả về
-    if len(parts_rule1) == 4:
-        return parts_rule1
+    # Nếu kết quả có ≤4 câu → dừng, trả về
+    if len(parts_level1) <= 4:
+        # Thêm cột trống nếu thiếu
+        while len(parts_level1) < 4:
+            parts_level1.append('')
+        return parts_level1[:4]
     
-    # Quy tắc 2: Ngay sau dấu phẩy không có khoảng trắng VÀ chữ cái đầu tiên viết hoa
-    parts_rule2 = []
+    # ===== CẤP 2: Nếu >4 câu, tách lại với điều kiện thêm (sau dấu phẩy không khoảng trắng + chữ viết hoa) =====
+    parts_level2 = []
     current = []
     i = 0
     
@@ -105,11 +110,11 @@ def split_after_null_by_rules(after_null_list):
         if original_text[i] == ',':
             if i + 1 < len(original_text):
                 next_char = original_text[i + 1]
-                # Kiểm tra: không có khoảng trắng và ký tự tiếp theo là chữ hoa
+                # Điều kiện: không có khoảng trắng VÀ ký tự tiếp theo là chữ viết hoa
                 if next_char != ' ' and next_char.isupper():
                     # Tách thành cột mới
                     if current:
-                        parts_rule2.append(''.join(current).strip())
+                        parts_level2.append(''.join(current).strip())
                         current = []
                 else:
                     # Không tách, giữ nguyên dấu phẩy
@@ -121,35 +126,33 @@ def split_after_null_by_rules(after_null_list):
         i += 1
     
     if current:
-        parts_rule2.append(''.join(current).strip())
+        parts_level2.append(''.join(current).strip())
     
-    parts_rule2 = [p for p in parts_rule2 if p]
+    # Loại bỏ phần tử rỗng
+    parts_level2 = [p for p in parts_level2 if p]
     
-    # Nếu tách được đúng 4 cột thì trả về
-    if len(parts_rule2) == 4:
-        return parts_rule2
-    
-    # Trường hợp không tách được thành 4 cột
-    if len(parts_rule2) > 4:
-        # Lấy 4 cột đầu, các cột còn lại sẽ được ghi nhận để kiểm tra
-        return parts_rule2[:4]
+    # Đảm bảo có đúng 4 cột
+    if len(parts_level2) > 4:
+        # Nếu vẫn >4, chỉ lấy 4 cột đầu và ghi nhận cảnh báo
+        print(f"CẢNH BÁO: Sau cấp 2 vẫn còn {len(parts_level2)} cột >4, chỉ lấy 4 cột đầu")
+        return parts_level2[:4]
     else:
-        # Thiếu cột, thêm string rỗng
-        while len(parts_rule2) < 4:
-            parts_rule2.append('')
-        return parts_rule2
+        # Thêm cột trống nếu thiếu
+        while len(parts_level2) < 4:
+            parts_level2.append('')
+        return parts_level2[:4]
 
 def process_row(row):
     """
     Xử lý một dòng CSV theo logic:
-    1. Xử lý các cột trước NULL trước
-    2. Sau đó xử lý các cột sau NULL
+    1. Xử lý các cột trước NULL trước (GIỮ NGUYÊN)
+    2. Sau đó xử lý các cột sau NULL (ĐÃ ĐIỀU CHỈNH)
     """
     if not row or len(row) < 2:
         return None, []
     
     try:
-        # ========== PHẦN 1: XỬ LÝ CÁC CỘT TRƯỚC CỘT NULL ==========
+        # ========== PHẦN 1: XỬ LÝ CÁC CỘT TRƯỚC CỘT NULL (GIỮ NGUYÊN) ==========
         
         # Bước 1: Lấy cột cố định theo index
         lop = row[0].strip() if len(row) > 0 else ''
@@ -183,7 +186,7 @@ def process_row(row):
         if ngay_sinh_index >= 0 and ngay_sinh_index + 1 < len(row):
             ma_hp = row[ngay_sinh_index + 1].strip()
         
-        # Bước 5: Dò tìm MaGV (có đúng 7 ký tự và toàn số)
+        # Bước 5: Dò tìm MaGV (chuỗi có đúng 7 ký tự)
         ma_gv = ''
         ma_gv_index = -1
         start_idx = ngay_sinh_index + 2 if ngay_sinh_index >= 0 else 0
@@ -229,16 +232,17 @@ def process_row(row):
                 null_index = gia_tri_index + 1
                 null_value = potential_null if potential_null else 'NULL'
         
-        # ========== PHẦN 2: XỬ LÝ CÁC CỘT SAU CỘT NULL ==========
+        # ========== PHẦN 2: XỬ LÝ CÁC CỘT SAU CỘT NULL (ĐÃ ĐIỀU CHỈNH) ==========
         cau13 = cau14 = cau15 = cau16 = ''
         
         if null_index >= 0 and null_index + 1 < len(row):
             # Lấy phần sau cột NULL
             after_null = row[null_index + 1:]
             
-            # Áp dụng quy tắc tách
+            # Áp dụng logic tách 2 cấp
             split_result = split_after_null_by_rules(after_null)
             
+            # Gán kết quả
             if len(split_result) >= 4:
                 cau13 = split_result[0]
                 cau14 = split_result[1]
@@ -282,7 +286,6 @@ def read_csv_manual(filename):
     
     try:
         with open(filename, 'r', encoding='utf-8-sig') as f:
-            # Đọc từng dòng
             for line_num, line in enumerate(f, 1):
                 line = line.strip()
                 if not line:
@@ -296,20 +299,19 @@ def read_csv_manual(filename):
                 
                 rows.append(row)
                 
-                if len(row) < 18:
+                if len(row) < 10:  # Cảnh báo nếu quá ít cột
                     error_rows.append({
                         'line_number': line_num,
                         'column_count': len(row),
                         'sample': line[:200]
                     })
                 
-                # Log progress
                 if line_num % 1000 == 0:
                     print(f"Đã đọc {line_num} dòng...")
         
         print(f"Đã đọc xong file: {len(rows)} dòng")
         if error_rows:
-            print(f"Cảnh báo: Có {len(error_rows)} dòng có số cột < 18")
+            print(f"Cảnh báo: Có {len(error_rows)} dòng có số cột < 10")
         
         return rows, error_rows
         

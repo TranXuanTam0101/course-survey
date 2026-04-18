@@ -74,10 +74,10 @@ def is_ma_gv_format(value):
 
 def split_after_null_by_rules(after_null_list, row_number=None):
     """
-    Xử lý các cột sau cột NULL theo logic 3 bước:
-    Bước 1: Tách nếu trước và ngay sau dấu phẩy đều không có khoảng trắng
-    Bước 2: Chỉ xử lý các dòng >4 cột từ Bước 1, tách nếu ngay sau dấu phẩy không có khoảng trắng
-    Bước 3: Chỉ xử lý các dòng >4 cột từ Bước 2, tách nếu ngay sau dấu phẩy không có khoảng trắng VÀ chữ hoa
+    Xử lý các cột sau cột NULL:
+    Tách với điều kiện "trước và sau dấu phẩy đều không có khoảng trắng"
+    Nếu =4 → trả về
+    Nếu >4 cột → in ra kiểm tra + để hết cột đầu
     """
     if not after_null_list:
         return ['', '', '', ''], None
@@ -85,8 +85,8 @@ def split_after_null_by_rules(after_null_list, row_number=None):
     # Ghép lại thành chuỗi để xử lý
     original_text = ','.join(after_null_list)
     
-    # ===== BƯỚC 1: Tách nếu trước và ngay sau dấu phẩy đều không có khoảng trắng =====
-    parts_step1 = []
+    # Tách nếu trước và ngay sau dấu phẩy đều không có khoảng trắng
+    parts = []
     current = []
     i = 0
     
@@ -99,7 +99,7 @@ def split_after_null_by_rules(after_null_list, row_number=None):
             if not has_space_before and not has_space_after:
                 # Trước và sau đều không có khoảng trắng -> tách
                 if current:
-                    parts_step1.append(''.join(current).strip())
+                    parts.append(''.join(current).strip())
                     current = []
             else:
                 # Có khoảng trắng -> không tách, giữ nguyên dấu phẩy
@@ -109,117 +109,31 @@ def split_after_null_by_rules(after_null_list, row_number=None):
         i += 1
     
     if current:
-        parts_step1.append(''.join(current).strip())
+        parts.append(''.join(current).strip())
     
-    parts_step1 = [p for p in parts_step1 if p]
+    parts = [p for p in parts if p]
     
     # Nếu kết quả có đúng 4 cột -> trả về
-    if len(parts_step1) == 4:
-        return parts_step1[:4], None
+    if len(parts) == 4:
+        return parts[:4], None
     
     # Nếu kết quả < 4 cột -> thêm cột rỗng và trả về
-    if len(parts_step1) < 4:
-        while len(parts_step1) < 4:
-            parts_step1.append('')
-        return parts_step1[:4], None
+    if len(parts) < 4:
+        while len(parts) < 4:
+            parts.append('')
+        return parts[:4], None
     
-    # Nếu kết quả > 4 cột -> LƯU LẠI để chuyển sang Bước 2
-    if len(parts_step1) > 4:
-        # ===== BƯỚC 2: Xử lý các dòng >4 cột từ Bước 1 =====
-        # Tách cấp 2: ngay sau dấu phẩy không có khoảng trắng
-        parts_step2 = []
-        current = []
-        i = 0
-        
-        while i < len(original_text):
-            if original_text[i] == ',':
-                # Kiểm tra ngay sau dấu phẩy không có khoảng trắng
-                if i + 1 < len(original_text) and original_text[i+1] == ' ':
-                    # Có khoảng trắng -> không tách
-                    current.append(',')
-                else:
-                    # Không có khoảng trắng -> tách
-                    if current:
-                        parts_step2.append(''.join(current).strip())
-                        current = []
-            else:
-                current.append(original_text[i])
-            i += 1
-        
-        if current:
-            parts_step2.append(''.join(current).strip())
-        
-        parts_step2 = [p for p in parts_step2 if p]
-        
-        # Nếu kết quả có đúng 4 cột -> trả về
-        if len(parts_step2) == 4:
-            return parts_step2[:4], None
-        
-        # Nếu kết quả < 4 cột -> thêm cột rỗng
-        if len(parts_step2) < 4:
-            while len(parts_step2) < 4:
-                parts_step2.append('')
-            return parts_step2[:4], None
-        
-        # Nếu kết quả > 4 cột -> LƯU LẠI để chuyển sang Bước 3
-        if len(parts_step2) > 4:
-            # ===== BƯỚC 3: Xử lý các dòng >4 cột từ Bước 2 =====
-            # Tách cấp 3: ngay sau dấu phẩy không có khoảng trắng VÀ chữ hoa
-            parts_step3 = []
-            current = []
-            i = 0
-            
-            while i < len(original_text):
-                if original_text[i] == ',':
-                    if i + 1 < len(original_text):
-                        next_char = original_text[i + 1]
-                        # Kiểm tra: không có khoảng trắng và ký tự tiếp theo là chữ hoa
-                        if next_char != ' ' and next_char.isupper():
-                            # Tách thành cột mới
-                            if current:
-                                parts_step3.append(''.join(current).strip())
-                                current = []
-                        else:
-                            # Không tách, giữ nguyên dấu phẩy
-                            current.append(',')
-                    else:
-                        current.append(',')
-                else:
-                    current.append(original_text[i])
-                i += 1
-            
-            if current:
-                parts_step3.append(''.join(current).strip())
-            
-            parts_step3 = [p for p in parts_step3 if p]
-            
-            # Nếu tách được đúng 4 cột -> trả về
-            if len(parts_step3) == 4:
-                return parts_step3[:4], None
-            
-            # Nếu vẫn > 4 cột -> IN RA để kiểm tra thủ công và để hết vào cột đầu tiên
-            if len(parts_step3) > 4:
-                error_info = {
-                    'row_number': row_number,
-                    'original_after_null': original_text,
-                    'step1_result': parts_step1,
-                    'step2_result': parts_step2,
-                    'step3_result': parts_step3,
-                    'final_split_count': len(parts_step3),
-                    'message': f'Tách được {len(parts_step3)} cột (>4) sau Bước 3'
-                }
-                # Để hết vào cột đầu tiên sau cột NULL
-                return [original_text, '', '', ''], error_info
-            
-            # Nếu < 4 cột -> thêm cột rỗng
-            while len(parts_step3) < 4:
-                parts_step3.append('')
-            return parts_step3[:4], None
-    
-    # Trường hợp không xảy ra
-    while len(parts_step1) < 4:
-        parts_step1.append('')
-    return parts_step1[:4], None
+    # Nếu kết quả > 4 cột -> in ra kiểm tra và để hết vào cột đầu tiên
+    if len(parts) > 4:
+        error_info = {
+            'row_number': row_number,
+            'original_after_null': original_text,
+            'split_result': parts,
+            'split_count': len(parts),
+            'message': f'Tách được {len(parts)} cột (>4) - cần kiểm tra thủ công'
+        }
+        # Để hết vào cột đầu tiên sau cột NULL
+        return [original_text, '', '', ''], error_info
 
 def process_row(row, row_number=None):
     """
@@ -441,16 +355,16 @@ def main():
     print(f"Số dòng xử lý thành công: {len(processed_rows)}")
     print(f"Số dòng xử lý lỗi: {len(process_errors)}")
     
-    # In các dòng có lỗi tách >4 cột ở Bước 3
+    # In các dòng có lỗi tách >4 cột
     if split_errors:
         print(f"\n{'='*60}")
-        print("CÁC DÒNG CÓ KẾT QUẢ TÁCH >4 CỘT (SAU BƯỚC 3) - CẦN KIỂM TRA THỦ CÔNG")
+        print("CÁC DÒNG CÓ KẾT QUẢ TÁCH >4 CỘT - CẦN KIỂM TRA THỦ CÔNG")
         print(f"{'='*60}")
         for err in split_errors:
             print(f"\nDòng {err['row_number']}:")
             print(f"  Chuỗi sau NULL: {err['original_after_null'][:200]}")
-            print(f"  Số cột tách được Bước 3: {err['final_split_count']}")
-            print(f"  Kết quả tách Bước 3: {err['step3_result']}")
+            print(f"  Số cột tách được: {err['split_count']}")
+            print(f"  Kết quả tách: {err['split_result']}")
         
         # Lưu file lỗi tách
         split_error_df = pd.DataFrame(split_errors)
@@ -460,7 +374,7 @@ def main():
     
     # Xuất file kết quả
     if len(processed_rows) > 0:
-        output_filename = f"{FILE_NAME}_processed_{datetime.now().strftime('%Y%m%d_H%M%S')}.csv"
+        output_filename = f"{FILE_NAME}_processed_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         output_path = f"{SEMESTER}/{output_filename}"
         
         if upload_to_blob(blob_service, result_df, output_path):

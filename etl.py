@@ -26,12 +26,42 @@ model = None
 
 if GEMINI_API_KEY:
     try:
-        # Cấu hình Gemini với API key
         genai.configure(api_key=GEMINI_API_KEY)
-        # Sử dụng model đúng tên
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        USE_AI = True
-        print("Đã khởi tạo Google Gemini API")
+        
+        # Liệt kê các model khả dụng để chọn đúng tên
+        print("Đang kiểm tra các model khả dụng...")
+        available_models = []
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                available_models.append(m.name)
+                print(f"  - {m.name}")
+        
+        # Chọn model phù hợp (ưu tiên gemini-1.5-flash)
+        preferred_models = [
+            'models/gemini-1.5-flash',
+            'models/gemini-1.5-pro',
+            'models/gemini-2.0-flash-exp',
+            'models/gemini-2.0-pro-exp'
+        ]
+        
+        selected_model = None
+        for pm in preferred_models:
+            if pm in available_models:
+                selected_model = pm
+                break
+        
+        # Nếu không tìm thấy, lấy model đầu tiên có generateContent
+        if not selected_model and available_models:
+            selected_model = available_models[0]
+        
+        if selected_model:
+            model = genai.GenerativeModel(selected_model)
+            USE_AI = True
+            print(f"Đã khởi tạo Gemini API với model: {selected_model}")
+        else:
+            print("Không tìm thấy model nào hỗ trợ generateContent")
+            USE_AI = False
+            
     except Exception as e:
         print(f"Lỗi khởi tạo Gemini: {e}")
         USE_AI = False
@@ -163,7 +193,6 @@ def try_create_4th_column(parts):
 def split_with_gemini_for_fallback(text, row_number):
     """
     CHỈ DÙNG AI CHO DỮ LIỆU ĐƯỢC GÁN VÀO CỘT ĐẦU TIÊN SAU NULL
-    (tức là những dòng mà rule-based không thể xử lý được)
     """
     if not USE_AI or not model:
         return None, "AI không khả dụng"
@@ -177,7 +206,7 @@ def split_with_gemini_for_fallback(text, row_number):
     - cau13: đánh giá về NỘI DUNG HỌC PHẦN / CHUẨN ĐẦU RA
     - cau14: đánh giá về HOẠT ĐỘNG DẠY - HỌC  
     - cau15: đánh giá về KIỂM TRA - ĐÁNH GIÁ
-    - cau16: GÓP Ý KHÁC (thường là "không", "ko", "ok" nếu có)
+    - cau16: GÓP Ý KHÁC
 
     Nếu không có nội dung cho một cột, để chuỗi rỗng "".
 

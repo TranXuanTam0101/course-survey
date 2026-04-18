@@ -1,51 +1,165 @@
 import os
 import sys
+from datetime import datetime
 import pandas as pd
 from azure.storage.blob import BlobServiceClient
 
-# --- Giữ nguyên các biến môi trường của bạn ---
 CONNECTION_STRING = os.environ.get("CONNECTION_STRING")
 SEMESTER = os.environ.get("SEMESTER")
 SURVEY_FILE = os.environ.get("SURVEY_FILE")
 
-def check_and_print_error_lines(file_path):
-    print(f"--- ĐANG KIỂM TRA CÁC DÒNG CÓ SỐ CỘT > 18 TRONG FILE: {file_path} ---")
-    error_count = 0
-    
+if not SEMESTER or not SURVEY_FILE:
+    sys.exit(1)
+
+FILE_NAME = os.path.splitext(os.path.basename(SURVEY_FILE))[0]
+
+def download_from_blob(blob_service):
     try:
-        # Đọc file bằng context manager để đảm bảo hiệu suất
-        with open(file_path, 'r', encoding='utf-8-sig') as f:
-            for line_number, line in enumerate(f, 1):
-                # Loại bỏ ký tự xuống dòng và tách bằng dấu phẩy
-                parts = line.strip().split(',')
-                num_columns = len(parts)
-                
-                # Kiểm tra nếu số cột lớn hơn 18
-                if num_columns > 18:
-                    error_count += 1
-                    print("-" * 50)
-                    print(f"LỖI TẠI DÒNG: {line_number} | SỐ CỘT ĐẾM ĐƯỢC: {num_columns}")
-                    print(f"DỮ LIỆU THÔ:\n{line.strip()}")
-                    
-        print("-" * 50)
-        print(f"TỔNG CỘNG: Tìm thấy {error_count} dòng bị lỗi định dạng cột.")
-        
+        blob_client = blob_service.get_container_client("rawdata").get_blob_client(f"{SEMESTER}/{SURVEY_FILE}")
+        data = blob_client.download_blob().readall()
+        with open(SURVEY_FILE, "wb") as f:
+            f.write(data)
     except Exception as e:
-        print(f"Không thể đọc file để kiểm tra lỗi: {e}")
+        sys.exit(1)
+
+def upload_to_blob(blob_service, df, output_path):
+    try:
+        output = df.to_csv(index=False, encoding='utf-8-sig')
+        processed_container = blob_service.get_container_client("processed-data")
+        if not processed_container.exists():
+            processed_container.create_container()
+        processed_container.get_blob_client(output_path).upload_blob(output, overwrite=True)
+        return True
+    except Exception as e:
+        return False
+
+def inspect_error_lines(filepath, max_lines_to_show=20):
+    """
+    Đọc file và in ra các dòng có số cột > 18 sau khi tách bằng dấu phẩy
+    """
+    print("\n" + "="*80)
+    print("KIỂM TRA CÁC DÒNG BỊ LỖI (SỐ CỘT > 18)")
+    print("="*80)
+    
+    error_lines = []
+    line_number = 0
+    
+    with open(filepath, 'r', encoding='utf-8-sig') as f:
+        for line in f:
+            line_number += 1
+            line = line.strip()
+            if not line:
+                continue
+            
+            # Tách bằng dấu phẩy
+            parts = line.split(',')
+            num_cols = len(parts)
+            
+            if num_cols != 18:
+                error_lines.append({
+                    'line_number': line_number,
+                    'num_cols': num_cols,
+                    'content': line,
+                    'parts': parts
+                })
+    
+    # In thống kê
+    print(f"\nTổng số dòng trong file: {line_number}")
+    print(f"Số dòng có số cột KHÁC 18: {len(error_lines)}")
+    
+    if len(error_lines) == 0:
+        print("\n✅ KHÔNG có dòng lỗi nào! Tất cả các dòng đều có 18 cột.")
+        return
+    
+    # Phân loại lỗi
+    less_than_18 = [e for e in error_lines if e['num_cols'] < 18]
+    more_than_18 = [e for e in error_lines if e['num_cols'] > 18]
+    
+    print(f"  - Số cột < 18: {len(less_than_18)} dòng")
+    print(f"  - Số cột > 18: {len(more_than_18)} dòng")
+    
+    # In chi tiết các dòng có số cột > 18 (quan trọng nhất)
+    if more_than_18:
+        print("\n" + "="*80)
+        print(f"CHI TIẾT CÁC DÒNG CÓ SỐ CỘT > 18 (hiển thị tối đa {max_lines_to_show} dòng)")
+        print("="*80)
+        
+        for i, error in enumerate(more_than_18[:max_lines_to_show]):
+            print(f"\n--- DÒNG {error['line_number']} | Số cột: {error['num_cols']} ---")
+            print(f"Nội dung gốc:")
+            print(f"{error['content'][:500]}{'...' if len(error['content']) > 500 else ''}")
+            
+            print(f"\nCác cột sau khi tách (chỉ hiển thị từ cột 13 trở đi):")
+            for idx, part in enumerate(error['parts']):
+                if idx >= 13:  # Chỉ hiển thị từ cột 13 trở đi vì 13 cột đầu thường ổn
+                    print(f"  Cột {idx}: {part[:200]}{'...' if len(part) > 200 else ''}")
+            
+            print("-"*80)
+        
+        if len(more_than_18) > max_lines_to_show:
+            print(f"\n... và {len(more_than_18) - max_lines_to_show} dòng khác bị lỗi tương tự")
+    
+    # In thử một vài dòng có số cột < 18 (ít quan trọng hơn)
+    if less_than_18 and len(less_than_18) <= 5:
+        print("\n" + "="*80)
+        print("CHI TIẾT CÁC DÒNG CÓ SỐ CỘT < 18")
+        print("="*80)
+        for error in less_than_18[:5]:
+            print(f"\n--- DÒNG {error['line_number']} | Số cột: {error['num_cols']} ---")
+            print(f"Nội dung: {error['content'][:300]}")
+            print("-"*80)
+    
+    # Ghi ra file log để xem chi tiết
+    log_file = f"error_lines_{FILE_NAME}.txt"
+    with open(log_file, 'w', encoding='utf-8') as f:
+        f.write(f"FILE: {SURVEY_FILE}\n")
+        f.write(f"Tổng số dòng: {line_number}\n")
+        f.write(f"Số dòng lỗi: {len(error_lines)}\n")
+        f.write(f"  - Cột < 18: {len(less_than_18)}\n")
+        f.write(f"  - Cột > 18: {len(more_than_18)}\n")
+        f.write("\n" + "="*80 + "\n")
+        
+        for error in error_lines:
+            f.write(f"\n--- DÒNG {error['line_number']} | Số cột: {error['num_cols']} ---\n")
+            f.write(f"Nội dung gốc:\n{error['content']}\n")
+            f.write(f"\nTất cả các cột sau khi tách:\n")
+            for idx, part in enumerate(error['parts']):
+                f.write(f"  Cột {idx}: {part}\n")
+            f.write("\n" + "-"*80 + "\n")
+    
+    print(f"\n📁 Đã ghi chi tiết tất cả các dòng lỗi vào file: {log_file}")
 
 def main():
-    # Giả sử file đã được tải về bằng hàm download_from_blob của bạn
-    # download_from_blob(blob_service)
+    # Kết nối Azure Blob
+    blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
     
+    # Tải file từ blob
+    download_from_blob(blob_service)
+    
+    # KIỂM TRA CÁC DÒNG LỖI TRƯỚC KHI XỬ LÝ
+    inspect_error_lines(SURVEY_FILE, max_lines_to_show=20)
+    
+    # Tiếp tục xử lý dữ liệu bình thường
+    try:
+        # Thử đọc file bằng pandas với error handling
+        df = pd.read_csv(SURVEY_FILE, header=None, on_bad_lines='skip')
+        print(f"\n✅ Đã đọc được {len(df)} dòng bằng pandas (bỏ qua các dòng lỗi)")
+        
+        # Hoặc bạn có thể dùng cách đọc thủ công
+        # rows = []
+        # with open(SURVEY_FILE, 'r', encoding='utf-8-sig') as f:
+        #     for line in f:
+        #         parts = line.strip().split(',')
+        #         if len(parts) == 18:
+        #             rows.append(parts)
+        # df = pd.DataFrame(rows)
+        
+    except Exception as e:
+        print(f"\n❌ Lỗi khi đọc file: {e}")
+    
+    # Xóa file tạm
     if os.path.exists(SURVEY_FILE):
-        # Gọi hàm kiểm tra dòng lỗi
-        check_and_print_error_lines(SURVEY_FILE)
-    else:
-        print("File không tồn tại cục bộ để kiểm tra.")
+        os.remove(SURVEY_FILE)
 
 if __name__ == "__main__":
-    # Lưu ý: Cần đảm bảo các biến môi trường đã được set trước khi chạy
-    if CONNECTION_STRING and SEMESTER and SURVEY_FILE:
-        main()
-    else:
-        print("Thiếu biến môi trường.")
+    main()

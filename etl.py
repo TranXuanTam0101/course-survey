@@ -34,8 +34,8 @@ def upload_to_blob(blob_service, df, output_path):
         return False
 
 def is_special_char_only(s):
-    """Kiểm tra chuỗi chỉ chứa ký tự đặc biệt (không phải chữ cái, không phải số)"""
-    if not s:
+    """Kiểm tra chuỗi chỉ chứa ký tự đặc biệt (không phải chữ cái, không phải số, không phải khoảng trắng)"""
+    if not s or s.strip() == '':
         return True
     for ch in s:
         if ch.isalnum() or ch.isspace():
@@ -119,32 +119,80 @@ def smart_split_by_comma_advanced(line):
     
     return parts2
 
+def find_null_position(line):
+    """Tìm vị trí bắt đầu của từ NULL trong dòng (không dùng regex)"""
+    line_upper = line.upper()
+    null_index = line_upper.find('NULL')
+    
+    if null_index == -1:
+        return -1
+    
+    # Kiểm tra NULL phải là từ độc lập (không phải một phần của từ khác)
+    # Kiểm tra ký tự trước NULL
+    if null_index > 0:
+        prev_char = line[null_index - 1]
+        if prev_char.isalnum():
+            # Tìm lại NULL khác
+            next_null = line_upper.find('NULL', null_index + 4)
+            if next_null != -1:
+                return find_null_position_after(line, next_null)
+            return -1
+    
+    # Kiểm tra ký tự sau NULL
+    after_null_index = null_index + 4
+    if after_null_index < len(line):
+        next_char = line[after_null_index]
+        if next_char.isalnum():
+            # Tìm lại NULL khác
+            next_null = line_upper.find('NULL', after_null_index)
+            if next_null != -1:
+                return find_null_position_after(line, next_null)
+            return -1
+    
+    return null_index
+
+def find_null_position_after(line, start_pos):
+    """Tìm NULL từ vị trí start_pos trở đi"""
+    line_upper = line.upper()
+    null_index = line_upper.find('NULL', start_pos)
+    
+    if null_index == -1:
+        return -1
+    
+    if null_index > 0:
+        prev_char = line[null_index - 1]
+        if prev_char.isalnum():
+            return find_null_position_after(line, null_index + 4)
+    
+    after_null_index = null_index + 4
+    if after_null_index < len(line):
+        next_char = line[after_null_index]
+        if next_char.isalnum():
+            return find_null_position_after(line, after_null_index)
+    
+    return null_index
+
 def extract_answers_after_null(line):
     """
     Tách phần sau cột NULL thành 4 câu trả lời Cau13, Cau14, Cau15, Cau16
     """
     # Tìm vị trí của NULL trong dòng
-    null_pos = -1
-    line_lower = line.lower()
+    null_pos = find_null_position(line)
     
-    # Tìm kiếm NULL (có thể là NULL hoặc ,NULL,)
-    import re
-    null_pattern = r'(?<=,|^)NULL(?=,|$)'
-    match = re.search(null_pattern, line, re.IGNORECASE)
-    
-    if not match:
+    if null_pos == -1:
         return ['', '', '', '']
     
-    null_start = match.start()
     # Tìm vị trí dấu phẩy sau NULL
-    after_null_start = null_start + 4  # len('NULL') = 4
+    after_null_start = null_pos + 4  # len('NULL') = 4
+    
+    # Bỏ qua dấu phẩy nếu có
     while after_null_start < len(line) and line[after_null_start] != ',':
         after_null_start += 1
     after_null_start += 1  # Bỏ qua dấu phẩy
     
     after_null_str = line[after_null_start:] if after_null_start < len(line) else ''
     
-    if not after_null_str:
+    if not after_null_str or after_null_str.strip() == '':
         return ['', '', '', '']
     
     # Tách phần sau NULL bằng logic nâng cao
@@ -155,8 +203,8 @@ def extract_answers_after_null(line):
     if all_special and len(answer_parts) > 0:
         return ['', '', '', '']
     
-    # Xóa các cột rỗng (nhưng giữ lại nếu có ý nghĩa)
-    answer_parts = [p for p in answer_parts if p.strip()]
+    # Xóa các cột rỗng
+    answer_parts = [p for p in answer_parts if p and p.strip()]
     
     # Đảm bảo có đúng 4 câu trả lời
     while len(answer_parts) < 4:
@@ -187,7 +235,7 @@ def inspect_error_lines(filepath):
             if not line:
                 continue
             
-            # Tách toàn bộ dòng bằng logic cơ bản để kiểm tra
+            # Tách toàn bộ dòng bằng dấu phẩy đơn giản để kiểm tra
             temp_parts = line.split(',')
             num_cols_temp = len(temp_parts)
             
@@ -199,14 +247,10 @@ def inspect_error_lines(filepath):
                 # Lấy 4 câu trả lời từ phần sau NULL
                 answers = extract_answers_after_null(line)
                 
-                # Ghép lại thành 18 cột
-                full_parts = before_null[:14] + answers
-                
                 error_lines.append({
                     'line_number': line_number,
                     'num_cols': num_cols_temp,
                     'content': line,
-                    'parts': full_parts,
                     'answers': answers
                 })
     

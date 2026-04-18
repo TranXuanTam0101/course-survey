@@ -48,18 +48,90 @@ def is_date_format(value):
     return bool(re.match(r'^\d{2}/\d{2}/\d{4}$', value.strip()))
 
 def is_ma_gv_format(value):
-    """Kiểm tra định dạng MaGV: đúng 7 ký tự và toàn số"""
+    """
+    Kiểm tra định dạng MaGV:
+    - Có 7 ký tự và toàn số
+    - Hoặc có 7 ký tự và bắt đầu bằng "TG"
+    - Hoặc bằng "gvDacThu_TKTH"
+    """
     if not isinstance(value, str):
         return False
     value = value.strip()
-    return len(value) == 7 and value.isdigit()
+    
+    # Trường hợp 1: 7 ký tự và toàn số
+    if len(value) == 7 and value.isdigit():
+        return True
+    
+    # Trường hợp 2: 7 ký tự và bắt đầu bằng "TG"
+    if len(value) == 7 and value.startswith("TG"):
+        return True
+    
+    # Trường hợp 3: Bằng "gvDacThu_TKTH"
+    if value == "gvDacThu_TKTH":
+        return True
+    
+    return False
+
+def split_by_comma_no_space(text):
+    """
+    Tách chuỗi theo dấu phẩy mà sau dấu phẩy không có khoảng trắng
+    """
+    parts = []
+    current = []
+    i = 0
+    
+    while i < len(text):
+        if text[i] == ',':
+            if i + 1 < len(text) and text[i + 1] == ' ':
+                current.append(',')
+            else:
+                if current:
+                    parts.append(''.join(current).strip())
+                    current = []
+        else:
+            current.append(text[i])
+        i += 1
+    
+    if current:
+        parts.append(''.join(current).strip())
+    
+    return [p for p in parts if p]
+
+def split_by_comma_no_space_and_upper(text):
+    """
+    Tách chuỗi theo dấu phẩy mà sau dấu phẩy không có khoảng trắng VÀ chữ cái đầu tiên viết hoa
+    """
+    parts = []
+    current = []
+    i = 0
+    
+    while i < len(text):
+        if text[i] == ',':
+            if i + 1 < len(text):
+                next_char = text[i + 1]
+                if next_char != ' ' and next_char.isupper():
+                    if current:
+                        parts.append(''.join(current).strip())
+                        current = []
+                else:
+                    current.append(',')
+            else:
+                current.append(',')
+        else:
+            current.append(text[i])
+        i += 1
+    
+    if current:
+        parts.append(''.join(current).strip())
+    
+    return [p for p in parts if p]
 
 def split_after_null_by_rules(after_null_list, row_number=None):
     """
     Xử lý các cột sau cột NULL theo logic 3 bước:
-    Bước 1: Tách nếu trước và ngay sau dấu phẩy không có khoảng trắng
-    Bước 2: Tách nếu ngay sau dấu phẩy không có khoảng trắng
-    Bước 3: Tách nếu ngay sau dấu phẩy không có khoảng trắng VÀ chữ cái đầu tiên viết hoa
+    Bước 1: Tách theo dấu phẩy (sau dấu phẩy không khoảng trắng)
+    Bước 2: Tách theo dấu phẩy (sau dấu phẩy không khoảng trắng) - giống Bước 1
+    Bước 3: Tách với điều kiện thêm (sau dấu phẩy không khoảng trắng + chữ viết hoa)
     """
     if not after_null_list:
         return ['', '', '', ''], None
@@ -67,141 +139,54 @@ def split_after_null_by_rules(after_null_list, row_number=None):
     # Ghép lại thành chuỗi để xử lý
     original_text = ','.join(after_null_list)
     
-    # ===== BƯỚC 1: Tách nếu trước và ngay sau dấu phẩy không có khoảng trắng =====
-    parts_step1 = []
-    current = []
-    i = 0
+    # ===== BƯỚC 1: Tách bằng dấu phẩy (sau dấu phẩy không khoảng trắng → tách) =====
+    parts_step1 = split_by_comma_no_space(original_text)
     
-    while i < len(original_text):
-        if original_text[i] == ',':
-            # Kiểm tra trước dấu phẩy (i-1) và sau dấu phẩy (i+1)
-            has_space_before = (i > 0 and original_text[i-1] == ' ')
-            has_space_after = (i + 1 < len(original_text) and original_text[i+1] == ' ')
-            
-            if not has_space_before and not has_space_after:
-                # Trước và sau dấu phẩy đều không có khoảng trắng -> tách
-                if current:
-                    parts_step1.append(''.join(current).strip())
-                    current = []
-            else:
-                # Có khoảng trắng -> không tách
-                current.append(',')
-        else:
-            current.append(original_text[i])
-        i += 1
-    
-    if current:
-        parts_step1.append(''.join(current).strip())
-    
-    parts_step1 = [p for p in parts_step1 if p]
-    
-    # Nếu tách được đúng 4 cột -> trả về
+    # Nếu kết quả có đúng 4 cột → trả về
     if len(parts_step1) == 4:
         return parts_step1[:4], None
     
-    # Nếu >4 cột -> chuyển sang Bước 2 (KHÔNG thực hiện tách)
+    # Nếu kết quả > 4 cột, chuyển sang Bước 2 (không tách, giữ nguyên)
     if len(parts_step1) > 4:
-        # Chuyển sang Bước 2
-        pass
-    else:
-        # Thiếu cột, thêm string rỗng
-        while len(parts_step1) < 4:
-            parts_step1.append('')
-        return parts_step1[:4], None
+        # ===== BƯỚC 2: Tách bằng dấu phẩy (sau dấu phẩy không khoảng trắng → tách) =====
+        # (Thực chất giống Bước 1, nhưng theo yêu cầu là vẫn thử tách lại)
+        parts_step2 = split_by_comma_no_space(original_text)
+        
+        # Nếu kết quả có đúng 4 cột → trả về
+        if len(parts_step2) == 4:
+            return parts_step2[:4], None
+        
+        # Nếu vẫn > 4 cột, chuyển sang Bước 3
+        if len(parts_step2) > 4:
+            # ===== BƯỚC 3: Tách với điều kiện (sau dấu phẩy không khoảng trắng + chữ viết hoa) =====
+            parts_step3 = split_by_comma_no_space_and_upper(original_text)
+            
+            # Nếu tách được đúng 4 cột → trả về
+            if len(parts_step3) == 4:
+                return parts_step3[:4], None
+            
+            # Nếu vẫn > 4 cột, in ra để kiểm tra thủ công
+            if len(parts_step3) > 4:
+                error_info = {
+                    'row_number': row_number,
+                    'original_after_null': original_text,
+                    'split_result_step1': parts_step1,
+                    'split_result_step2': parts_step2,
+                    'split_result_step3': parts_step3,
+                    'split_count': len(parts_step3)
+                }
+                # Không tách cột, để hết vào cột đầu tiên sau NULL
+                return [original_text, '', '', ''], error_info
     
-    # ===== BƯỚC 2: Tách nếu ngay sau dấu phẩy không có khoảng trắng =====
-    parts_step2 = []
-    current = []
-    i = 0
-    
-    while i < len(original_text):
-        if original_text[i] == ',':
-            # Kiểm tra sau dấu phẩy
-            if i + 1 < len(original_text) and original_text[i+1] == ' ':
-                # Có khoảng trắng sau -> không tách
-                current.append(',')
-            else:
-                # Không có khoảng trắng sau -> tách
-                if current:
-                    parts_step2.append(''.join(current).strip())
-                    current = []
-        else:
-            current.append(original_text[i])
-        i += 1
-    
-    if current:
-        parts_step2.append(''.join(current).strip())
-    
-    parts_step2 = [p for p in parts_step2 if p]
-    
-    # Nếu tách được đúng 4 cột -> trả về
-    if len(parts_step2) == 4:
-        return parts_step2[:4], None
-    
-    # Nếu >4 cột -> chuyển sang Bước 3
-    if len(parts_step2) > 4:
-        # Chuyển sang Bước 3
-        pass
-    else:
-        # Thiếu cột, thêm string rỗng
-        while len(parts_step2) < 4:
-            parts_step2.append('')
-        return parts_step2[:4], None
-    
-    # ===== BƯỚC 3: Tách nếu ngay sau dấu phẩy không có khoảng trắng VÀ chữ cái đầu tiên viết hoa =====
-    parts_step3 = []
-    current = []
-    i = 0
-    
-    while i < len(original_text):
-        if original_text[i] == ',':
-            if i + 1 < len(original_text):
-                next_char = original_text[i+1]
-                # Kiểm tra: không có khoảng trắng và ký tự tiếp theo là chữ hoa
-                if next_char != ' ' and next_char.isupper():
-                    # Tách thành cột mới
-                    if current:
-                        parts_step3.append(''.join(current).strip())
-                        current = []
-                else:
-                    # Không tách, giữ nguyên dấu phẩy
-                    current.append(',')
-            else:
-                current.append(',')
-        else:
-            current.append(original_text[i])
-        i += 1
-    
-    if current:
-        parts_step3.append(''.join(current).strip())
-    
-    parts_step3 = [p for p in parts_step3 if p]
-    
-    # Nếu tách được đúng 4 cột -> trả về
-    if len(parts_step3) == 4:
-        return parts_step3[:4], None
-    
-    # Nếu vẫn >4 cột -> in ra để kiểm tra thủ công
-    if len(parts_step3) > 4:
-        error_info = {
-            'row_number': row_number,
-            'original_after_null': original_text,
-            'split_result': parts_step3,
-            'split_count': len(parts_step3)
-        }
-        # Trả về 4 cột đầu tiên và thông tin lỗi
-        return parts_step3[:4], error_info
-    
-    # Trường hợp còn lại: thiếu cột
-    while len(parts_step3) < 4:
-        parts_step3.append('')
-    return parts_step3[:4], None
+    # Trường hợp thiếu cột (<4)
+    result = parts_step1[:4] if len(parts_step1) <= 4 else ['', '', '', '']
+    while len(result) < 4:
+        result.append('')
+    return result[:4], None
 
 def process_row(row, row_number=None):
     """
-    Xử lý một dòng CSV theo logic:
-    1. Xử lý các cột trước NULL (GIỮ NGUYÊN)
-    2. Xử lý các cột sau NULL (ĐÃ ĐIỀU CHỈNH)
+    Xử lý một dòng CSV theo logic
     """
     if not row or len(row) < 2:
         return None, None, []
@@ -226,22 +211,21 @@ def process_row(row, row_number=None):
         ho_dem = ''
         ten = ''
         if ngay_sinh_index > 1:
-            # Lấy tất cả các cột nằm giữa MaSV (index 1) và NgaySinh
             ho_dem_ten_parts = row[2:ngay_sinh_index]
             ho_dem_ten_str = ' '.join([p.strip() for p in ho_dem_ten_parts if p and p.strip()])
             
             if ho_dem_ten_str:
                 parts = ho_dem_ten_str.split()
                 if len(parts) > 0:
-                    ten = parts[-1]  # Từ cuối cùng là Tên
-                    ho_dem = ' '.join(parts[:-1]) if len(parts) > 1 else ''  # Phần còn lại là Họ đệm
+                    ten = parts[-1]
+                    ho_dem = ' '.join(parts[:-1]) if len(parts) > 1 else ''
         
         # Bước 4: Xác định MaHP (cột ngay sau NgaySinh)
         ma_hp = ''
         if ngay_sinh_index >= 0 and ngay_sinh_index + 1 < len(row):
             ma_hp = row[ngay_sinh_index + 1].strip()
         
-        # Bước 5: Dò tìm MaGV (có đúng 7 ký tự và toàn số)
+        # Bước 5: Dò tìm MaGV (theo điều kiện mới)
         ma_gv = ''
         ma_gv_index = -1
         start_idx = ngay_sinh_index + 2 if ngay_sinh_index >= 0 else 0
@@ -257,7 +241,7 @@ def process_row(row, row_number=None):
             ten_hp_parts = row[ngay_sinh_index + 2:ma_gv_index]
             ten_hp = ' '.join([p.strip() for p in ten_hp_parts if p and p.strip()])
         
-        # Bước 7: Gán các cột tiếp theo
+        # Bước 7-11: Gán các cột tiếp theo
         ho_dem_gv = ''
         ten_gv = ''
         lop_hp = ''
@@ -276,7 +260,7 @@ def process_row(row, row_number=None):
             if ma_gv_index + 5 < len(row):
                 gia_tri = row[ma_gv_index + 5].strip()
         
-        # Bước 8: Xác định cột NULL (cột ngay sau GiaTri)
+        # Bước 12: Xác định cột NULL (cột ngay sau GiaTri)
         null_index = -1
         null_value = ''
         gia_tri_index = ma_gv_index + 5 if ma_gv_index >= 0 else -1
@@ -287,15 +271,12 @@ def process_row(row, row_number=None):
                 null_index = gia_tri_index + 1
                 null_value = potential_null if potential_null else 'NULL'
         
-        # ========== PHẦN 2: XỬ LÝ CÁC CỘT SAU CỘT NULL (ĐÃ ĐIỀU CHỈNH) ==========
+        # ========== PHẦN 2: XỬ LÝ CÁC CỘT SAU CỘT NULL ==========
         cau13 = cau14 = cau15 = cau16 = ''
         split_errors = []
         
         if null_index >= 0 and null_index + 1 < len(row):
-            # Lấy phần sau cột NULL
             after_null = row[null_index + 1:]
-            
-            # Áp dụng logic tách 3 bước
             split_result, error = split_after_null_by_rules(after_null, row_number)
             
             if len(split_result) >= 4:
@@ -383,6 +364,7 @@ def main():
     # Xử lý từng dòng
     print(f"Bắt đầu xử lý {len(rows)} dòng...")
     processed_rows = []
+    process_errors = []
     split_errors = []
     
     for idx, row in enumerate(rows, 1):
@@ -390,6 +372,13 @@ def main():
         
         if result:
             processed_rows.append(result)
+        
+        if error:
+            process_errors.append({
+                'line_number': idx,
+                'error': error,
+                'row_length': len(row)
+            })
         
         if split_errs:
             split_errors.extend(split_errs)
@@ -406,6 +395,7 @@ def main():
     print(f"{'='*60}")
     print(f"Tổng số dòng đọc được: {len(rows)}")
     print(f"Số dòng xử lý thành công: {len(processed_rows)}")
+    print(f"Số dòng xử lý lỗi: {len(process_errors)}")
     
     # In các dòng có lỗi tách >4 cột ở Bước 3
     if split_errors:
@@ -415,16 +405,16 @@ def main():
         for err in split_errors:
             print(f"\nDòng {err['row_number']}:")
             print(f"  Chuỗi sau NULL: {err['original_after_null'][:200]}")
-            print(f"  Số cột tách được: {err['split_count']}")
-            print(f"  Kết quả tách: {err['split_result']}")
+            print(f"  Số cột tách được Bước 1: {len(err['split_result_step1'])}")
+            print(f"  Số cột tách được Bước 2: {len(err['split_result_step2'])}")
+            print(f"  Số cột tách được Bước 3: {err['split_count']}")
+            print(f"  Kết quả tách Bước 3: {err['split_result_step3']}")
         
         # Lưu file lỗi tách
         split_error_df = pd.DataFrame(split_errors)
         split_error_filename = f"{FILE_NAME}_split_errors_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         split_error_df.to_csv(split_error_filename, index=False, encoding='utf-8-sig')
         print(f"\nĐã lưu {len(split_errors)} dòng lỗi tách vào file: {split_error_filename}")
-    else:
-        print("\nKhông có dòng nào có kết quả tách >4 cột!")
     
     # Xuất file kết quả
     if len(processed_rows) > 0:

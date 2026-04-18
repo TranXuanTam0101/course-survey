@@ -42,3 +42,4 @@ jobs:
           SEMESTER: ${{ github.event.inputs.semester }}
           SURVEY_FILE: ${{ github.event.inputs.survey_file }}
           CONNECTION_STRING: ${{ secrets.AZURE_CONNECTION_STRING }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }} 

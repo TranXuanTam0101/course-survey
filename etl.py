@@ -1,6 +1,7 @@
 import os
 import sys
 import re
+import csv
 from datetime import datetime
 import pandas as pd
 from azure.storage.blob import BlobServiceClient
@@ -131,7 +132,6 @@ def split_after_null_by_rules(after_null_list):
     # Trường hợp không tách được thành 4 cột
     if len(parts_rule2) > 4:
         # Lấy 4 cột đầu, các cột còn lại sẽ được ghi nhận để kiểm tra
-        print(f"CẢNH BÁO: Tách được {len(parts_rule2)} cột (>4), chỉ lấy 4 cột đầu")
         return parts_rule2[:4]
     else:
         # Thiếu cột, thêm string rỗng
@@ -231,7 +231,6 @@ def process_row(row):
         
         # ========== PHẦN 2: XỬ LÝ CÁC CỘT SAU CỘT NULL ==========
         cau13 = cau14 = cau15 = cau16 = ''
-        error_rows = []
         
         if null_index >= 0 and null_index + 1 < len(row):
             # Lấy phần sau cột NULL
@@ -245,15 +244,6 @@ def process_row(row):
                 cau14 = split_result[1]
                 cau15 = split_result[2]
                 cau16 = split_result[3]
-            
-            # Ghi nhận nếu số cột tách được không đúng
-            if len(split_result) != 4:
-                error_rows.append({
-                    'row_index': 'current',
-                    'after_null_original': after_null,
-                    'split_result': split_result,
-                    'split_count': len(split_result)
-                })
         
         # Tạo kết quả với đúng 18 cột
         result = {
@@ -277,12 +267,55 @@ def process_row(row):
             'Cau16': cau16
         }
         
-        return result, error_rows
+        return result, None
         
     except Exception as e:
         print(f"Lỗi xử lý dòng: {e}")
-        print(f"Dòng bị lỗi: {row}")
-        return None, []
+        return None, str(e)
+
+def read_csv_manual(filename):
+    """
+    Đọc file CSV thủ công để xử lý các dòng có số cột không đồng đều
+    """
+    rows = []
+    error_rows = []
+    
+    try:
+        with open(filename, 'r', encoding='utf-8-sig') as f:
+            # Đọc từng dòng
+            for line_num, line in enumerate(f, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # Split bằng dấu phẩy
+                row = line.split(',')
+                
+                # Loại bỏ khoảng trắng thừa ở đầu/cuối mỗi phần tử
+                row = [col.strip() for col in row]
+                
+                rows.append(row)
+                
+                if len(row) < 18:
+                    error_rows.append({
+                        'line_number': line_num,
+                        'column_count': len(row),
+                        'sample': line[:200]
+                    })
+                
+                # Log progress
+                if line_num % 1000 == 0:
+                    print(f"Đã đọc {line_num} dòng...")
+        
+        print(f"Đã đọc xong file: {len(rows)} dòng")
+        if error_rows:
+            print(f"Cảnh báo: Có {len(error_rows)} dòng có số cột < 18")
+        
+        return rows, error_rows
+        
+    except Exception as e:
+        print(f"Lỗi đọc file: {e}")
+        return [], []
 
 def main():
     # Khởi tạo Blob Service
@@ -296,75 +329,83 @@ def main():
     # Download file
     download_from_blob(blob_service)
     
-    # Đọc file CSV
-    try:
-        df = pd.read_csv(SURVEY_FILE, header=None, dtype=str)
-        print(f"Đã đọc file CSV, số dòng: {len(df)}")
-    except Exception as e:
-        print(f"Lỗi đọc file CSV: {e}")
+    # Đọc file CSV thủ công
+    print("Đang đọc file CSV...")
+    rows, read_errors = read_csv_manual(SURVEY_FILE)
+    
+    if not rows:
+        print("Không có dữ liệu để xử lý")
         sys.exit(1)
     
     # Xử lý từng dòng
+    print(f"Bắt đầu xử lý {len(rows)} dòng...")
     processed_rows = []
-    all_errors = []
-    error_count = 0
+    process_errors = []
     
-    for idx, row in df.iterrows():
-        row_list = [str(val) if pd.notna(val) else '' for val in row.values]
-        
-        result, errors = process_row(row_list)
+    for idx, row in enumerate(rows, 1):
+        result, error = process_row(row)
         
         if result:
             processed_rows.append(result)
+        else:
+            process_errors.append({
+                'line_number': idx,
+                'error': error,
+                'row_length': len(row),
+                'sample': ','.join(row[:10]) + '...' if len(row) > 10 else ','.join(row)
+            })
         
-        if errors:
-            for error in errors:
-                error['row_number'] = idx + 2  # +2 vì header và index từ 0
-                all_errors.append(error)
-            error_count += len(errors)
-        
-        # Log tiến độ
-        if (idx + 1) % 1000 == 0:
-            print(f"Đã xử lý {idx + 1} dòng...")
+        # Log progress
+        if idx % 1000 == 0:
+            print(f"Đã xử lý {idx}/{len(rows)} dòng...")
     
     # Tạo DataFrame kết quả
     result_df = pd.DataFrame(processed_rows)
     
-    # In ra các dòng lỗi cần kiểm tra thủ công
-    if all_errors:
-        print(f"\n{'='*60}")
-        print(f"CẢNH BÁO: Có {len(all_errors)} dòng cần kiểm tra thủ công")
-        print(f"{'='*60}")
+    # In báo cáo
+    print(f"\n{'='*60}")
+    print("BÁO CÁO XỬ LÝ")
+    print(f"{'='*60}")
+    print(f"Tổng số dòng đọc được: {len(rows)}")
+    print(f"Số dòng xử lý thành công: {len(processed_rows)}")
+    print(f"Số dòng xử lý lỗi: {len(process_errors)}")
+    
+    if read_errors:
+        print(f"\nCẢNH BÁO ĐỌC FILE:")
+        for err in read_errors[:5]:
+            print(f"  - Dòng {err['line_number']}: có {err['column_count']} cột")
+    
+    if process_errors:
+        print(f"\nLỖI XỬ LÝ DÒNG:")
+        for err in process_errors[:5]:
+            print(f"  - Dòng {err['line_number']}: {err['error']}")
+            print(f"    Số cột: {err['row_length']}")
+            print(f"    Mẫu: {err['sample']}")
         
-        for i, error in enumerate(all_errors[:10]):  # In 10 dòng đầu
-            print(f"\n--- Dòng lỗi {i+1} (Dòng số {error.get('row_number', '?')}) ---")
-            print(f"After NULL: {error.get('after_null_original', '')[:200]}")
-            print(f"Số cột tách được: {error.get('split_count', 0)}")
-            print(f"Kết quả tách: {error.get('split_result', [])}")
-        
-        # Lưu file lỗi để kiểm tra
-        error_df = pd.DataFrame(all_errors)
-        error_filename = f"{FILE_NAME}_errors_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        # Lưu file lỗi
+        error_df = pd.DataFrame(process_errors)
+        error_filename = f"{FILE_NAME}_process_errors_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         error_df.to_csv(error_filename, index=False, encoding='utf-8-sig')
-        print(f"\nĐã lưu {len(all_errors)} dòng lỗi vào file: {error_filename}")
-    else:
-        print("\nKhông có dòng lỗi nào cần kiểm tra thủ công!")
+        print(f"\nĐã lưu lỗi vào file: {error_filename}")
     
     # Xuất file kết quả
-    output_filename = f"{FILE_NAME}_processed_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-    output_path = f"{SEMESTER}/{output_filename}"
-    
-    # Upload lên blob
-    if upload_to_blob(blob_service, result_df, output_path):
-        print(f"\n{'='*60}")
-        print(f"THÀNH CÔNG!")
-        print(f"{'='*60}")
-        print(f"Số dòng đã xử lý: {len(processed_rows)}")
-        print(f"Số dòng có lỗi: {len(all_errors)}")
-        print(f"File kết quả: {output_path}")
-        print(f"{'='*60}")
+    if len(processed_rows) > 0:
+        output_filename = f"{FILE_NAME}_processed_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        output_path = f"{SEMESTER}/{output_filename}"
+        
+        # Upload lên blob
+        if upload_to_blob(blob_service, result_df, output_path):
+            print(f"\n{'='*60}")
+            print("THÀNH CÔNG!")
+            print(f"{'='*60}")
+            print(f"File kết quả: {output_path}")
+            print(f"Số dòng đã xử lý: {len(processed_rows)}")
+            print(f"{'='*60}")
+        else:
+            print("Upload file thất bại!")
+            sys.exit(1)
     else:
-        print("Upload file thất bại!")
+        print("Không có dòng nào được xử lý thành công!")
         sys.exit(1)
 
 if __name__ == "__main__":

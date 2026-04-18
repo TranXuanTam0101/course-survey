@@ -18,51 +18,27 @@ if not SEMESTER or not SURVEY_FILE:
     print("Thiếu biến môi trường SEMESTER hoặc SURVEY_FILE")
     sys.exit(1)
 
-if not GEMINI_API_KEY:
-    print("CẢNH BÁO: Thiếu GEMINI_API_KEY, sẽ không xử lý được các dòng >4 cột bằng AI")
-    sys.exit(1)
-
 FILE_NAME = os.path.splitext(os.path.basename(SURVEY_FILE))[0]
 
-# Khởi tạo Gemini
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
-USE_AI = True
-print("Đã khởi tạo Google Gemini API")
+# Khởi tạo Gemini (nếu có API key)
+USE_AI = False
+model = None
 
-# ========== CÂU HỎI KHẢO SÁT (để AI biết ngữ cảnh) ==========
-SURVEY_QUESTIONS = """
-1. Cau 1-2: Lop, MaSV (thông tin sinh viên)
-2. Cau 3-4: HoDem, Ten (họ tên sinh viên)
-3. Cau 5: NgaySinh (ngày sinh)
-4. Cau 6: MaHP (mã học phần)
-5. Cau 7: TenHP (tên học phần)
-6. Cau 8: MaGV (mã giảng viên)
-7. Cau 9-10: HoDemGV, TenGV (họ tên giảng viên)
-8. Cau 11: LopHP (lớp học phần)
-9. Cau 12: CauHoi (số thứ tự câu hỏi: 1-12)
-10. Cau 13: GiaTri (giá trị đánh giá: 1-5 điểm)
+if GEMINI_API_KEY:
+    try:
+        # Cấu hình Gemini với API key
+        genai.configure(api_key=GEMINI_API_KEY)
+        # Sử dụng model đúng tên
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        USE_AI = True
+        print("Đã khởi tạo Google Gemini API")
+    except Exception as e:
+        print(f"Lỗi khởi tạo Gemini: {e}")
+        USE_AI = False
+else:
+    print("CẢNH BÁO: Thiếu GEMINI_API_KEY, sẽ không xử lý được các dòng >4 cột bằng AI")
 
-11. Cau 13 (Cau13 trong output): Đánh giá về NỘI DUNG HỌC PHẦN / CHUẨN ĐẦU RA
-    - Câu hỏi: "Anh/Chị đánh giá thế nào về chuẩn đầu ra và nội dung của học phần?"
-    - Nội dung thường liên quan đến: chuẩn đầu ra, nội dung học phần, mục tiêu môn học, kiến thức được trang bị
-    - Ví dụ: "đầy đủ", "phù hợp", "bám sát thực tế", "rõ ràng", "chuẩn", "hợp lý"
-
-12. Cau 14 (Cau14 trong output): Đánh giá về HOẠT ĐỘNG DẠY - HỌC
-    - Câu hỏi: "Anh/Chị đánh giá thế nào về hoạt động dạy - học của giảng viên?"
-    - Nội dung thường liên quan đến: phương pháp giảng dạy, thái độ giảng viên, cách truyền đạt, tương tác với sinh viên
-    - Ví dụ: "giảng viên nhiệt tình", "dạy dễ hiểu", "có nhiều ví dụ thực tế", "tận tâm", "vui vẻ"
-
-13. Cau 15 (Cau15 trong output): Đánh giá về KIỂM TRA - ĐÁNH GIÁ
-    - Câu hỏi: "Anh/Chị đánh giá thế nào về công tác kiểm tra - đánh giá của học phần?"
-    - Nội dung thường liên quan đến: công bằng, minh bạch, đề thi, cách chấm điểm, phản hồi
-    - Ví dụ: "công bằng", "minh bạch", "đề thi phù hợp", "chấm điểm đúng thực lực", "nghiêm túc"
-
-14. Cau 16 (Cau16 trong output): GÓP Ý KHÁC
-    - Câu hỏi: "Anh/Chị có góp ý gì khác cho học phần này không?"
-    - Nội dung thường: "không", "ko", "ok", hoặc các góp ý cá nhân, cảm xúc
-"""
-
+# ========== CÁC HÀM TIỆN ÍCH ==========
 def download_from_blob(blob_service):
     try:
         blob_client = blob_service.get_container_client("rawdata").get_blob_client(f"{SEMESTER}/{SURVEY_FILE}")
@@ -106,6 +82,7 @@ def is_ma_gv_format(value):
     return False
 
 def split_by_condition_1(text):
+    """Cấp 1: Tách nếu trước và sau dấu phẩy đều không có khoảng trắng"""
     parts = []
     current = []
     i = 0
@@ -127,6 +104,7 @@ def split_by_condition_1(text):
     return [p for p in parts if p]
 
 def split_by_condition_2(text):
+    """Cấp 2: Tách nếu sau dấu phẩy không có khoảng trắng"""
     parts = []
     current = []
     i = 0
@@ -146,6 +124,7 @@ def split_by_condition_2(text):
     return [p for p in parts if p]
 
 def split_by_condition_3(text):
+    """Cấp 3: Tách nếu sau dấu phẩy không có khoảng trắng VÀ chữ hoa"""
     parts = []
     current = []
     i = 0
@@ -169,6 +148,7 @@ def split_by_condition_3(text):
     return [p for p in parts if p]
 
 def try_create_4th_column(parts):
+    """Thử lấy phần tử cuối cùng sau dấu phẩy của cột cuối để tạo cột thứ 4"""
     if len(parts) == 3:
         last_col = parts[-1]
         if ',' in last_col:
@@ -180,54 +160,29 @@ def try_create_4th_column(parts):
                 return parts
     return parts
 
-def split_with_gemini_smart(text, row_number):
+def split_with_gemini_for_fallback(text, row_number):
     """
-    Sử dụng Gemini để phân tách dựa trên NỘI DUNG CÂU HỎI KHẢO SÁT
+    CHỈ DÙNG AI CHO DỮ LIỆU ĐƯỢC GÁN VÀO CỘT ĐẦU TIÊN SAU NULL
+    (tức là những dòng mà rule-based không thể xử lý được)
     """
+    if not USE_AI or not model:
+        return None, "AI không khả dụng"
+    
     prompt = f"""
-    Bạn là chuyên gia xử lý dữ liệu khảo sát sinh viên về chất lượng giảng dạy đại học.
+    Bạn là chuyên gia xử lý dữ liệu khảo sát sinh viên.
 
-    DƯỚI ĐÂY LÀ CÁC CÂU HỎI KHẢO SÁT (để bạn hiểu ngữ cảnh):
-    {SURVEY_QUESTIONS}
+    CHUỖI DỮ LIỆU CẦN XỬ LÝ: "{text}"
 
-    NHIỆM VỤ:
-    Tách chuỗi đánh giá của sinh viên sau thành ĐÚNG 4 cột (Cau13, Cau14, Cau15, Cau16)
-    dựa trên NỘI DUNG của từng câu trả lời, KHÔNG dựa trên vị trí dấu phẩy.
-
-    NGUYÊN TẮC PHÂN LOẠI THEO NỘI DUNG:
-
-    1. Cột CAU13 - Đánh giá về NỘI DUNG HỌC PHẦN / CHUẨN ĐẦU RA:
-       - Từ khóa: "chuẩn đầu ra", "nội dung", "chương trình", "mục tiêu", "kiến thức", "học phần"
-       - Đánh giá: "đầy đủ", "phù hợp", "bám sát", "rõ ràng", "hợp lý", "sát thực tế"
-       
-    2. Cột CAU14 - Đánh giá về HOẠT ĐỘNG DẠY - HỌC:
-       - Từ khóa: "thầy", "cô", "giảng viên", "dạy", "giảng", "bài giảng", "phương pháp"
-       - Đánh giá: "dễ hiểu", "nhiệt tình", "tận tâm", "vui vẻ", "hấp dẫn", "thú vị", "tương tác"
-
-    3. Cột CAU15 - Đánh giá về KIỂM TRA - ĐÁNH GIÁ:
-       - Từ khóa: "kiểm tra", "đánh giá", "thi", "bài tập", "điểm", "chấm", "đề thi"
-       - Đánh giá: "công bằng", "minh bạch", "nghiêm túc", "phù hợp", "đúng thực lực"
-
-    4. Cột CAU16 - GÓP Ý KHÁC:
-       - Từ khóa: "không", "ko", "ok", "ổn", "cảm ơn", "yêu", "thích"
-       - Hoặc các ý kiến không thuộc 3 nhóm trên
-
-    CHUỖI CẦN PHÂN TÁCH: "{text}"
-
-    YÊU CẦU:
-    - Phân tích NGỮ NGHĨA của từng phần trong chuỗi
-    - Có thể chuỗi đã được phân cách bằng dấu phẩy, hãy dựa vào NỘI DUNG để quyết định
-    - Nếu một câu trả lời dài, hãy xác định nó thuộc về cột nào dựa trên chủ đề chính
-    - Nếu có nhiều ý trong một câu, hãy tách ra theo chủ đề
-
-    TRẢ VỀ KẾT QUẢ DƯỚI DẠNG JSON DUY NHẤT:
-    {{"cau13": "nội dung câu trả lời cho câu hỏi về chuẩn đầu ra/nội dung học phần",
-      "cau14": "nội dung câu trả lời cho câu hỏi về hoạt động dạy - học",
-      "cau15": "nội dung câu trả lời cho câu hỏi về kiểm tra - đánh giá",
-      "cau16": "nội dung câu trả lời cho câu hỏi góp ý khác"}}
+    Đây là dữ liệu từ câu hỏi khảo sát, hãy phân tích và trả về KẾT QUẢ DƯỚI DẠNG JSON với 4 trường:
+    - cau13: đánh giá về NỘI DUNG HỌC PHẦN / CHUẨN ĐẦU RA
+    - cau14: đánh giá về HOẠT ĐỘNG DẠY - HỌC  
+    - cau15: đánh giá về KIỂM TRA - ĐÁNH GIÁ
+    - cau16: GÓP Ý KHÁC (thường là "không", "ko", "ok" nếu có)
 
     Nếu không có nội dung cho một cột, để chuỗi rỗng "".
-    KHÔNG thêm bất kỳ text nào khác ngoài JSON.
+
+    CHỈ TRẢ VỀ JSON, KHÔNG THÊM BẤT KỲ TEXT NÀO KHÁC.
+    Ví dụ: {{"cau13": "nội dung", "cau14": "nội dung", "cau15": "nội dung", "cau16": "nội dung"}}
     """
     
     try:
@@ -240,48 +195,27 @@ def split_with_gemini_smart(text, row_number):
             result = json.loads(json_match.group())
             return result, None
         else:
-            # Thử tìm JSON lồng nhau
             json_match = re.search(r'\{.*\}', result_text, re.DOTALL)
             if json_match:
                 result = json.loads(json_match.group())
                 return result, None
-            return None, f"Không parse được JSON từ response: {result_text[:200]}"
+            return None, f"Không parse được JSON: {result_text[:200]}"
             
     except Exception as e:
         return None, str(e)
 
 def split_after_null_by_rules(after_null_list, row_number=None):
     """
-    Xử lý các cột sau cột NULL: 
-    Ưu tiên dùng AI để phân tách DỰA TRÊN NỘI DUNG CÂU HỎI
+    Xử lý các cột sau cột NULL:
+    - Dùng 3 cấp rule-based để tách
+    - Nếu vẫn không được 4 cột, CHỈ KHI ĐÓ mới dùng AI để xử lý
     """
     if not after_null_list:
         return ['', '', '', ''], None
     
     original_text = ','.join(after_null_list)
     
-    # ===== ƯU TIÊN SỬ DỤNG AI ĐỂ PHÂN TÁCH DỰA TRÊN NỘI DUNG =====
-    if USE_AI:
-        ai_result, error = split_with_gemini_smart(original_text, row_number)
-        
-        if ai_result:
-            # Kiểm tra kết quả AI có đủ 4 cột không
-            result = [
-                ai_result.get('cau13', ''),
-                ai_result.get('cau14', ''),
-                ai_result.get('cau15', ''),
-                ai_result.get('cau16', '')
-            ]
-            # Nếu AI trả về 4 cột có nội dung (hoặc rỗng), tin dùng
-            if len(result) == 4:
-                return result, None
-        
-        # Nếu AI thất bại, thử các phương pháp truyền thống
-        print(f"AI thất bại cho dòng {row_number}, fallback sang rule-based: {error}")
-    
-    # ===== FALLBACK: Các phương pháp rule-based =====
-    
-    # Cấp 1
+    # ===== CẤP 1 =====
     parts_level1 = split_by_condition_1(original_text)
     if len(parts_level1) == 4:
         return parts_level1[:4], None
@@ -290,7 +224,7 @@ def split_after_null_by_rules(after_null_list, row_number=None):
         if len(parts_level1) == 4:
             return parts_level1[:4], None
     
-    # Cấp 2
+    # ===== CẤP 2 =====
     parts_level2 = split_by_condition_2(original_text)
     if len(parts_level2) == 4:
         return parts_level2[:4], None
@@ -299,7 +233,7 @@ def split_after_null_by_rules(after_null_list, row_number=None):
         if len(parts_level2) == 4:
             return parts_level2[:4], None
     
-    # Cấp 3
+    # ===== CẤP 3 =====
     parts_level3 = split_by_condition_3(original_text)
     if len(parts_level3) == 4:
         return parts_level3[:4], None
@@ -308,7 +242,24 @@ def split_after_null_by_rules(after_null_list, row_number=None):
         if len(parts_level3) == 4:
             return parts_level3[:4], None
     
-    # Vẫn không được -> lưu lỗi
+    # ===== NẾU VẪN CHƯA ĐƯỢC 4 CỘT, DÙNG AI =====
+    if USE_AI:
+        print(f"Dòng {row_number}: Rule-based không xử lý được, dùng AI để phân tách...")
+        ai_result, error = split_with_gemini_for_fallback(original_text, row_number)
+        
+        if ai_result:
+            result = [
+                ai_result.get('cau13', ''),
+                ai_result.get('cau14', ''),
+                ai_result.get('cau15', ''),
+                ai_result.get('cau16', '')
+            ]
+            print(f"Dòng {row_number}: AI xử lý thành công!")
+            return result, None
+        else:
+            print(f"Dòng {row_number}: AI xử lý thất bại - {error}")
+    
+    # Vẫn không được -> lưu lỗi để kiểm tra thủ công
     error_info = {
         'row_number': row_number,
         'original_after_null': original_text,
@@ -316,7 +267,7 @@ def split_after_null_by_rules(after_null_list, row_number=None):
         'level2_result': parts_level2,
         'level3_result': parts_level3,
         'final_count': len(parts_level3),
-        'message': f'Sau 3 cấp có {len(parts_level3)} cột - cần kiểm tra thủ công'
+        'message': f'Sau 3 cấp có {len(parts_level3)} cột, AI không xử lý được - cần kiểm tra thủ công'
     }
     return [original_text, '', '', ''], error_info
 
@@ -482,7 +433,7 @@ def main():
         sys.exit(1)
     
     print(f"Bắt đầu xử lý {len(rows)} dòng...")
-    print(f"Sử dụng AI phân tách DỰA TRÊN NỘI DUNG CÂU HỎI: CÓ")
+    print(f"Sử dụng AI cho dữ liệu fallback: {'CÓ' if USE_AI else 'KHÔNG'}")
     
     processed_rows = []
     process_errors = []
@@ -518,14 +469,18 @@ def main():
     
     if split_errors:
         print(f"\n{'='*60}")
-        print(f"CÁC DÒNG KHÔNG THỂ PHÂN TÁCH - ĐÃ ĐỂ TOÀN BỘ VÀO CỘT ĐẦU ({len(split_errors)} dòng)")
+        print(f"CÁC DÒNG KHÔNG THỂ PHÂN TÁCH - CẦN KIỂM TRA THỦ CÔNG ({len(split_errors)} dòng)")
         print(f"{'='*60}")
+        for err in split_errors[:10]:
+            print(f"\nDòng {err.get('row_number', '?')}:")
+            print(f"  Chuỗi sau NULL: {err.get('original_after_null', '')[:200]}")
+            print(f"  Số cột sau 3 cấp: {err.get('final_count', 0)}")
         
         # Lưu file lỗi
         split_error_df = pd.DataFrame(split_errors)
         split_error_filename = f"{FILE_NAME}_split_errors_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         split_error_df.to_csv(split_error_filename, index=False, encoding='utf-8-sig')
-        print(f"Đã lưu {len(split_errors)} dòng lỗi vào file: {split_error_filename}")
+        print(f"\nĐã lưu {len(split_errors)} dòng lỗi vào file: {split_error_filename}")
     
     if len(processed_rows) > 0:
         output_filename = f"{FILE_NAME}_processed_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"

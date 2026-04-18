@@ -33,9 +33,55 @@ def upload_to_blob(blob_service, df, output_path):
     except Exception as e:
         return False
 
+def smart_split_by_comma(line):
+    """
+    Tách dòng bằng dấu phẩy với logic:
+    - Nếu sau dấu phẩy KHÔNG có khoảng trắng -> ĐÓ LÀ DẤU PHẨY PHÂN CÁCH CỘT (DELIMITER)
+    - Nếu sau dấu phẩy CÓ khoảng trắng -> ĐÓ LÀ DẤU PHẨY TRONG NỘI DUNG (KHÔNG TÁCH)
+    """
+    parts = []
+    current = []
+    i = 0
+    length = len(line)
+    
+    while i < length:
+        if line[i] == ',':
+            # Kiểm tra xem có phải delimiter không
+            is_delimiter = False
+            
+            # Nhìn vào ký tự sau dấu phẩy
+            if i + 1 < length:
+                next_char = line[i + 1]
+                # Nếu sau dấu phẩy KHÔNG có khoảng trắng -> delimiter
+                if next_char != ' ':
+                    is_delimiter = True
+                # Nếu sau dấu phẩy CÓ khoảng trắng -> không phải delimiter
+                else:
+                    is_delimiter = False
+            else:
+                # Dấu phẩy cuối dòng -> delimiter
+                is_delimiter = True
+            
+            if is_delimiter:
+                # Kết thúc phần tử hiện tại
+                parts.append(''.join(current).strip())
+                current = []
+            else:
+                # Dấu phẩy trong nội dung, thêm vào current
+                current.append(',')
+        else:
+            current.append(line[i])
+        i += 1
+    
+    # Thêm phần tử cuối cùng
+    if current:
+        parts.append(''.join(current).strip())
+    
+    return parts
+
 def inspect_error_lines(filepath):
     """
-    Đọc file và in ra TẤT CẢ các dòng có số cột khác 18 sau khi tách bằng dấu phẩy
+    Đọc file và in ra TẤT CẢ các dòng có số cột khác 18 sau khi tách bằng logic dấu phẩy
     """
     print("\n" + "="*80)
     print("KIỂM TRA CÁC DÒNG BỊ LỖI (SỐ CỘT KHÁC 18)")
@@ -51,8 +97,8 @@ def inspect_error_lines(filepath):
             if not line:
                 continue
             
-            # Tách bằng dấu phẩy
-            parts = line.split(',')
+            # Tách bằng logic dấu phẩy mới
+            parts = smart_split_by_comma(line)
             num_cols = len(parts)
             
             if num_cols != 18:

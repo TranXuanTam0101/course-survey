@@ -178,6 +178,11 @@ def split_after_null_by_rules(after_null_list, row_number=None):
     if len(parts_level1) == 4:
         return parts_level1[:4], None
     
+    if len(parts_level1) == 3:
+        parts_level1 = take_last_element_from_previous_column(parts_level1)
+        if len(parts_level1) == 4:
+            return parts_level1[:4], None
+    
     # ===== CẤP 2: Tách với điều kiện sau dấu phẩy không có khoảng trắng =====
     parts_level2 = split_by_condition_2(original_text)
     

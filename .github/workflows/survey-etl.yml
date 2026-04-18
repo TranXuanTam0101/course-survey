@@ -33,8 +33,6 @@ jobs:
         run: |
           pip install pandas
           pip install azure-storage-blob
-          pip install google-generativeai
-
       
       - name: Run ETL
         run: python etl.py
@@ -42,4 +40,3 @@ jobs:
           SEMESTER: ${{ github.event.inputs.semester }}
           SURVEY_FILE: ${{ github.event.inputs.survey_file }}
           CONNECTION_STRING: ${{ secrets.AZURE_CONNECTION_STRING }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }} 

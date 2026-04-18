@@ -4,294 +4,303 @@ from datetime import datetime
 import pandas as pd
 from azure.storage.blob import BlobServiceClient
 
+# ====================== CẤU HÌNH ======================
 CONNECTION_STRING = os.environ.get("CONNECTION_STRING")
 SEMESTER = os.environ.get("SEMESTER")
 SURVEY_FILE = os.environ.get("SURVEY_FILE")
 
 if not SEMESTER or not SURVEY_FILE:
+    print("Thiếu biến môi trường SEMESTER hoặc SURVEY_FILE")
     sys.exit(1)
 
 FILE_NAME = os.path.splitext(os.path.basename(SURVEY_FILE))[0]
 
+# ====================== TẢI FILE TỪ BLOB ======================
 def download_from_blob(blob_service):
     try:
         blob_client = blob_service.get_container_client("rawdata").get_blob_client(f"{SEMESTER}/{SURVEY_FILE}")
         data = blob_client.download_blob().readall()
         with open(SURVEY_FILE, "wb") as f:
             f.write(data)
+        print(f"Đã tải file: {SURVEY_FILE}")
+        return True
     except Exception as e:
+        print(f"Lỗi tải file từ Blob: {e}")
         sys.exit(1)
 
+
+# ====================== LOGIC XỬ LÝ CHÍNH ======================
+def is_date_format(value: str) -> bool:
+    """Kiểm tra định dạng ngày xx/xx/xxxx"""
+    if not value or len(value) < 10:
+        return False
+    parts = value.strip().split('/')
+    return len(parts) == 3 and all(p.isdigit() for p in parts) and len(parts[0]) == 2 and len(parts[1]) == 2 and len(parts[2]) == 4
+
+
+def is_mgv(value: str) -> bool:
+    """Kiểm tra MaGV: đúng 7 ký tự và toàn số"""
+    return value and len(value.strip()) == 7 and value.strip().isdigit()
+
+
+def process_row(row: list) -> dict:
+    """
+    Xử lý một dòng (đã split theo dấu phẩy)
+    Trả về dictionary với 18 cột chuẩn hoặc None nếu lỗi nghiêm trọng
+    """
+    if len(row) < 2:
+        return None
+
+    result = {
+        'Lop': '', 'MaSV': '', 'HoDem': '', 'Ten': '', 'NgaySinh': '', 'MaHP': '', 'TenHP': '',
+        'MaGV': '', 'HoDemGV': '', 'TenGV': '', 'LopHP': '', 'CauHoi': '', 'GiaTri': '',
+        'NULL': 'NULL', 'Cau13': '', 'Cau14': '', 'Cau15': '', 'Cau16': ''
+    }
+
+    # ==================== PHẦN 1: XỬ LÝ TRƯỚC CỘT NULL ====================
+    try:
+        result['Lop'] = row[0].strip()
+        result['MaSV'] = row[1].strip()
+
+        # Bước 2: Tìm NgaySinh
+        ngay_sinh_idx = -1
+        for i in range(2, len(row)):
+            if is_date_format(row[i]):
+                ngay_sinh_idx = i
+                break
+        if ngay_sinh_idx == -1:
+            return None  # Không tìm thấy ngày sinh -> bỏ qua dòng
+
+        result['NgaySinh'] = row[ngay_sinh_idx].strip()
+
+        # Bước 3: HoDem và Ten
+        ho_dem_ten_parts = []
+        for i in range(2, ngay_sinh_idx):
+            ho_dem_ten_parts.append(row[i].strip())
+        
+        ho_dem_ten_str = " ".join(ho_dem_ten_parts).strip()
+        if ho_dem_ten_str:
+            name_parts = ho_dem_ten_str.split()
+            result['Ten'] = name_parts[-1]
+            result['HoDem'] = " ".join(name_parts[:-1]) if len(name_parts) > 1 else ""
+
+        # Bước 4: MaHP - ngay sau NgaySinh
+        if ngay_sinh_idx + 1 < len(row):
+            result['MaHP'] = row[ngay_sinh_idx + 1].strip()
+
+        # Bước 5: Tìm MaGV (đúng 7 số)
+        ma_gv_idx = -1
+        for i in range(ngay_sinh_idx + 2, len(row)):
+            if is_mgv(row[i]):
+                ma_gv_idx = i
+                break
+        if ma_gv_idx == -1:
+            return None
+
+        result['MaGV'] = row[ma_gv_idx].strip()
+
+        # Bước 6: TenHP - các cột giữa MaHP và MaGV
+        ten_hp_parts = []
+        for i in range(ngay_sinh_idx + 2, ma_gv_idx):
+            ten_hp_parts.append(row[i].strip())
+        result['TenHP'] = " ".join(ten_hp_parts).strip() if ten_hp_parts else ""
+
+        # Bước 7-11: Các cột tiếp theo
+        current_idx = ma_gv_idx + 1
+        if current_idx < len(row):
+            result['HoDemGV'] = row[current_idx].strip()
+            current_idx += 1
+        if current_idx < len(row):
+            result['TenGV'] = row[current_idx].strip()
+            current_idx += 1
+        if current_idx < len(row):
+            result['LopHP'] = row[current_idx].strip()
+            current_idx += 1
+        if current_idx < len(row):
+            result['CauHoi'] = row[current_idx].strip()
+            current_idx += 1
+        if current_idx < len(row):
+            result['GiaTri'] = row[current_idx].strip()
+            current_idx += 1
+
+        # Bước 12: Tìm vị trí NULL
+        null_idx = current_idx
+        if null_idx >= len(row) or row[null_idx].strip().upper() not in ['NULL', '']:
+            # Nếu không phải NULL thì tìm tiếp
+            for i in range(current_idx, len(row)):
+                if row[i].strip().upper() in ['NULL', '']:
+                    null_idx = i
+                    break
+            else:
+                null_idx = -1
+
+    except Exception:
+        return None
+
+    # ==================== PHẦN 2: XỬ LÝ SAU CỘT NULL ====================
+    if null_idx == -1 or null_idx + 1 >= len(row):
+        return result  # Không có dữ liệu sau NULL
+
+    # Lấy phần sau NULL
+    after_null = [col.strip() for col in row[null_idx + 1:] if col.strip() != '']
+
+    # === Quy tắc 1: Ngay sau dấu phẩy không có khoảng trắng ===
+    def split_by_no_space(parts):
+        result_list = []
+        for p in parts:
+            if ',' in p and not p.startswith(' '):  # Có dấu phẩy và ngay sau không có space
+                # Tách theo dấu phẩy không có space
+                subparts = []
+                current = ''
+                for char in p:
+                    if char == ',' and not current.endswith(' '):  # không có space trước dấu phẩy? Wait, logic là sau phẩy không space
+                        if current:
+                            subparts.append(current.strip())
+                        current = ''
+                    else:
+                        current += char
+                if current:
+                    subparts.append(current.strip())
+                result_list.extend(subparts)
+            else:
+                result_list.append(p)
+        return result_list
+
+    processed = split_by_no_space(after_null)
+
+    if len(processed) == 4:
+        result['Cau13'], result['Cau14'], result['Cau15'], result['Cau16'] = processed
+        return result
+
+    # === Quy tắc 2: Không có space sau phẩy + chữ cái đầu viết hoa ===
+    def split_by_no_space_and_upper(parts):
+        result_list = []
+        for p in parts:
+            if ',' in p:
+                subparts = p.split(',')
+                cleaned = []
+                for sp in subparts:
+                    sp = sp.strip()
+                    if sp and sp[0].isupper():  # chữ cái đầu viết hoa
+                        cleaned.append(sp)
+                    elif sp:
+                        # Nếu không viết hoa nhưng là phần tiếp theo, có thể gộp hoặc tách tùy
+                        if cleaned:
+                            cleaned[-1] += " " + sp
+                        else:
+                            cleaned.append(sp)
+                result_list.extend(cleaned)
+            else:
+                result_list.append(p)
+        return result_list
+
+    processed2 = split_by_no_space_and_upper(after_null)
+
+    if len(processed2) == 4:
+        result['Cau13'], result['Cau14'], result['Cau15'], result['Cau16'] = processed2
+        return result
+
+    # Nếu vẫn > 4 cột sau cả 2 quy tắc → cần kiểm tra thủ công
+    result['Cau13'] = " ".join(after_null) if after_null else ""
+    # Đánh dấu dòng lỗi
+    result['__ERROR__'] = True
+    result['__RAW_AFTER_NULL__'] = "|".join(after_null)
+
+    return result
+
+
+# ====================== XỬ LÝ TOÀN BỘ FILE ======================
+def process_file(input_file: str):
+    error_lines = []
+    output_rows = []
+
+    print(f"Đang xử lý file: {input_file}")
+
+    with open(input_file, 'r', encoding='utf-8-sig') as f:
+        # Giả sử dòng đầu là header, bỏ qua hoặc xử lý tùy file
+        header = f.readline().strip()
+        
+        for line_num, line in enumerate(f, start=2):
+            line = line.strip()
+            if not line:
+                continue
+
+            # Split theo dấu phẩy, nhưng giữ nguyên các phần có dấu phẩy trong ngoặc (nếu có)
+            # Ở đây dùng split đơn giản, nếu có trường hợp tên có dấu phẩy phức tạp hơn thì cần csv.reader
+            row = [x.strip() for x in line.split(',')]
+
+            processed = process_row(row)
+
+            if processed is None:
+                error_lines.append(f"Dòng {line_num}: Không xử lý được (thiếu thông tin cơ bản)")
+                continue
+
+            # Tạo list theo thứ tự cột chuẩn
+            output_row = [
+                processed['Lop'], processed['MaSV'], processed['HoDem'], processed['Ten'],
+                processed['NgaySinh'], processed['MaHP'], processed['TenHP'], processed['MaGV'],
+                processed['HoDemGV'], processed['TenGV'], processed['LopHP'], processed['CauHoi'],
+                processed['GiaTri'], processed['NULL'],
+                processed['Cau13'], processed['Cau14'], processed['Cau15'], processed['Cau16']
+            ]
+
+            output_rows.append(output_row)
+
+            if processed.get('__ERROR__'):
+                error_lines.append(f"Dòng {line_num}: Sau NULL vẫn còn {len(processed.get('__RAW_AFTER_NULL__', '').split('|'))} phần -> {processed.get('__RAW_AFTER_NULL__', '')}")
+
+    # Tạo DataFrame
+    columns = ['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP', 'MaGV',
+               'HoDemGV', 'TenGV', 'LopHP', 'CauHoi', 'GiaTri', 'NULL',
+               'Cau13', 'Cau14', 'Cau15', 'Cau16']
+
+    df = pd.DataFrame(output_rows, columns=columns)
+
+    # Lưu các dòng lỗi ra file txt
+    if error_lines:
+        error_file = f"{FILE_NAME}_ERROR_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        with open(error_file, 'w', encoding='utf-8') as f:
+            f.write("\n".join(error_lines))
+        print(f"Đã lưu {len(error_lines)} dòng cần kiểm tra thủ công vào: {error_file}")
+
+    print(f"Hoàn thành xử lý. Tổng số dòng output: {len(df)}")
+    return df
+
+
+# ====================== UPLOAD LÊN BLOB ======================
 def upload_to_blob(blob_service, df, output_path):
     try:
         output = df.to_csv(index=False, encoding='utf-8-sig')
         processed_container = blob_service.get_container_client("processed-data")
         if not processed_container.exists():
             processed_container.create_container()
-        processed_container.get_blob_client(output_path).upload_blob(output, overwrite=True)
+        
+        blob_client = processed_container.get_blob_client(output_path)
+        blob_client.upload_blob(output, overwrite=True)
+        print(f"Đã upload file xử lý lên Blob: {output_path}")
         return True
     except Exception as e:
+        print(f"Lỗi upload Blob: {e}")
         return False
 
 
-def split_after_null_by_logic(after_null_str):
-    """
-    Tách phần sau NULL thành các câu trả lời
-    
-    LOGIC:
-    - Cấp 1: Ngay sau dấu phẩy ko có khoảng trắng => tách cột
-    - Cấp 2: Nếu vẫn tạo thành >4 câu thì tiếp tục xét thêm điều kiện:
-       - Ngay sau dấu phẩy ko có khoảng trắng + chữ viết cái đầu Viết Hoa => tách cột
-    
-    TRẢ VỀ: danh sách các câu đã tách (có thể >4 câu)
-    """
-    if not after_null_str:
-        return []
-    
-    # Lưu lại chuỗi gốc để xử lý cấp 2 nếu cần
-    original_str = after_null_str
-    
-    # ========== CẤP 1: Ngay sau dấu phẩy ko có khoảng trắng => tách cột ==========
-    parts_level1 = []
-    current = []
-    i = 0
-    length = len(after_null_str)
-    
-    while i < length:
-        if after_null_str[i] == ',':
-            # Kiểm tra: Ngay sau dấu phẩy có khoảng trắng không?
-            is_delimiter = False
-            if i + 1 < length:
-                next_char = after_null_str[i + 1]
-                # Ngay sau dấu phẩy ko có khoảng trắng => tách cột
-                if next_char != ' ':
-                    is_delimiter = True
-            else:
-                # Dấu phẩy cuối dòng => tách cột
-                is_delimiter = True
-            
-            if is_delimiter:
-                # Tách cột
-                current_str = ''.join(current).strip()
-                if current_str:
-                    parts_level1.append(current_str)
-                current = []
-            else:
-                # Không tách, giữ dấu phẩy trong nội dung
-                current.append(',')
-        else:
-            current.append(after_null_str[i])
-        i += 1
-    
-    # Thêm phần tử cuối cùng
-    if current:
-        current_str = ''.join(current).strip()
-        if current_str:
-            parts_level1.append(current_str)
-    
-    # Nếu đã có 4 câu hoặc ít hơn, trả về kết quả cấp 1
-    if len(parts_level1) <= 4:
-        return parts_level1
-    
-    # ========== CẤP 2: Vẫn tạo thành >4 câu, xét thêm điều kiện ==========
-    # Điều kiện: Ngay sau dấu phẩy ko có khoảng trắng + chữ viết cái đầu Viết Hoa => tách cột
-    parts_level2 = []
-    current = []
-    i = 0
-    length = len(original_str)
-    
-    while i < length:
-        if original_str[i] == ',':
-            is_delimiter = False
-            if i + 1 < length:
-                next_char = original_str[i + 1]
-                # Ngay sau dấu phẩy ko có khoảng trắng + chữ cái đầu Viết Hoa => tách cột
-                if next_char != ' ' and next_char.isupper():
-                    is_delimiter = True
-            else:
-                is_delimiter = True
-            
-            if is_delimiter:
-                current_str = ''.join(current).strip()
-                if current_str:
-                    parts_level2.append(current_str)
-                current = []
-            else:
-                current.append(',')
-        else:
-            current.append(original_str[i])
-        i += 1
-    
-    if current:
-        current_str = ''.join(current).strip()
-        if current_str:
-            parts_level2.append(current_str)
-    
-    # Trả về kết quả cấp 2 (có thể >4 câu)
-    return parts_level2
-
-
-def process_line_fixed(line):
-    """
-    Xử lý một dòng:
-    - Chỉ xử lý tách cột sau cột có giá trị NULL
-    - Giữ nguyên phần từ đầu đến NULL
-    - Phần sau NULL: áp dụng logic split_after_null_by_logic
-    - Trả về: (before_null, answers) để kiểm tra
-    """
-    line_str = line.strip()
-    if not line_str:
-        return None, None
-    
-    # Tách tạm thời để tìm vị trí cột NULL
-    temp_parts = line_str.split(',')
-    
-    # Tìm vị trí cột NULL (cột có giá trị NULL)
-    null_index = -1
-    for i, p in enumerate(temp_parts):
-        if p == '' or p.upper() == 'NULL':
-            null_index = i
-            break
-    
-    if null_index == -1:
-        # Không tìm thấy cột NULL
-        return None, None
-    
-    # Tìm vị trí bắt đầu của phần sau NULL trong dòng gốc
-    comma_count = 0
-    start_pos = 0
-    for i, ch in enumerate(line_str):
-        if ch == ',':
-            if comma_count == null_index:
-                start_pos = i + 1
-                break
-            comma_count += 1
-    
-    # Lấy phần chuỗi sau cột NULL
-    after_null_str = line_str[start_pos:] if start_pos < len(line_str) else ''
-    
-    # Áp dụng logic tách cột cho phần sau NULL
-    answers = split_after_null_by_logic(after_null_str)
-    
-    # Phần từ đầu đến NULL (bao gồm cả cột NULL)
-    before_null = temp_parts[:null_index + 1]
-    
-    # Đảm bảo before_null có đúng 14 cột (index 0 đến 13)
-    while len(before_null) < 14:
-        before_null.append('')
-    before_null = before_null[:14]
-    
-    return before_null, answers
-
-
-def inspect_error_lines(filepath):
-    """
-    Đọc file, xử lý theo logic, in ra các dòng có số câu sau NULL >4
-    (tương đương tổng số cột >18)
-    """
-    print("\n" + "="*80)
-    print("KIỂM TRA CÁC DÒNG DỮ LIỆU")
-    print("="*80)
-    
-    error_lines = []  # Các dòng có số câu sau NULL >4
-    line_number = 0
-    total_lines = 0
-    
-    with open(filepath, 'r', encoding='utf-8-sig') as f:
-        for line in f:
-            total_lines += 1
-            line = line.strip()
-            if not line:
-                continue
-            
-            line_number += 1
-            
-            # Xử lý dòng theo logic
-            before_null, answers = process_line_fixed(line)
-            
-            if before_null is None:
-                # Không tìm thấy NULL
-                error_lines.append({
-                    'line_number': line_number,
-                    'error_type': 'KHÔNG TÌM THẤY CỘT NULL',
-                    'content': line,
-                })
-            elif len(answers) > 4:
-                # Số câu sau NULL >4 -> tổng số cột = 14 + len(answers) > 18
-                total_cols = 14 + len(answers)
-                error_lines.append({
-                    'line_number': line_number,
-                    'error_type': f'SỐ CÂU SAU NULL = {len(answers)} (Tổng cột = {total_cols})',
-                    'content': line,
-                    'before_null': before_null,
-                    'answers': answers
-                })
-    
-    # In thống kê
-    print(f"\nTổng số dòng trong file: {total_lines}")
-    print(f"Số dòng có số câu sau NULL >4 (tổng cột >18): {len(error_lines)}")
-    
-    # In ra tất cả các dòng có vấn đề
-    if error_lines:
-        print("\n" + "="*80)
-        print("CÁC DÒNG CÓ SỐ CÂU SAU NULL >4 (CẦN XEM XÉT THỦ CÔNG)")
-        print("="*80)
-        
-        for i, error in enumerate(error_lines):
-            print(f"\n{'='*80}")
-            print(f"DÒNG {i+1}/{len(error_lines)} | Số dòng gốc: {error['line_number']}")
-            print(f"LỖI: {error['error_type']}")
-            print(f"{'='*80}")
-            print(f"Nội dung gốc:")
-            print(f"{error['content']}")
-            
-            if 'answers' in error:
-                print(f"\nKết quả tách phần sau NULL ({len(error['answers'])} câu):")
-                for idx, ans in enumerate(error['answers']):
-                    print(f"  Câu {idx+1}: {ans}")
-            
-            print(f"\n{'#'*80}")
-        
-        # Ghi ra file log
-        log_file = f"error_lines_{FILE_NAME}.txt"
-        with open(log_file, 'w', encoding='utf-8') as f:
-            f.write(f"FILE: {SURVEY_FILE}\n")
-            f.write(f"Tổng số dòng: {total_lines}\n")
-            f.write(f"Số dòng có số câu sau NULL >4: {len(error_lines)}\n")
-            f.write("\n" + "="*80 + "\n")
-            
-            for error in error_lines:
-                f.write(f"\n{'='*80}\n")
-                f.write(f"DÒNG {error['line_number']}\n")
-                f.write(f"LỖI: {error['error_type']}\n")
-                f.write(f"{'='*80}\n")
-                f.write(f"Nội dung gốc:\n{error['content']}\n")
-                
-                if 'answers' in error:
-                    f.write(f"\nKết quả tách phần sau NULL ({len(error['answers'])} câu):\n")
-                    for idx, ans in enumerate(error['answers']):
-                        f.write(f"  Câu {idx+1}: {ans}\n")
-                f.write("\n" + "#"*80 + "\n")
-        
-        print(f"\n📁 Đã ghi chi tiết vào file: {log_file}")
-    else:
-        print("\n✅ TẤT CẢ các dòng đều có số câu sau NULL <=4!")
-
-
-def main():
-    # Kết nối Azure Blob
-    blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
-    
-    # Tải file từ blob
-    download_from_blob(blob_service)
-    
-    # Xử lý và in ra các dòng lỗi
-    inspect_error_lines(SURVEY_FILE)
-    
-    # Xóa file tạm
-    if os.path.exists(SURVEY_FILE):
-        os.remove(SURVEY_FILE)
-
-
+# ====================== MAIN ======================
 if __name__ == "__main__":
-    main()
+    blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
+
+    # Tải file từ Blob
+    download_from_blob(blob_service)
+
+    # Xử lý file
+    df_result = process_file(SURVEY_FILE)
+
+    # Tên file output
+    output_filename = f"{FILE_NAME}_PROCESSED_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+
+    # Upload kết quả
+    success = upload_to_blob(blob_service, df_result, f"{SEMESTER}/{output_filename}")
+
+    if success:
+        print("Hoàn tất toàn bộ quá trình xử lý!")
+    else:
+        print("Có lỗi khi upload kết quả.")

@@ -36,15 +36,17 @@ def upload_to_blob(blob_service, df, output_path):
 
 def split_after_null_by_logic(after_null_str):
     """
-    Tách phần sau NULL thành 4 câu trả lời (Cau13, Cau14, Cau15, Cau16)
+    Tách phần sau NULL thành các câu trả lời
     
     LOGIC:
-    - Ngay sau dấu phẩy ko có khoảng trắng => tách cột
-    - Nếu vẫn tạo thành >4 câu thì tiếp tục xét thêm điều kiện:
+    - Cấp 1: Ngay sau dấu phẩy ko có khoảng trắng => tách cột
+    - Cấp 2: Nếu vẫn tạo thành >4 câu thì tiếp tục xét thêm điều kiện:
        - Ngay sau dấu phẩy ko có khoảng trắng + chữ viết cái đầu Viết Hoa => tách cột
+    
+    TRẢ VỀ: danh sách các câu đã tách (có thể >4 câu)
     """
     if not after_null_str:
-        return ['', '', '', '']
+        return []
     
     # Lưu lại chuỗi gốc để xử lý cấp 2 nếu cần
     original_str = after_null_str
@@ -87,11 +89,9 @@ def split_after_null_by_logic(after_null_str):
         if current_str:
             parts_level1.append(current_str)
     
-    # Nếu đã có 4 câu hoặc ít hơn, trả về kết quả
+    # Nếu đã có 4 câu hoặc ít hơn, trả về kết quả cấp 1
     if len(parts_level1) <= 4:
-        while len(parts_level1) < 4:
-            parts_level1.append('')
-        return parts_level1[:4]
+        return parts_level1
     
     # ========== CẤP 2: Vẫn tạo thành >4 câu, xét thêm điều kiện ==========
     # Điều kiện: Ngay sau dấu phẩy ko có khoảng trắng + chữ viết cái đầu Viết Hoa => tách cột
@@ -127,15 +127,7 @@ def split_after_null_by_logic(after_null_str):
         if current_str:
             parts_level2.append(current_str)
     
-    # Đảm bảo có đúng 4 câu trả lời
-    while len(parts_level2) < 4:
-        parts_level2.append('')
-    
-    if len(parts_level2) > 4:
-        # Gộp phần dư vào câu cuối cùng (Cau16)
-        parts_level2[3] = ','.join(parts_level2[3:])
-        parts_level2 = parts_level2[:4]
-    
+    # Trả về kết quả cấp 2 (có thể >4 câu)
     return parts_level2
 
 
@@ -145,11 +137,11 @@ def process_line_fixed(line):
     - Chỉ xử lý tách cột sau cột có giá trị NULL
     - Giữ nguyên phần từ đầu đến NULL
     - Phần sau NULL: áp dụng logic split_after_null_by_logic
-    - Trả về 18 cột
+    - Trả về: (before_null, answers) để kiểm tra
     """
     line_str = line.strip()
     if not line_str:
-        return [''] * 18
+        return None, None
     
     # Tách tạm thời để tìm vị trí cột NULL
     temp_parts = line_str.split(',')
@@ -162,10 +154,8 @@ def process_line_fixed(line):
             break
     
     if null_index == -1:
-        # Không tìm thấy cột NULL, giữ nguyên
-        while len(temp_parts) < 18:
-            temp_parts.append('')
-        return temp_parts[:18]
+        # Không tìm thấy cột NULL
+        return None, None
     
     # Tìm vị trí bắt đầu của phần sau NULL trong dòng gốc
     comma_count = 0
@@ -191,19 +181,19 @@ def process_line_fixed(line):
         before_null.append('')
     before_null = before_null[:14]
     
-    # Kết quả: 14 cột đầu + 4 câu trả lời = 18 cột
-    return before_null + answers
+    return before_null, answers
 
 
 def inspect_error_lines(filepath):
     """
-    Đọc file, xử lý theo logic, in ra các dòng vẫn còn tạo thành >18 cột
+    Đọc file, xử lý theo logic, in ra các dòng có số câu sau NULL >4
+    (tương đương tổng số cột >18)
     """
     print("\n" + "="*80)
     print("KIỂM TRA CÁC DÒNG DỮ LIỆU")
     print("="*80)
     
-    error_lines = []  # Các dòng có số cột != 18 sau khi xử lý
+    error_lines = []  # Các dòng có số câu sau NULL >4
     line_number = 0
     total_lines = 0
     
@@ -217,37 +207,48 @@ def inspect_error_lines(filepath):
             line_number += 1
             
             # Xử lý dòng theo logic
-            processed = process_line_fixed(line)
+            before_null, answers = process_line_fixed(line)
             
-            # Kiểm tra số cột sau khi xử lý
-            if len(processed) != 18:
+            if before_null is None:
+                # Không tìm thấy NULL
                 error_lines.append({
                     'line_number': line_number,
-                    'num_cols': len(processed),
+                    'error_type': 'KHÔNG TÌM THẤY CỘT NULL',
                     'content': line,
-                    'processed': processed
+                })
+            elif len(answers) > 4:
+                # Số câu sau NULL >4 -> tổng số cột = 14 + len(answers) > 18
+                total_cols = 14 + len(answers)
+                error_lines.append({
+                    'line_number': line_number,
+                    'error_type': f'SỐ CÂU SAU NULL = {len(answers)} (Tổng cột = {total_cols})',
+                    'content': line,
+                    'before_null': before_null,
+                    'answers': answers
                 })
     
     # In thống kê
     print(f"\nTổng số dòng trong file: {total_lines}")
-    print(f"Số dòng có số cột KHÁC 18 sau khi xử lý: {len(error_lines)}")
+    print(f"Số dòng có số câu sau NULL >4 (tổng cột >18): {len(error_lines)}")
     
-    # In ra tất cả các dòng vẫn còn tạo thành >18 cột
+    # In ra tất cả các dòng có vấn đề
     if error_lines:
         print("\n" + "="*80)
-        print("CÁC DÒNG VẪN CÒN TẠO THÀNH >18 CỘT (CẦN XEM XÉT THỦ CÔNG)")
+        print("CÁC DÒNG CÓ SỐ CÂU SAU NULL >4 (CẦN XEM XÉT THỦ CÔNG)")
         print("="*80)
         
         for i, error in enumerate(error_lines):
             print(f"\n{'='*80}")
-            print(f"DÒNG {i+1}/{len(error_lines)} | Số dòng gốc: {error['line_number']} | Số cột: {error['num_cols']}")
+            print(f"DÒNG {i+1}/{len(error_lines)} | Số dòng gốc: {error['line_number']}")
+            print(f"LỖI: {error['error_type']}")
             print(f"{'='*80}")
             print(f"Nội dung gốc:")
             print(f"{error['content']}")
             
-            print(f"\nCác cột sau khi xử lý:")
-            for idx, part in enumerate(error['processed']):
-                print(f"  Cột {idx}: {part}")
+            if 'answers' in error:
+                print(f"\nKết quả tách phần sau NULL ({len(error['answers'])} câu):")
+                for idx, ans in enumerate(error['answers']):
+                    print(f"  Câu {idx+1}: {ans}")
             
             print(f"\n{'#'*80}")
         
@@ -256,22 +257,25 @@ def inspect_error_lines(filepath):
         with open(log_file, 'w', encoding='utf-8') as f:
             f.write(f"FILE: {SURVEY_FILE}\n")
             f.write(f"Tổng số dòng: {total_lines}\n")
-            f.write(f"Số dòng có số cột KHÁC 18: {len(error_lines)}\n")
+            f.write(f"Số dòng có số câu sau NULL >4: {len(error_lines)}\n")
             f.write("\n" + "="*80 + "\n")
             
             for error in error_lines:
                 f.write(f"\n{'='*80}\n")
-                f.write(f"DÒNG {error['line_number']} | Số cột: {error['num_cols']}\n")
+                f.write(f"DÒNG {error['line_number']}\n")
+                f.write(f"LỖI: {error['error_type']}\n")
                 f.write(f"{'='*80}\n")
                 f.write(f"Nội dung gốc:\n{error['content']}\n")
-                f.write(f"\nCác cột sau khi xử lý:\n")
-                for idx, part in enumerate(error['processed']):
-                    f.write(f"  Cột {idx}: {part}\n")
+                
+                if 'answers' in error:
+                    f.write(f"\nKết quả tách phần sau NULL ({len(error['answers'])} câu):\n")
+                    for idx, ans in enumerate(error['answers']):
+                        f.write(f"  Câu {idx+1}: {ans}\n")
                 f.write("\n" + "#"*80 + "\n")
         
         print(f"\n📁 Đã ghi chi tiết vào file: {log_file}")
     else:
-        print("\n✅ TẤT CẢ các dòng đều được xử lý thành công thành 18 cột!")
+        print("\n✅ TẤT CẢ các dòng đều có số câu sau NULL <=4!")
 
 
 def main():

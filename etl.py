@@ -76,8 +76,8 @@ def split_after_null_by_rules(after_null_list, row_number=None):
     """
     Xử lý các cột sau cột NULL theo logic 3 bước:
     Bước 1: Tách nếu trước và ngay sau dấu phẩy đều không có khoảng trắng
-    Bước 2: CHỈ xử lý các phần tử >4 cột từ Bước 1, tách nếu ngay sau dấu phẩy không có khoảng trắng
-    Bước 3: CHỈ xử lý các phần tử >4 cột từ Bước 2, tách nếu ngay sau dấu phẩy không có khoảng trắng VÀ chữ hoa
+    Bước 2: Chỉ xử lý các dòng >4 cột từ Bước 1, tách nếu ngay sau dấu phẩy không có khoảng trắng
+    Bước 3: Chỉ xử lý các dòng >4 cột từ Bước 2, tách nếu ngay sau dấu phẩy không có khoảng trắng VÀ chữ hoa
     """
     if not after_null_list:
         return ['', '', '', ''], None
@@ -117,46 +117,61 @@ def split_after_null_by_rules(after_null_list, row_number=None):
     if len(parts_step1) == 4:
         return parts_step1[:4], None
     
-    # Nếu kết quả < 4 cột -> thêm cột rỗng
+    # Nếu kết quả < 4 cột -> thêm cột rỗng và trả về
     if len(parts_step1) < 4:
         while len(parts_step1) < 4:
             parts_step1.append('')
         return parts_step1[:4], None
     
-    # Nếu kết quả > 4 cột -> chuyển sang Bước 2 (xử lý trên parts_step1)
+    # Nếu kết quả > 4 cột -> LƯU LẠI để chuyển sang Bước 2
     if len(parts_step1) > 4:
-        # ===== BƯỚC 2: Tách nếu ngay sau dấu phẩy không có khoảng trắng =====
-        # Xử lý trên từng phần tử của parts_step1
-        parts_step2 = []
+        # ===== BƯỚC 2: Xử lý các dòng >4 cột từ Bước 1 =====
         
-        for part in parts_step1:
-            # Kiểm tra trong phần tử này có dấu phẩy cần tách không
-            if ',' in part:
-                sub_parts = []
-                sub_current = []
-                j = 0
-                
-                while j < len(part):
-                    if part[j] == ',':
-                        # Kiểm tra ngay sau dấu phẩy không có khoảng trắng
-                        if j + 1 < len(part) and part[j+1] == ' ':
-                            # Có khoảng trắng -> không tách
-                            sub_current.append(',')
-                        else:
-                            # Không có khoảng trắng -> tách
-                            if sub_current:
-                                sub_parts.append(''.join(sub_current).strip())
-                                sub_current = []
-                    else:
-                        sub_current.append(part[j])
-                    j += 1
-                
-                if sub_current:
-                    sub_parts.append(''.join(sub_current).strip())
-                
-                parts_step2.extend([p for p in sub_parts if p])
+        # Tạo bản sao dữ liệu để xử lý
+        text_to_process = original_text
+        special_last_value = ''
+        parts_to_process = parts_step1.copy()
+        
+        # Kiểm tra phần tử cuối cùng có giá trị đặc biệt không
+        special_values = ['không', 'tốt', 'khộng', 'ko', 'ok', 'KHÔNG']
+        last_part = parts_step1[-1].strip() if parts_step1 else ''
+        
+        if last_part.lower() in special_values:
+            # Có giá trị đặc biệt -> gán cho Cau16
+            special_last_value = parts_step1[-1]
+            # Bỏ phần tử cuối ra khỏi chuỗi xử lý
+            parts_to_process = parts_step1[:-1]
+            text_to_process = ','.join(parts_to_process)
+        # Nếu không có thì thôi, không gán cho Cau16
+        
+        # Tách cấp 2: ngay sau dấu phẩy không có khoảng trắng
+        parts_step2 = []
+        current = []
+        i = 0
+        
+        while i < len(text_to_process):
+            if text_to_process[i] == ',':
+                # Kiểm tra ngay sau dấu phẩy không có khoảng trắng
+                if i + 1 < len(text_to_process) and text_to_process[i+1] == ' ':
+                    # Có khoảng trắng -> không tách
+                    current.append(',')
+                else:
+                    # Không có khoảng trắng -> tách
+                    if current:
+                        parts_step2.append(''.join(current).strip())
+                        current = []
             else:
-                parts_step2.append(part)
+                current.append(text_to_process[i])
+            i += 1
+        
+        if current:
+            parts_step2.append(''.join(current).strip())
+        
+        parts_step2 = [p for p in parts_step2 if p]
+        
+        # Thêm giá trị đặc biệt vào cuối nếu có
+        if special_last_value:
+            parts_step2.append(special_last_value)
         
         # Nếu kết quả có đúng 4 cột -> trả về
         if len(parts_step2) == 4:
@@ -168,59 +183,75 @@ def split_after_null_by_rules(after_null_list, row_number=None):
                 parts_step2.append('')
             return parts_step2[:4], None
         
-        # Nếu kết quả > 4 cột -> chuyển sang Bước 3
+        # Nếu kết quả > 4 cột -> LƯU LẠI để chuyển sang Bước 3
         if len(parts_step2) > 4:
-            # ===== BƯỚC 3: Tách nếu ngay sau dấu phẩy không có khoảng trắng VÀ chữ hoa =====
-            parts_step3 = []
+            # ===== BƯỚC 3: Xử lý các dòng >4 cột từ Bước 2 =====
             
-            for part in parts_step2:
-                # Kiểm tra trong phần tử này có dấu phẩy cần tách không
-                if ',' in part:
-                    sub_parts = []
-                    sub_current = []
-                    j = 0
-                    
-                    while j < len(part):
-                        if part[j] == ',':
-                            if j + 1 < len(part):
-                                next_char = part[j + 1]
-                                # Kiểm tra: không có khoảng trắng và ký tự tiếp theo là chữ hoa
-                                if next_char != ' ' and next_char.isupper():
-                                    # Tách thành cột mới
-                                    if sub_current:
-                                        sub_parts.append(''.join(sub_current).strip())
-                                        sub_current = []
-                                else:
-                                    # Không tách, giữ nguyên dấu phẩy
-                                    sub_current.append(',')
-                            else:
-                                sub_current.append(',')
+            # Tạo bản sao dữ liệu để xử lý
+            text_to_process_step3 = original_text
+            special_last_value_step3 = ''
+            parts_to_process_step3 = parts_step2.copy()
+            
+            # Kiểm tra phần tử cuối cùng có giá trị đặc biệt không
+            last_part_step3 = parts_step2[-1].strip() if parts_step2 else ''
+            
+            if last_part_step3.lower() in special_values:
+                # Có giá trị đặc biệt -> gán cho Cau16
+                special_last_value_step3 = parts_step2[-1]
+                # Bỏ phần tử cuối ra khỏi chuỗi xử lý
+                parts_to_process_step3 = parts_step2[:-1]
+                text_to_process_step3 = ','.join(parts_to_process_step3)
+            # Nếu không có thì thôi, không gán cho Cau16
+            
+            # Tách cấp 3: ngay sau dấu phẩy không có khoảng trắng VÀ chữ hoa
+            parts_step3 = []
+            current = []
+            i = 0
+            
+            while i < len(text_to_process_step3):
+                if text_to_process_step3[i] == ',':
+                    if i + 1 < len(text_to_process_step3):
+                        next_char = text_to_process_step3[i + 1]
+                        # Kiểm tra: không có khoảng trắng và ký tự tiếp theo là chữ hoa
+                        if next_char != ' ' and next_char.isupper():
+                            # Tách thành cột mới
+                            if current:
+                                parts_step3.append(''.join(current).strip())
+                                current = []
                         else:
-                            sub_current.append(part[j])
-                        j += 1
-                    
-                    if sub_current:
-                        sub_parts.append(''.join(sub_current).strip())
-                    
-                    parts_step3.extend([p for p in sub_parts if p])
+                            # Không tách, giữ nguyên dấu phẩy
+                            current.append(',')
+                    else:
+                        current.append(',')
                 else:
-                    parts_step3.append(part)
+                    current.append(text_to_process_step3[i])
+                i += 1
+            
+            if current:
+                parts_step3.append(''.join(current).strip())
+            
+            parts_step3 = [p for p in parts_step3 if p]
+            
+            # Thêm giá trị đặc biệt vào cuối nếu có
+            if special_last_value_step3:
+                parts_step3.append(special_last_value_step3)
             
             # Nếu tách được đúng 4 cột -> trả về
             if len(parts_step3) == 4:
                 return parts_step3[:4], None
             
-            # Nếu vẫn > 4 cột -> in ra để kiểm tra thủ công và để hết vào cột đầu tiên
+            # Nếu vẫn > 4 cột -> IN RA để kiểm tra thủ công và để hết vào cột đầu tiên
             if len(parts_step3) > 4:
                 error_info = {
                     'row_number': row_number,
                     'original_after_null': original_text,
-                    'split_result_step1': parts_step1,
-                    'split_result_step2': parts_step2,
-                    'split_result_step3': parts_step3,
-                    'split_count': len(parts_step3)
+                    'step1_result': parts_step1,
+                    'step2_result': parts_step2,
+                    'step3_result': parts_step3,
+                    'final_split_count': len(parts_step3),
+                    'message': f'Tách được {len(parts_step3)} cột (>4) sau Bước 3'
                 }
-                # Không tách, để hết vào cột đầu tiên
+                # Để hết vào cột đầu tiên sau cột NULL
                 return [original_text, '', '', ''], error_info
             
             # Nếu < 4 cột -> thêm cột rỗng
@@ -228,7 +259,7 @@ def split_after_null_by_rules(after_null_list, row_number=None):
                 parts_step3.append('')
             return parts_step3[:4], None
     
-    # Trường hợp thiếu cột (kết quả < 4)
+    # Trường hợp không xảy ra
     while len(parts_step1) < 4:
         parts_step1.append('')
     return parts_step1[:4], None
@@ -456,13 +487,13 @@ def main():
     # In các dòng có lỗi tách >4 cột ở Bước 3
     if split_errors:
         print(f"\n{'='*60}")
-        print("CÁC DÒNG CÓ KẾT QUẢ TÁCH >4 CỘT (SAU BƯỚC 3)")
+        print("CÁC DÒNG CÓ KẾT QUẢ TÁCH >4 CỘT (SAU BƯỚC 3) - CẦN KIỂM TRA THỦ CÔNG")
         print(f"{'='*60}")
         for err in split_errors:
             print(f"\nDòng {err['row_number']}:")
             print(f"  Chuỗi sau NULL: {err['original_after_null'][:200]}")
-            print(f"  Số cột tách được Bước 3: {err['split_count']}")
-            print(f"  Kết quả tách Bước 3: {err['split_result_step3']}")
+            print(f"  Số cột tách được Bước 3: {err['final_split_count']}")
+            print(f"  Kết quả tách Bước 3: {err['step3_result']}")
         
         # Lưu file lỗi tách
         split_error_df = pd.DataFrame(split_errors)

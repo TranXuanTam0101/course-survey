@@ -133,18 +133,16 @@ def split_after_null_by_rules(after_null_list, row_number=None):
         parts_to_process = parts_step1.copy()
         
         # Kiểm tra phần tử cuối cùng có giá trị đặc biệt không
-        special_values = ['không', 'tốt', 'khộng', 'ko', 'ok', 'KHÔNG', 'Không', 'Tốt']
+        special_values = ['không', 'tốt', 'khộng', 'ko', 'ok', 'KHÔNG']
         last_part = parts_step1[-1].strip() if parts_step1 else ''
-        
-        has_special = last_part in special_values
+        has_special = last_part.lower() in special_values
         
         if has_special:
-            # Có giá trị đặc biệt -> gán cho Cau16
+            # Có giá trị đặc biệt -> tách ra để gán cho Cau16 sau
             special_last_value = parts_step1[-1]
             # Bỏ phần tử cuối ra khỏi chuỗi xử lý
             parts_to_process = parts_step1[:-1]
             text_to_process = ','.join(parts_to_process)
-        # Nếu không có thì thôi, không gán cho Cau16
         
         # Tách cấp 2: ngay sau dấu phẩy không có khoảng trắng
         parts_step2 = []
@@ -171,45 +169,37 @@ def split_after_null_by_rules(after_null_list, row_number=None):
         
         parts_step2 = [p for p in parts_step2 if p]
         
-        # Xử lý theo từng trường hợp
+        # Xử lý kết quả Bước 2
         if has_special:
-            # TH1: Phần tử cuối cùng có giá trị đặc biệt đã gán cho Cau16
+            # CÓ giá trị đặc biệt
             parts_step2.append(special_last_value)
             
-            # Nếu kết quả = 3 cột -> trả về (vì đã có Cau16)
-            if len(parts_step2) == 3:
-                # Thêm cột rỗng vào đầu để đủ 4 cột
-                while len(parts_step2) < 4:
-                    parts_step2.insert(0, '')
+            if len(parts_step2) == 4:
+                # Đúng: 3 cột thường + 1 đặc biệt = 4
                 return parts_step2[:4], None
-            
-            # Nếu kết quả > 3 cột -> LƯU LẠI để chuyển sang Bước 3
-            if len(parts_step2) > 3:
-                # Lưu lại để xử lý Bước 3
+            elif len(parts_step2) > 4:
+                # Quá nhiều cột -> chuyển sang Bước 3
                 pass
             else:
-                # < 3 cột -> thêm cột rỗng
+                # Thiếu cột -> thêm cột rỗng
                 while len(parts_step2) < 4:
-                    parts_step2.insert(0, '')
+                    parts_step2.append('')
                 return parts_step2[:4], None
         else:
-            # TH2: Phần tử cuối cùng không có giá trị đặc biệt
-            # Nếu kết quả = 4 cột -> trả về
+            # KHÔNG có giá trị đặc biệt
             if len(parts_step2) == 4:
                 return parts_step2[:4], None
-            
-            # Nếu kết quả > 4 cột -> LƯU LẠI để chuyển sang Bước 3
-            if len(parts_step2) > 4:
-                # Lưu lại để xử lý Bước 3
+            elif len(parts_step2) > 4:
+                # Quá nhiều cột -> chuyển sang Bước 3
                 pass
             else:
-                # < 4 cột -> thêm cột rỗng
+                # Thiếu cột -> thêm cột rỗng
                 while len(parts_step2) < 4:
                     parts_step2.append('')
                 return parts_step2[:4], None
         
-        # Nếu cần chuyển sang Bước 3 (khi >3 cột với TH1 hoặc >4 cột với TH2)
-        if (has_special and len(parts_step2) > 3) or (not has_special and len(parts_step2) > 4):
+        # Nếu vẫn còn dòng >4 cột (chưa return), chuyển sang Bước 3
+        if len(parts_step2) > 4:
             # ===== BƯỚC 3: Xử lý các dòng >4 cột từ Bước 2 =====
             
             # Tạo bản sao dữ liệu để xử lý
@@ -217,21 +207,16 @@ def split_after_null_by_rules(after_null_list, row_number=None):
             special_last_value_step3 = ''
             parts_to_process_step3 = parts_step2.copy()
             
-            # Bỏ qua phần tử cuối nếu đã có special_last_value từ Bước 2
-            if has_special and special_last_value:
-                # Đã có Cau16 từ Bước 2, không xét lại
-                parts_to_process_step3 = parts_step2[:-1] if len(parts_step2) > 1 else []
+            # Kiểm tra phần tử cuối cùng có giá trị đặc biệt không
+            last_part_step3 = parts_step2[-1].strip() if parts_step2 else ''
+            has_special_step3 = last_part_step3.lower() in special_values
+            
+            if has_special_step3:
+                # Có giá trị đặc biệt -> tách ra để gán cho Cau16 sau
+                special_last_value_step3 = parts_step2[-1]
+                # Bỏ phần tử cuối ra khỏi chuỗi xử lý
+                parts_to_process_step3 = parts_step2[:-1]
                 text_to_process_step3 = ','.join(parts_to_process_step3)
-                has_special_step3 = False
-            else:
-                # Kiểm tra phần tử cuối cùng có giá trị đặc biệt không
-                last_part_step3 = parts_step2[-1].strip() if parts_step2 else ''
-                has_special_step3 = last_part_step3 in special_values
-                
-                if has_special_step3:
-                    special_last_value_step3 = parts_step2[-1]
-                    parts_to_process_step3 = parts_step2[:-1]
-                    text_to_process_step3 = ','.join(parts_to_process_step3)
             
             # Tách cấp 3: ngay sau dấu phẩy không có khoảng trắng VÀ chữ hoa
             parts_step3 = []
@@ -262,19 +247,16 @@ def split_after_null_by_rules(after_null_list, row_number=None):
             
             parts_step3 = [p for p in parts_step3 if p]
             
-            # Xử lý theo từng trường hợp
+            # Xử lý kết quả Bước 3
             if has_special_step3:
-                # TH1: Phần tử cuối cùng có giá trị đặc biệt
+                # CÓ giá trị đặc biệt
                 parts_step3.append(special_last_value_step3)
                 
-                # Nếu kết quả = 3 cột -> trả về
-                if len(parts_step3) == 3:
-                    while len(parts_step3) < 4:
-                        parts_step3.insert(0, '')
+                if len(parts_step3) == 4:
+                    # Đúng 4 cột
                     return parts_step3[:4], None
-                
-                # Nếu kết quả > 3 cột -> IN RA kiểm tra + để hết cột đầu
-                if len(parts_step3) > 3:
+                elif len(parts_step3) > 4:
+                    # Vẫn > 4 cột -> IN RA để kiểm tra thủ công
                     error_info = {
                         'row_number': row_number,
                         'original_after_null': original_text,
@@ -282,17 +264,22 @@ def split_after_null_by_rules(after_null_list, row_number=None):
                         'step2_result': parts_step2,
                         'step3_result': parts_step3,
                         'final_split_count': len(parts_step3),
-                        'message': f'TH1 - Tách được {len(parts_step3)} cột (>3) sau Bước 3'
+                        'has_special': has_special_step3,
+                        'message': f'Tách được {len(parts_step3)} cột (>4) sau Bước 3'
                     }
+                    # Để hết vào cột đầu tiên sau cột NULL
                     return [original_text, '', '', ''], error_info
+                else:
+                    # Thiếu cột -> thêm cột rỗng
+                    while len(parts_step3) < 4:
+                        parts_step3.append('')
+                    return parts_step3[:4], None
             else:
-                # TH2: Phần tử cuối cùng không có giá trị đặc biệt
-                # Nếu kết quả = 4 cột -> trả về
+                # KHÔNG có giá trị đặc biệt
                 if len(parts_step3) == 4:
                     return parts_step3[:4], None
-                
-                # Nếu kết quả > 4 cột -> IN RA kiểm tra + để hết cột đầu
-                if len(parts_step3) > 4:
+                elif len(parts_step3) > 4:
+                    # Vẫn > 4 cột -> IN RA để kiểm tra thủ công
                     error_info = {
                         'row_number': row_number,
                         'original_after_null': original_text,
@@ -300,14 +287,16 @@ def split_after_null_by_rules(after_null_list, row_number=None):
                         'step2_result': parts_step2,
                         'step3_result': parts_step3,
                         'final_split_count': len(parts_step3),
-                        'message': f'TH2 - Tách được {len(parts_step3)} cột (>4) sau Bước 3'
+                        'has_special': has_special_step3,
+                        'message': f'Tách được {len(parts_step3)} cột (>4) sau Bước 3'
                     }
+                    # Để hết vào cột đầu tiên sau cột NULL
                     return [original_text, '', '', ''], error_info
-            
-            # Nếu < 4 cột -> thêm cột rỗng
-            while len(parts_step3) < 4:
-                parts_step3.append('')
-            return parts_step3[:4], None
+                else:
+                    # Thiếu cột -> thêm cột rỗng
+                    while len(parts_step3) < 4:
+                        parts_step3.append('')
+                    return parts_step3[:4], None
     
     # Trường hợp không xảy ra
     while len(parts_step1) < 4:
@@ -541,9 +530,9 @@ def main():
         print(f"{'='*60}")
         for err in split_errors:
             print(f"\nDòng {err['row_number']}:")
-            print(f"  {err['message']}")
             print(f"  Chuỗi sau NULL: {err['original_after_null'][:200]}")
             print(f"  Số cột tách được Bước 3: {err['final_split_count']}")
+            print(f"  Có giá trị đặc biệt: {err.get('has_special', 'N/A')}")
             print(f"  Kết quả tách Bước 3: {err['step3_result']}")
         
         # Lưu file lỗi tách

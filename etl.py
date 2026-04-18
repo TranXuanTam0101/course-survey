@@ -72,6 +72,30 @@ def is_ma_gv_format(value):
     
     return False
 
+def has_special_keyword(text):
+    """
+    Kiểm tra text có chứa từ khóa đặc biệt không
+    Ví dụ: "Dạ không" -> có chứa "không"
+            "không có ạ" -> có chứa "không"
+    """
+    if not isinstance(text, str):
+        return False
+    text_lower = text.lower()
+    special_keywords = ['không', 'tốt', 'khộng', 'ko', 'ok']
+    for keyword in special_keywords:
+        if keyword in text_lower:
+            return True
+    return False
+
+def extract_special_value(text):
+    """
+    Trích xuất giá trị đặc biệt từ text (nếu có)
+    Trả về chuỗi gốc hoặc None nếu không có
+    """
+    if has_special_keyword(text):
+        return text
+    return None
+
 def split_after_null_by_rules(after_null_list, row_number=None):
     """
     Xử lý các cột sau cột NULL theo logic 3 bước:
@@ -132,13 +156,12 @@ def split_after_null_by_rules(after_null_list, row_number=None):
         special_last_value = ''
         parts_to_process = parts_step1.copy()
         
-        # Kiểm tra phần tử cuối cùng có giá trị đặc biệt không
-        special_values = ['không', 'tốt', 'khộng', 'ko', 'ok', 'KHÔNG']
+        # Kiểm tra phần tử cuối cùng có CHỨA giá trị đặc biệt không
         last_part = parts_step1[-1].strip() if parts_step1 else ''
-        has_special = last_part.lower() in special_values
+        has_special = has_special_keyword(last_part)
         
         if has_special:
-            # Có giá trị đặc biệt -> tách ra để gán cho Cau16 sau
+            # Có chứa giá trị đặc biệt -> tách ra để gán cho Cau16 sau
             special_last_value = parts_step1[-1]
             # Bỏ phần tử cuối ra khỏi chuỗi xử lý
             parts_to_process = parts_step1[:-1]
@@ -171,7 +194,7 @@ def split_after_null_by_rules(after_null_list, row_number=None):
         
         # Xử lý kết quả Bước 2
         if has_special:
-            # CÓ giá trị đặc biệt
+            # CÓ chứa giá trị đặc biệt
             parts_step2.append(special_last_value)
             
             if len(parts_step2) == 4:
@@ -186,7 +209,7 @@ def split_after_null_by_rules(after_null_list, row_number=None):
                     parts_step2.append('')
                 return parts_step2[:4], None
         else:
-            # KHÔNG có giá trị đặc biệt
+            # KHÔNG có chứa giá trị đặc biệt
             if len(parts_step2) == 4:
                 return parts_step2[:4], None
             elif len(parts_step2) > 4:
@@ -207,12 +230,12 @@ def split_after_null_by_rules(after_null_list, row_number=None):
             special_last_value_step3 = ''
             parts_to_process_step3 = parts_step2.copy()
             
-            # Kiểm tra phần tử cuối cùng có giá trị đặc biệt không
+            # Kiểm tra phần tử cuối cùng có CHỨA giá trị đặc biệt không
             last_part_step3 = parts_step2[-1].strip() if parts_step2 else ''
-            has_special_step3 = last_part_step3.lower() in special_values
+            has_special_step3 = has_special_keyword(last_part_step3)
             
             if has_special_step3:
-                # Có giá trị đặc biệt -> tách ra để gán cho Cau16 sau
+                # Có chứa giá trị đặc biệt -> tách ra để gán cho Cau16 sau
                 special_last_value_step3 = parts_step2[-1]
                 # Bỏ phần tử cuối ra khỏi chuỗi xử lý
                 parts_to_process_step3 = parts_step2[:-1]
@@ -249,7 +272,7 @@ def split_after_null_by_rules(after_null_list, row_number=None):
             
             # Xử lý kết quả Bước 3
             if has_special_step3:
-                # CÓ giá trị đặc biệt
+                # CÓ chứa giá trị đặc biệt
                 parts_step3.append(special_last_value_step3)
                 
                 if len(parts_step3) == 4:
@@ -265,6 +288,7 @@ def split_after_null_by_rules(after_null_list, row_number=None):
                         'step3_result': parts_step3,
                         'final_split_count': len(parts_step3),
                         'has_special': has_special_step3,
+                        'special_value': special_last_value_step3,
                         'message': f'Tách được {len(parts_step3)} cột (>4) sau Bước 3'
                     }
                     # Để hết vào cột đầu tiên sau cột NULL
@@ -275,7 +299,7 @@ def split_after_null_by_rules(after_null_list, row_number=None):
                         parts_step3.append('')
                     return parts_step3[:4], None
             else:
-                # KHÔNG có giá trị đặc biệt
+                # KHÔNG có chứa giá trị đặc biệt
                 if len(parts_step3) == 4:
                     return parts_step3[:4], None
                 elif len(parts_step3) > 4:
@@ -533,6 +557,8 @@ def main():
             print(f"  Chuỗi sau NULL: {err['original_after_null'][:200]}")
             print(f"  Số cột tách được Bước 3: {err['final_split_count']}")
             print(f"  Có giá trị đặc biệt: {err.get('has_special', 'N/A')}")
+            if err.get('special_value'):
+                print(f"  Giá trị đặc biệt: {err['special_value']}")
             print(f"  Kết quả tách Bước 3: {err['step3_result']}")
         
         # Lưu file lỗi tách

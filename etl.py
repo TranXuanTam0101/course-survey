@@ -145,8 +145,11 @@ def split_by_condition_3(text):
     
     return [p for p in parts if p]
 
-def take_last_element_from_previous_column(parts):
-    """Lấy phần tử cuối cùng sau dấu phẩy của cột cuối cùng để tạo cột thứ 4"""
+def try_create_4th_column(parts):
+    """Thử lấy phần tử cuối cùng sau dấu phẩy của cột cuối để tạo cột thứ 4
+       Trả về: (success, new_parts)
+       success = True nếu tạo được 4 cột, False nếu không
+    """
     if len(parts) == 3:
         last_col = parts[-1]
         if ',' in last_col:
@@ -155,17 +158,15 @@ def take_last_element_from_previous_column(parts):
                 last_element = sub_parts[-1].strip()
                 parts[-1] = ','.join(sub_parts[:-1]).strip()
                 parts.append(last_element)
-                return parts
-    # Nếu không tách được, thêm cột rỗng
-    parts.append('')
-    return parts
+                return True, parts
+    return False, parts
 
 def split_after_null_by_rules(after_null_list, row_number=None):
     """
     Xử lý các cột sau cột NULL theo logic:
-    Chỉ có 2 kết quả cuối cùng:
-    1. Đủ 4 cột → trả về
-    2. Không đủ 4 cột → để hết cột đầu + in ra kiểm tra
+    CHỈ CÓ 2 KẾT QUẢ:
+    1. Đủ 4 cột → trả về 4 cột
+    2. Không đủ 4 cột → để TOÀN BỘ vào cột đầu tiên, 3 cột còn lại để trống
     """
     if not after_null_list:
         return ['', '', '', ''], None
@@ -179,9 +180,10 @@ def split_after_null_by_rules(after_null_list, row_number=None):
         return parts_level1[:4], None
     
     if len(parts_level1) == 3:
-        parts_level1 = take_last_element_from_previous_column(parts_level1)
-        if len(parts_level1) == 4:
-            return parts_level1[:4], None
+        success, new_parts = try_create_4th_column(parts_level1)
+        if success:
+            return new_parts[:4], None
+        # Không tạo được cột thứ 4 → coi như ≠4, chuyển cấp 2
     
     # ===== CẤP 2: Tách với điều kiện sau dấu phẩy không có khoảng trắng =====
     parts_level2 = split_by_condition_2(original_text)
@@ -190,9 +192,10 @@ def split_after_null_by_rules(after_null_list, row_number=None):
         return parts_level2[:4], None
     
     if len(parts_level2) == 3:
-        parts_level2 = take_last_element_from_previous_column(parts_level2)
-        if len(parts_level2) == 4:
-            return parts_level2[:4], None
+        success, new_parts = try_create_4th_column(parts_level2)
+        if success:
+            return new_parts[:4], None
+        # Không tạo được cột thứ 4 → coi như ≠4, chuyển cấp 3
     
     # ===== CẤP 3: Tách với điều kiện sau dấu phẩy không có khoảng trắng VÀ chữ in hoa đầu tiên =====
     parts_level3 = split_by_condition_3(original_text)
@@ -201,11 +204,13 @@ def split_after_null_by_rules(after_null_list, row_number=None):
         return parts_level3[:4], None
     
     if len(parts_level3) == 3:
-        parts_level3 = take_last_element_from_previous_column(parts_level3)
-        if len(parts_level3) == 4:
-            return parts_level3[:4], None
+        success, new_parts = try_create_4th_column(parts_level3)
+        if success:
+            return new_parts[:4], None
+        # Không tạo được cột thứ 4 → coi như ≠4
     
-    # Nếu sau cả 3 cấp vẫn không có 4 cột -> để hết cột đầu + in ra kiểm tra
+    # Nếu sau cả 3 cấp vẫn không có 4 cột (kể cả đã thử tạo cột thứ 4)
+    # Bao gồm các trường hợp: ≤3 hoặc >4
     error_info = {
         'row_number': row_number,
         'original_after_null': original_text,
@@ -213,9 +218,9 @@ def split_after_null_by_rules(after_null_list, row_number=None):
         'level2_result': parts_level2,
         'level3_result': parts_level3,
         'final_count': len(parts_level3),
-        'message': f'Sau 3 cấp vẫn có {len(parts_level3)} cột (không phải 4) - để hết cột đầu'
+        'message': f'Sau 3 cấp có {len(parts_level3)} cột (không phải 4) - để TOÀN BỘ vào cột đầu'
     }
-    # Để hết vào cột đầu tiên sau cột NULL
+    # Để TOÀN BỘ vào cột đầu tiên sau cột NULL, 3 cột còn lại để trống
     return [original_text, '', '', ''], error_info
 
 def process_row(row, row_number=None):
@@ -435,7 +440,7 @@ def main():
     # In các dòng có lỗi tách (không đủ 4 cột sau 3 cấp)
     if split_errors:
         print(f"\n{'='*60}")
-        print("CÁC DÒNG KHÔNG ĐỦ 4 CỘT SAU 3 CẤP - ĐÃ ĐỂ HẾT VÀO CỘT ĐẦU - CẦN KIỂM TRA THỦ CÔNG")
+        print("CÁC DÒNG KHÔNG ĐỦ 4 CỘT SAU 3 CẤP - ĐÃ ĐỂ TOÀN BỘ VÀO CỘT ĐẦU - CẦN KIỂM TRA THỦ CÔNG")
         print(f"{'='*60}")
         for err in split_errors:
             print(f"\nDòng {err['row_number']}:")

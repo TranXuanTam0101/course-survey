@@ -33,12 +33,12 @@ def upload_to_blob(blob_service, df, output_path):
     except Exception as e:
         return False
 
-def inspect_error_lines(filepath, max_lines_to_show=20):
+def inspect_error_lines(filepath):
     """
-    Đọc file và in ra các dòng có số cột > 18 sau khi tách bằng dấu phẩy
+    Đọc file và in ra TẤT CẢ các dòng có số cột khác 18 sau khi tách bằng dấu phẩy
     """
     print("\n" + "="*80)
-    print("KIỂM TRA CÁC DÒNG BỊ LỖI (SỐ CỘT > 18)")
+    print("KIỂM TRA CÁC DÒNG BỊ LỖI (SỐ CỘT KHÁC 18)")
     print("="*80)
     
     error_lines = []
@@ -78,38 +78,45 @@ def inspect_error_lines(filepath, max_lines_to_show=20):
     print(f"  - Số cột < 18: {len(less_than_18)} dòng")
     print(f"  - Số cột > 18: {len(more_than_18)} dòng")
     
-    # In chi tiết các dòng có số cột > 18 (quan trọng nhất)
+    # IN RA TẤT CẢ CÁC DÒNG CÓ SỐ CỘT > 18
     if more_than_18:
         print("\n" + "="*80)
-        print(f"CHI TIẾT CÁC DÒNG CÓ SỐ CỘT > 18 (hiển thị tối đa {max_lines_to_show} dòng)")
+        print(f"CHI TIẾT TẤT CẢ CÁC DÒNG CÓ SỐ CỘT > 18 (Tổng số: {len(more_than_18)} dòng)")
         print("="*80)
         
-        for i, error in enumerate(more_than_18[:max_lines_to_show]):
-            print(f"\n--- DÒNG {error['line_number']} | Số cột: {error['num_cols']} ---")
+        for i, error in enumerate(more_than_18):
+            print(f"\n{'='*80}")
+            print(f"DÒNG {i+1}/{len(more_than_18)} | Số dòng gốc: {error['line_number']} | Số cột: {error['num_cols']}")
+            print(f"{'='*80}")
             print(f"Nội dung gốc:")
-            print(f"{error['content'][:500]}{'...' if len(error['content']) > 500 else ''}")
+            print(f"{error['content']}")
             
-            print(f"\nCác cột sau khi tách (chỉ hiển thị từ cột 13 trở đi):")
+            print(f"\nCác cột sau khi tách (HIỂN THỊ TẤT CẢ CÁC CỘT):")
             for idx, part in enumerate(error['parts']):
-                if idx >= 13:  # Chỉ hiển thị từ cột 13 trở đi vì 13 cột đầu thường ổn
-                    print(f"  Cột {idx}: {part[:200]}{'...' if len(part) > 200 else ''}")
+                print(f"  Cột {idx}: {part}")
             
-            print("-"*80)
-        
-        if len(more_than_18) > max_lines_to_show:
-            print(f"\n... và {len(more_than_18) - max_lines_to_show} dòng khác bị lỗi tương tự")
+            print(f"\n{'#'*80}")
     
-    # In thử một vài dòng có số cột < 18 (ít quan trọng hơn)
-    if less_than_18 and len(less_than_18) <= 5:
+    # IN RA TẤT CẢ CÁC DÒNG CÓ SỐ CỘT < 18
+    if less_than_18:
         print("\n" + "="*80)
-        print("CHI TIẾT CÁC DÒNG CÓ SỐ CỘT < 18")
+        print(f"CHI TIẾT TẤT CẢ CÁC DÒNG CÓ SỐ CỘT < 18 (Tổng số: {len(less_than_18)} dòng)")
         print("="*80)
-        for error in less_than_18[:5]:
-            print(f"\n--- DÒNG {error['line_number']} | Số cột: {error['num_cols']} ---")
-            print(f"Nội dung: {error['content'][:300]}")
-            print("-"*80)
+        
+        for i, error in enumerate(less_than_18):
+            print(f"\n{'='*80}")
+            print(f"DÒNG {i+1}/{len(less_than_18)} | Số dòng gốc: {error['line_number']} | Số cột: {error['num_cols']}")
+            print(f"{'='*80}")
+            print(f"Nội dung gốc:")
+            print(f"{error['content']}")
+            
+            print(f"\nCác cột sau khi tách (HIỂN THỊ TẤT CẢ CÁC CỘT):")
+            for idx, part in enumerate(error['parts']):
+                print(f"  Cột {idx}: {part}")
+            
+            print(f"\n{'#'*80}")
     
-    # Ghi ra file log để xem chi tiết
+    # Ghi ra file log để lưu trữ
     log_file = f"error_lines_{FILE_NAME}.txt"
     with open(log_file, 'w', encoding='utf-8') as f:
         f.write(f"FILE: {SURVEY_FILE}\n")
@@ -120,14 +127,17 @@ def inspect_error_lines(filepath, max_lines_to_show=20):
         f.write("\n" + "="*80 + "\n")
         
         for error in error_lines:
-            f.write(f"\n--- DÒNG {error['line_number']} | Số cột: {error['num_cols']} ---\n")
+            f.write(f"\n{'='*80}\n")
+            f.write(f"DÒNG {error['line_number']} | Số cột: {error['num_cols']}\n")
+            f.write(f"{'='*80}\n")
             f.write(f"Nội dung gốc:\n{error['content']}\n")
             f.write(f"\nTất cả các cột sau khi tách:\n")
             for idx, part in enumerate(error['parts']):
                 f.write(f"  Cột {idx}: {part}\n")
-            f.write("\n" + "-"*80 + "\n")
+            f.write("\n" + "#"*80 + "\n")
     
-    print(f"\n📁 Đã ghi chi tiết tất cả các dòng lỗi vào file: {log_file}")
+    print(f"\n📁 Đã ghi chi tiết TẤT CẢ các dòng lỗi vào file: {log_file}")
+    print(f"\n✅ Kiểm tra xong! Đã in ra {len(error_lines)} dòng lỗi.")
 
 def main():
     # Kết nối Azure Blob
@@ -136,23 +146,14 @@ def main():
     # Tải file từ blob
     download_from_blob(blob_service)
     
-    # KIỂM TRA CÁC DÒNG LỖI TRƯỚC KHI XỬ LÝ
-    inspect_error_lines(SURVEY_FILE, max_lines_to_show=20)
+    # KIỂM TRA VÀ IN RA TẤT CẢ CÁC DÒNG LỖI
+    inspect_error_lines(SURVEY_FILE)
     
-    # Tiếp tục xử lý dữ liệu bình thường
+    # Tiếp tục xử lý dữ liệu bình thường (nếu cần)
     try:
         # Thử đọc file bằng pandas với error handling
         df = pd.read_csv(SURVEY_FILE, header=None, on_bad_lines='skip')
         print(f"\n✅ Đã đọc được {len(df)} dòng bằng pandas (bỏ qua các dòng lỗi)")
-        
-        # Hoặc bạn có thể dùng cách đọc thủ công
-        # rows = []
-        # with open(SURVEY_FILE, 'r', encoding='utf-8-sig') as f:
-        #     for line in f:
-        #         parts = line.strip().split(',')
-        #         if len(parts) == 18:
-        #             rows.append(parts)
-        # df = pd.DataFrame(rows)
         
     except Exception as e:
         print(f"\n❌ Lỗi khi đọc file: {e}")

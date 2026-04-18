@@ -33,54 +33,14 @@ def upload_to_blob(blob_service, df, output_path):
     except Exception as e:
         return False
 
-def smart_split_by_comma_level1(line):
+def smart_split_by_comma_v2(line):
     """
-    Cấp độ 1: Tách dòng bằng dấu phẩy với logic:
-    - Nếu sau dấu phẩy KHÔNG có khoảng trắng -> TÁCH CỘT (DELIMITER)
-    - Nếu sau dấu phẩy CÓ khoảng trắng -> KHÔNG TÁCH (dấu phẩy trong nội dung)
+    Tách dòng bằng dấu phẩy với logic 2 cấp:
+    Cấp 1: Sau dấu phẩy KHÔNG có khoảng trắng + chữ cái đầu VIẾT HOA -> tách cột
+    Cấp 2: Nếu vẫn >18 cột, áp dụng: Sau dấu phẩy KHÔNG có khoảng trắng -> tách cột
     """
-    parts = []
-    current = []
-    i = 0
-    length = len(line)
-    
-    while i < length:
-        if line[i] == ',':
-            # Kiểm tra xem có phải delimiter không
-            is_delimiter = False
-            
-            if i + 1 < length:
-                next_char = line[i + 1]
-                # Nếu sau dấu phẩy KHÔNG có khoảng trắng -> delimiter
-                if next_char != ' ':
-                    is_delimiter = True
-                else:
-                    is_delimiter = False
-            else:
-                is_delimiter = True
-            
-            if is_delimiter:
-                current_str = ''.join(current).strip()
-                parts.append(current_str if current_str else '')
-                current = []
-            else:
-                current.append(',')
-        else:
-            current.append(line[i])
-        i += 1
-    
-    if current:
-        current_str = ''.join(current).strip()
-        parts.append(current_str if current_str else '')
-    
-    return parts
-
-def smart_split_by_comma_level2(line):
-    """
-    Cấp độ 2: Tách dòng với logic:
-    - Sau dấu phẩy KHÔNG có khoảng trắng + chữ cái đầu viết hoa -> TÁCH CỘT
-    """
-    parts = []
+    # Cấp 1: Tách với điều kiện (không khoảng trắng + viết hoa)
+    parts_level1 = []
     current = []
     i = 0
     length = len(line)
@@ -91,7 +51,7 @@ def smart_split_by_comma_level2(line):
             
             if i + 1 < length:
                 next_char = line[i + 1]
-                # Kiểm tra: không khoảng trắng VÀ chữ cái đầu viết hoa
+                # Điều kiện cấp 1: Không khoảng trắng VÀ viết hoa
                 if next_char != ' ' and next_char.isupper():
                     is_delimiter = True
                 else:
@@ -101,7 +61,8 @@ def smart_split_by_comma_level2(line):
             
             if is_delimiter:
                 current_str = ''.join(current).strip()
-                parts.append(current_str if current_str else '')
+                if current_str:
+                    parts_level1.append(current_str)
                 current = []
             else:
                 current.append(',')
@@ -111,132 +72,187 @@ def smart_split_by_comma_level2(line):
     
     if current:
         current_str = ''.join(current).strip()
-        parts.append(current_str if current_str else '')
+        if current_str:
+            parts_level1.append(current_str)
     
-    return parts
-
-def process_and_split_line(line):
-    """
-    Xử lý tách cột với 2 cấp độ:
-    1. Áp dụng level1
-    2. Nếu số cột > 18, áp dụng level2
-    3. Nếu vẫn > 18, trả về None để báo lỗi
-    """
-    # Cấp độ 1
-    parts = smart_split_by_comma_level1(line)
+    # Nếu số cột đã <= 18, trả về luôn
+    if len(parts_level1) <= 18:
+        return parts_level1
     
-    if len(parts) <= 18:
-        return parts
+    # Cấp 2: Tách với điều kiện (không khoảng trắng) - bỏ qua điều kiện viết hoa
+    parts_level2 = []
+    current = []
+    i = 0
     
-    # Cấp độ 2
-    parts = smart_split_by_comma_level2(line)
+    while i < length:
+        if line[i] == ',':
+            is_delimiter = False
+            
+            if i + 1 < length:
+                next_char = line[i + 1]
+                # Điều kiện cấp 2: Chỉ cần không có khoảng trắng
+                if next_char != ' ':
+                    is_delimiter = True
+                else:
+                    is_delimiter = False
+            else:
+                is_delimiter = True
+            
+            if is_delimiter:
+                current_str = ''.join(current).strip()
+                if current_str:
+                    parts_level2.append(current_str)
+                current = []
+            else:
+                current.append(',')
+        else:
+            current.append(line[i])
+        i += 1
     
-    if len(parts) <= 18:
-        return parts
+    if current:
+        current_str = ''.join(current).strip()
+        if current_str:
+            parts_level2.append(current_str)
     
-    # Vẫn > 18 cột -> cần xem xét
-    return None
+    return parts_level2
 
 def inspect_error_lines(filepath):
     """
-    Đọc file và xử lý tách cột theo 2 cấp độ
-    In ra các dòng vẫn còn > 18 cột sau khi xử lý
+    Đọc file và in ra TẤT CẢ các dòng có số cột khác 18 sau khi tách
     """
     print("\n" + "="*80)
-    print("XỬ LÝ TÁCH CỘT VỚI 2 CẤP ĐỘ")
-    print("Cấp 1: Sau dấu phẩy không khoảng trắng -> tách")
-    print("Cấp 2: Nếu >18 cột, sau dấu phẩy không khoảng trắng + viết hoa -> tách")
+    print("KIỂM TRA CÁC DÒNG BỊ LỖI (SỐ CỘT KHÁC 18)")
     print("="*80)
     
-    still_error_lines = []
+    error_lines = []
     line_number = 0
-    total_lines = 0
-    level1_success = 0
-    level2_success = 0
-    still_error = 0
+    still_error_after_level2 = []
     
     with open(filepath, 'r', encoding='utf-8-sig') as f:
         for line in f:
-            total_lines += 1
             line_number += 1
             line = line.strip()
             if not line:
                 continue
             
-            result = process_and_split_line(line)
+            # Tách bằng logic 2 cấp
+            parts = smart_split_by_comma_v2(line)
+            num_cols = len(parts)
             
-            if result is not None:
-                if len(result) <= 18:
-                    # Thành công
-                    if len(result) == 18:
-                        level1_success += 1
-                    else:
-                        level2_success += 1
-                else:
-                    still_error += 1
-                    still_error_lines.append({
-                        'line_number': line_number,
-                        'num_cols': len(result),
-                        'content': line,
-                        'parts': result
-                    })
-            else:
-                still_error += 1
-                # Thử tách bằng level2 để lấy parts
-                parts = smart_split_by_comma_level2(line)
-                still_error_lines.append({
+            if num_cols != 18:
+                error_lines.append({
                     'line_number': line_number,
-                    'num_cols': len(parts),
+                    'num_cols': num_cols,
                     'content': line,
                     'parts': parts
                 })
+                
+                # Nếu sau cấp 2 vẫn >18 cột, ghi nhận để in đặc biệt
+                if num_cols > 18:
+                    still_error_after_level2.append({
+                        'line_number': line_number,
+                        'num_cols': num_cols,
+                        'content': line,
+                        'parts': parts
+                    })
     
     # In thống kê
-    print(f"\n📊 THỐNG KÊ:")
-    print(f"  - Tổng số dòng: {total_lines}")
-    print(f"  - Thành công sau cấp 1 (đúng 18 cột): {level1_success}")
-    print(f"  - Thành công sau cấp 2 (đúng 18 cột): {level2_success}")
-    print(f"  - VẪN LỖI (>18 cột): {still_error}")
+    print(f"\nTổng số dòng trong file: {line_number}")
+    print(f"Số dòng có số cột KHÁC 18: {len(error_lines)}")
     
-    # In các dòng vẫn lỗi
-    if still_error_lines:
+    if len(error_lines) == 0:
+        print("\n✅ KHÔNG có dòng lỗi nào! Tất cả các dòng đều có 18 cột.")
+        return
+    
+    # Phân loại lỗi
+    less_than_18 = [e for e in error_lines if e['num_cols'] < 18]
+    more_than_18 = [e for e in error_lines if e['num_cols'] > 18]
+    
+    print(f"  - Số cột < 18: {len(less_than_18)} dòng")
+    print(f"  - Số cột > 18: {len(more_than_18)} dòng")
+    
+    # IN RA CÁC DÒNG VẪN CÒN >18 CỘT SAU CẤP 2 (QUAN TRỌNG NHẤT)
+    if still_error_after_level2:
         print("\n" + "="*80)
-        print(f"CÁC DÒNG VẪN CÒN > 18 CỘT SAU KHI XỬ LÝ (Tổng số: {len(still_error_lines)} dòng)")
+        print(f"⚠️ CÁC DÒNG VẪN CÒN >18 CỘT SAU KHI ÁP DỤNG CẤP 2 (Tổng số: {len(still_error_after_level2)} dòng)")
+        print("="*80)
+        print("NHỮNG DÒNG NÀY CẦN ĐƯỢC XEM XÉT ĐẶC BIỆT")
         print("="*80)
         
-        for i, error in enumerate(still_error_lines):
+        for i, error in enumerate(still_error_after_level2):
             print(f"\n{'='*80}")
-            print(f"DÒNG {i+1}/{len(still_error_lines)} | Số dòng gốc: {error['line_number']} | Số cột: {error['num_cols']}")
+            print(f"DÒNG {i+1}/{len(still_error_after_level2)} | Số dòng gốc: {error['line_number']} | Số cột: {error['num_cols']}")
             print(f"{'='*80}")
             print(f"Nội dung gốc:")
-            print(f"{error['content'][:500]}{'...' if len(error['content']) > 500 else ''}")
+            print(f"{error['content']}")
             
             print(f"\nCác cột sau khi tách (HIỂN THỊ TẤT CẢ CÁC CỘT):")
             for idx, part in enumerate(error['parts']):
-                print(f"  Cột {idx}: {part[:200]}{'...' if len(part) > 200 else ''}")
+                print(f"  Cột {idx}: {part}")
             
             print(f"\n{'#'*80}")
+    
+    # IN RA TẤT CẢ CÁC DÒNG CÓ SỐ CỘT > 18 (kể cả đã qua cấp 2)
+    if more_than_18:
+        print("\n" + "="*80)
+        print(f"CHI TIẾT TẤT CẢ CÁC DÒNG CÓ SỐ CỘT > 18 (Tổng số: {len(more_than_18)} dòng)")
+        print("="*80)
         
-        # Ghi ra file log
-        log_file = f"still_error_lines_{FILE_NAME}.txt"
-        with open(log_file, 'w', encoding='utf-8') as f:
-            f.write(f"FILE: {SURVEY_FILE}\n")
-            f.write(f"Tổng số dòng vẫn lỗi (>18 cột): {len(still_error_lines)}\n")
-            f.write("\n" + "="*80 + "\n")
+        for i, error in enumerate(more_than_18):
+            print(f"\n{'='*80}")
+            print(f"DÒNG {i+1}/{len(more_than_18)} | Số dòng gốc: {error['line_number']} | Số cột: {error['num_cols']}")
+            print(f"{'='*80}")
+            print(f"Nội dung gốc:")
+            print(f"{error['content']}")
             
-            for error in still_error_lines:
-                f.write(f"\n{'='*80}\n")
-                f.write(f"DÒNG {error['line_number']} | Số cột: {error['num_cols']}\n")
-                f.write(f"{'='*80}\n")
-                f.write(f"Nội dung gốc:\n{error['content']}\n")
-                f.write(f"\nTất cả các cột sau khi tách:\n")
-                for idx, part in enumerate(error['parts']):
-                    f.write(f"  Cột {idx}: {part}\n")
-                f.write("\n" + "#"*80 + "\n")
+            print(f"\nCác cột sau khi tách (HIỂN THỊ TẤT CẢ CÁC CỘT):")
+            for idx, part in enumerate(error['parts']):
+                print(f"  Cột {idx}: {part}")
+            
+            print(f"\n{'#'*80}")
+    
+    # IN RA TẤT CẢ CÁC DÒNG CÓ SỐ CỘT < 18
+    if less_than_18:
+        print("\n" + "="*80)
+        print(f"CHI TIẾT TẤT CẢ CÁC DÒNG CÓ SỐ CỘT < 18 (Tổng số: {len(less_than_18)} dòng)")
+        print("="*80)
         
-        print(f"\n📁 Đã ghi chi tiết các dòng lỗi vào file: {log_file}")
-    else:
-        print("\n✅ TẤT CẢ các dòng đã được xử lý thành công! Không còn dòng nào >18 cột.")
+        for i, error in enumerate(less_than_18):
+            print(f"\n{'='*80}")
+            print(f"DÒNG {i+1}/{len(less_than_18)} | Số dòng gốc: {error['line_number']} | Số cột: {error['num_cols']}")
+            print(f"{'='*80}")
+            print(f"Nội dung gốc:")
+            print(f"{error['content']}")
+            
+            print(f"\nCác cột sau khi tách (HIỂN THỊ TẤT CẢ CÁC CỘT):")
+            for idx, part in enumerate(error['parts']):
+                print(f"  Cột {idx}: {part}")
+            
+            print(f"\n{'#'*80}")
+    
+    # Ghi ra file log để lưu trữ
+    log_file = f"error_lines_{FILE_NAME}.txt"
+    with open(log_file, 'w', encoding='utf-8') as f:
+        f.write(f"FILE: {SURVEY_FILE}\n")
+        f.write(f"Tổng số dòng: {line_number}\n")
+        f.write(f"Số dòng lỗi: {len(error_lines)}\n")
+        f.write(f"  - Cột < 18: {len(less_than_18)}\n")
+        f.write(f"  - Cột > 18: {len(more_than_18)}\n")
+        f.write(f"  - Vẫn >18 sau cấp 2: {len(still_error_after_level2)}\n")
+        f.write("\n" + "="*80 + "\n")
+        
+        for error in error_lines:
+            f.write(f"\n{'='*80}\n")
+            f.write(f"DÒNG {error['line_number']} | Số cột: {error['num_cols']}\n")
+            f.write(f"{'='*80}\n")
+            f.write(f"Nội dung gốc:\n{error['content']}\n")
+            f.write(f"\nTất cả các cột sau khi tách:\n")
+            for idx, part in enumerate(error['parts']):
+                f.write(f"  Cột {idx}: {part}\n")
+            f.write("\n" + "#"*80 + "\n")
+    
+    print(f"\n📁 Đã ghi chi tiết TẤT CẢ các dòng lỗi vào file: {log_file}")
+    print(f"\n✅ Kiểm tra xong! Đã in ra {len(error_lines)} dòng lỗi.")
 
 def main():
     # Kết nối Azure Blob
@@ -245,8 +261,17 @@ def main():
     # Tải file từ blob
     download_from_blob(blob_service)
     
-    # XỬ LÝ VÀ KIỂM TRA CÁC DÒNG LỖI
+    # KIỂM TRA VÀ IN RA TẤT CẢ CÁC DÒNG LỖI
     inspect_error_lines(SURVEY_FILE)
+    
+    # Tiếp tục xử lý dữ liệu bình thường (nếu cần)
+    try:
+        # Thử đọc file bằng pandas với error handling
+        df = pd.read_csv(SURVEY_FILE, header=None, on_bad_lines='skip')
+        print(f"\n✅ Đã đọc được {len(df)} dòng bằng pandas (bỏ qua các dòng lỗi)")
+        
+    except Exception as e:
+        print(f"\n❌ Lỗi khi đọc file: {e}")
     
     # Xóa file tạm
     if os.path.exists(SURVEY_FILE):

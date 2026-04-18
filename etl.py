@@ -1,10 +1,10 @@
 import os
 import sys
+import re
 from datetime import datetime
 import pandas as pd
 from azure.storage.blob import BlobServiceClient
 
-# ====================== CẤU HÌNH ======================
 CONNECTION_STRING = os.environ.get("CONNECTION_STRING")
 SEMESTER = os.environ.get("SEMESTER")
 SURVEY_FILE = os.environ.get("SURVEY_FILE")
@@ -15,292 +15,328 @@ if not SEMESTER or not SURVEY_FILE:
 
 FILE_NAME = os.path.splitext(os.path.basename(SURVEY_FILE))[0]
 
-# ====================== TẢI FILE TỪ BLOB ======================
 def download_from_blob(blob_service):
     try:
         blob_client = blob_service.get_container_client("rawdata").get_blob_client(f"{SEMESTER}/{SURVEY_FILE}")
         data = blob_client.download_blob().readall()
         with open(SURVEY_FILE, "wb") as f:
             f.write(data)
-        print(f"Đã tải file: {SURVEY_FILE}")
+        print(f"Đã tải file {SURVEY_FILE} từ blob")
         return True
     except Exception as e:
-        print(f"Lỗi tải file từ Blob: {e}")
+        print(f"Lỗi tải file từ blob: {e}")
         sys.exit(1)
 
-
-# ====================== LOGIC XỬ LÝ CHÍNH ======================
-def is_date_format(value: str) -> bool:
-    """Kiểm tra định dạng ngày xx/xx/xxxx"""
-    if not value or len(value) < 10:
-        return False
-    parts = value.strip().split('/')
-    return len(parts) == 3 and all(p.isdigit() for p in parts) and len(parts[0]) == 2 and len(parts[1]) == 2 and len(parts[2]) == 4
-
-
-def is_mgv(value: str) -> bool:
-    """Kiểm tra MaGV: đúng 7 ký tự và toàn số"""
-    return value and len(value.strip()) == 7 and value.strip().isdigit()
-
-
-def process_row(row: list) -> dict:
-    """
-    Xử lý một dòng (đã split theo dấu phẩy)
-    Trả về dictionary với 18 cột chuẩn hoặc None nếu lỗi nghiêm trọng
-    """
-    if len(row) < 2:
-        return None
-
-    result = {
-        'Lop': '', 'MaSV': '', 'HoDem': '', 'Ten': '', 'NgaySinh': '', 'MaHP': '', 'TenHP': '',
-        'MaGV': '', 'HoDemGV': '', 'TenGV': '', 'LopHP': '', 'CauHoi': '', 'GiaTri': '',
-        'NULL': 'NULL', 'Cau13': '', 'Cau14': '', 'Cau15': '', 'Cau16': ''
-    }
-
-    # ==================== PHẦN 1: XỬ LÝ TRƯỚC CỘT NULL ====================
-    try:
-        result['Lop'] = row[0].strip()
-        result['MaSV'] = row[1].strip()
-
-        # Bước 2: Tìm NgaySinh
-        ngay_sinh_idx = -1
-        for i in range(2, len(row)):
-            if is_date_format(row[i]):
-                ngay_sinh_idx = i
-                break
-        if ngay_sinh_idx == -1:
-            return None  # Không tìm thấy ngày sinh -> bỏ qua dòng
-
-        result['NgaySinh'] = row[ngay_sinh_idx].strip()
-
-        # Bước 3: HoDem và Ten
-        ho_dem_ten_parts = []
-        for i in range(2, ngay_sinh_idx):
-            ho_dem_ten_parts.append(row[i].strip())
-        
-        ho_dem_ten_str = " ".join(ho_dem_ten_parts).strip()
-        if ho_dem_ten_str:
-            name_parts = ho_dem_ten_str.split()
-            result['Ten'] = name_parts[-1]
-            result['HoDem'] = " ".join(name_parts[:-1]) if len(name_parts) > 1 else ""
-
-        # Bước 4: MaHP - ngay sau NgaySinh
-        if ngay_sinh_idx + 1 < len(row):
-            result['MaHP'] = row[ngay_sinh_idx + 1].strip()
-
-        # Bước 5: Tìm MaGV (đúng 7 số)
-        ma_gv_idx = -1
-        for i in range(ngay_sinh_idx + 2, len(row)):
-            if is_mgv(row[i]):
-                ma_gv_idx = i
-                break
-        if ma_gv_idx == -1:
-            return None
-
-        result['MaGV'] = row[ma_gv_idx].strip()
-
-        # Bước 6: TenHP - các cột giữa MaHP và MaGV
-        ten_hp_parts = []
-        for i in range(ngay_sinh_idx + 2, ma_gv_idx):
-            ten_hp_parts.append(row[i].strip())
-        result['TenHP'] = " ".join(ten_hp_parts).strip() if ten_hp_parts else ""
-
-        # Bước 7-11: Các cột tiếp theo
-        current_idx = ma_gv_idx + 1
-        if current_idx < len(row):
-            result['HoDemGV'] = row[current_idx].strip()
-            current_idx += 1
-        if current_idx < len(row):
-            result['TenGV'] = row[current_idx].strip()
-            current_idx += 1
-        if current_idx < len(row):
-            result['LopHP'] = row[current_idx].strip()
-            current_idx += 1
-        if current_idx < len(row):
-            result['CauHoi'] = row[current_idx].strip()
-            current_idx += 1
-        if current_idx < len(row):
-            result['GiaTri'] = row[current_idx].strip()
-            current_idx += 1
-
-        # Bước 12: Tìm vị trí NULL
-        null_idx = current_idx
-        if null_idx >= len(row) or row[null_idx].strip().upper() not in ['NULL', '']:
-            # Nếu không phải NULL thì tìm tiếp
-            for i in range(current_idx, len(row)):
-                if row[i].strip().upper() in ['NULL', '']:
-                    null_idx = i
-                    break
-            else:
-                null_idx = -1
-
-    except Exception:
-        return None
-
-    # ==================== PHẦN 2: XỬ LÝ SAU CỘT NULL ====================
-    if null_idx == -1 or null_idx + 1 >= len(row):
-        return result  # Không có dữ liệu sau NULL
-
-    # Lấy phần sau NULL
-    after_null = [col.strip() for col in row[null_idx + 1:] if col.strip() != '']
-
-    # === Quy tắc 1: Ngay sau dấu phẩy không có khoảng trắng ===
-    def split_by_no_space(parts):
-        result_list = []
-        for p in parts:
-            if ',' in p and not p.startswith(' '):  # Có dấu phẩy và ngay sau không có space
-                # Tách theo dấu phẩy không có space
-                subparts = []
-                current = ''
-                for char in p:
-                    if char == ',' and not current.endswith(' '):  # không có space trước dấu phẩy? Wait, logic là sau phẩy không space
-                        if current:
-                            subparts.append(current.strip())
-                        current = ''
-                    else:
-                        current += char
-                if current:
-                    subparts.append(current.strip())
-                result_list.extend(subparts)
-            else:
-                result_list.append(p)
-        return result_list
-
-    processed = split_by_no_space(after_null)
-
-    if len(processed) == 4:
-        result['Cau13'], result['Cau14'], result['Cau15'], result['Cau16'] = processed
-        return result
-
-    # === Quy tắc 2: Không có space sau phẩy + chữ cái đầu viết hoa ===
-    def split_by_no_space_and_upper(parts):
-        result_list = []
-        for p in parts:
-            if ',' in p:
-                subparts = p.split(',')
-                cleaned = []
-                for sp in subparts:
-                    sp = sp.strip()
-                    if sp and sp[0].isupper():  # chữ cái đầu viết hoa
-                        cleaned.append(sp)
-                    elif sp:
-                        # Nếu không viết hoa nhưng là phần tiếp theo, có thể gộp hoặc tách tùy
-                        if cleaned:
-                            cleaned[-1] += " " + sp
-                        else:
-                            cleaned.append(sp)
-                result_list.extend(cleaned)
-            else:
-                result_list.append(p)
-        return result_list
-
-    processed2 = split_by_no_space_and_upper(after_null)
-
-    if len(processed2) == 4:
-        result['Cau13'], result['Cau14'], result['Cau15'], result['Cau16'] = processed2
-        return result
-
-    # Nếu vẫn > 4 cột sau cả 2 quy tắc → cần kiểm tra thủ công
-    result['Cau13'] = " ".join(after_null) if after_null else ""
-    # Đánh dấu dòng lỗi
-    result['__ERROR__'] = True
-    result['__RAW_AFTER_NULL__'] = "|".join(after_null)
-
-    return result
-
-
-# ====================== XỬ LÝ TOÀN BỘ FILE ======================
-def process_file(input_file: str):
-    error_lines = []
-    output_rows = []
-
-    print(f"Đang xử lý file: {input_file}")
-
-    with open(input_file, 'r', encoding='utf-8-sig') as f:
-        # Giả sử dòng đầu là header, bỏ qua hoặc xử lý tùy file
-        header = f.readline().strip()
-        
-        for line_num, line in enumerate(f, start=2):
-            line = line.strip()
-            if not line:
-                continue
-
-            # Split theo dấu phẩy, nhưng giữ nguyên các phần có dấu phẩy trong ngoặc (nếu có)
-            # Ở đây dùng split đơn giản, nếu có trường hợp tên có dấu phẩy phức tạp hơn thì cần csv.reader
-            row = [x.strip() for x in line.split(',')]
-
-            processed = process_row(row)
-
-            if processed is None:
-                error_lines.append(f"Dòng {line_num}: Không xử lý được (thiếu thông tin cơ bản)")
-                continue
-
-            # Tạo list theo thứ tự cột chuẩn
-            output_row = [
-                processed['Lop'], processed['MaSV'], processed['HoDem'], processed['Ten'],
-                processed['NgaySinh'], processed['MaHP'], processed['TenHP'], processed['MaGV'],
-                processed['HoDemGV'], processed['TenGV'], processed['LopHP'], processed['CauHoi'],
-                processed['GiaTri'], processed['NULL'],
-                processed['Cau13'], processed['Cau14'], processed['Cau15'], processed['Cau16']
-            ]
-
-            output_rows.append(output_row)
-
-            if processed.get('__ERROR__'):
-                error_lines.append(f"Dòng {line_num}: Sau NULL vẫn còn {len(processed.get('__RAW_AFTER_NULL__', '').split('|'))} phần -> {processed.get('__RAW_AFTER_NULL__', '')}")
-
-    # Tạo DataFrame
-    columns = ['Lop', 'MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaHP', 'TenHP', 'MaGV',
-               'HoDemGV', 'TenGV', 'LopHP', 'CauHoi', 'GiaTri', 'NULL',
-               'Cau13', 'Cau14', 'Cau15', 'Cau16']
-
-    df = pd.DataFrame(output_rows, columns=columns)
-
-    # Lưu các dòng lỗi ra file txt
-    if error_lines:
-        error_file = f"{FILE_NAME}_ERROR_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-        with open(error_file, 'w', encoding='utf-8') as f:
-            f.write("\n".join(error_lines))
-        print(f"Đã lưu {len(error_lines)} dòng cần kiểm tra thủ công vào: {error_file}")
-
-    print(f"Hoàn thành xử lý. Tổng số dòng output: {len(df)}")
-    return df
-
-
-# ====================== UPLOAD LÊN BLOB ======================
 def upload_to_blob(blob_service, df, output_path):
     try:
         output = df.to_csv(index=False, encoding='utf-8-sig')
         processed_container = blob_service.get_container_client("processed-data")
         if not processed_container.exists():
             processed_container.create_container()
-        
-        blob_client = processed_container.get_blob_client(output_path)
-        blob_client.upload_blob(output, overwrite=True)
-        print(f"Đã upload file xử lý lên Blob: {output_path}")
+        processed_container.get_blob_client(output_path).upload_blob(output, overwrite=True)
+        print(f"Đã upload file {output_path} lên blob")
         return True
     except Exception as e:
-        print(f"Lỗi upload Blob: {e}")
+        print(f"Lỗi upload file lên blob: {e}")
         return False
 
+def is_date_format(value):
+    """Kiểm tra định dạng ngày tháng xx/xx/xxxx"""
+    if not isinstance(value, str):
+        return False
+    return bool(re.match(r'^\d{2}/\d{2}/\d{4}$', value.strip()))
 
-# ====================== MAIN ======================
-if __name__ == "__main__":
-    blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
+def is_ma_gv_format(value):
+    """Kiểm tra định dạng MaGV: đúng 7 ký tự và toàn số"""
+    if not isinstance(value, str):
+        return False
+    value = value.strip()
+    return len(value) == 7 and value.isdigit()
 
-    # Tải file từ Blob
+def split_after_null_by_rules(remaining_parts):
+    """
+    Áp dụng quy tắc tách cho phần sau cột NULL
+    Trả về list các cột đã tách (tối đa 4 cột)
+    """
+    if not remaining_parts:
+        return ['', '', '', '']
+    
+    original_text = ','.join(remaining_parts)
+    
+    # Quy tắc 1: Ngay sau dau phay khong co khoang trang
+    parts_rule1 = []
+    current = []
+    i = 0
+    while i < len(original_text):
+        if original_text[i] == ',':
+            # Kiem tra ky tu sau dau phay
+            if i + 1 < len(original_text) and original_text[i + 1] == ' ':
+                # Co khoang trang -> khong tach
+                current.append(',')
+            else:
+                # Khong co khoang trang -> tach thanh cot moi
+                parts_rule1.append(''.join(current))
+                current = []
+        else:
+            current.append(original_text[i])
+        i += 1
+    if current:
+        parts_rule1.append(''.join(current))
+    
+    # Loai bo cac phan tu rong
+    parts_rule1 = [p for p in parts_rule1 if p.strip()]
+    
+    if len(parts_rule1) == 4:
+        return parts_rule1[:4]
+    
+    # Quy tac 2: Ngay sau dau phay khong co khoang trang VA chu cai dau tien viet hoa
+    parts_rule2 = []
+    current = []
+    i = 0
+    while i < len(original_text):
+        if original_text[i] == ',':
+            if i + 1 < len(original_text):
+                next_char = original_text[i + 1]
+                # Kiem tra khong co khoang trang va ky tu tiep theo la chu hoa
+                if next_char != ' ' and next_char.isupper():
+                    parts_rule2.append(''.join(current))
+                    current = []
+                else:
+                    current.append(',')
+            else:
+                current.append(',')
+        else:
+            current.append(original_text[i])
+        i += 1
+    if current:
+        parts_rule2.append(''.join(current))
+    
+    parts_rule2 = [p for p in parts_rule2 if p.strip()]
+    
+    if len(parts_rule2) == 4:
+        return parts_rule2[:4]
+    
+    # Truong hop dac biet: van > 4 cot hoac khong the tach
+    if len(parts_rule2) > 4:
+        # Tra ve 4 cot dau tien va luu lai de kiem tra thu cong
+        return parts_rule2[:4]
+    elif len(parts_rule2) < 4:
+        # Them cac cot trong
+        while len(parts_rule2) < 4:
+            parts_rule2.append('')
+        return parts_rule2
+    
+    return parts_rule2[:4]
+
+def process_row(row):
+    """
+    Xu ly mot dong CSV theo logic da dinh nghia
+    Tra ve dict cac cot hoac None neu co loi
+    """
+    if not row or len(row) < 2:
+        return None
+    
+    try:
+        # ========== PHAN 1: XU LY CAC COT TRUOC COT NULL ==========
+        
+        # Buoc 1: Lay cot co dinh theo index
+        lop = row[0].strip() if len(row) > 0 else ''
+        ma_sv = row[1].strip() if len(row) > 1 else ''
+        
+        # Buoc 2: Tim NgaySinh
+        ngay_sinh = ''
+        ngay_sinh_index = -1
+        for i in range(2, len(row)):
+            if is_date_format(row[i]):
+                ngay_sinh = row[i].strip()
+                ngay_sinh_index = i
+                break
+        
+        # Buoc 3: Tao HoDem va Ten
+        ho_dem = ''
+        ten = ''
+        if ngay_sinh_index > 1:
+            # Lay cac cot giua MaSV (index 1) va NgaySinh
+            ho_dem_ten_parts = row[2:ngay_sinh_index]
+            ho_dem_ten_str = ' '.join([p.strip() for p in ho_dem_ten_parts if p and p.strip()])
+            
+            if ho_dem_ten_str:
+                parts = ho_dem_ten_str.split()
+                if len(parts) > 0:
+                    ten = parts[-1]
+                    ho_dem = ' '.join(parts[:-1]) if len(parts) > 1 else ''
+        
+        # Buoc 4: Xac dinh MaHP (cot ngay sau NgaySinh)
+        ma_hp = ''
+        if ngay_sinh_index >= 0 and ngay_sinh_index + 1 < len(row):
+            ma_hp = row[ngay_sinh_index + 1].strip()
+        
+        # Buoc 5: Tim MaGV (7 ky tu va toan so)
+        ma_gv = ''
+        ma_gv_index = -1
+        start_idx = ngay_sinh_index + 2 if ngay_sinh_index >= 0 else 0
+        for i in range(start_idx, len(row)):
+            if is_ma_gv_format(row[i]):
+                ma_gv = row[i].strip()
+                ma_gv_index = i
+                break
+        
+        # Buoc 6: Xac dinh TenHP (cac cot giua MaHP va MaGV)
+        ten_hp = ''
+        if ngay_sinh_index >= 0 and ma_gv_index > ngay_sinh_index + 1:
+            ten_hp_parts = row[ngay_sinh_index + 2:ma_gv_index]
+            ten_hp = ' '.join([p.strip() for p in ten_hp_parts if p and p.strip()])
+        
+        # Buoc 7: Gan cac cot con lai
+        ho_dem_gv = ''
+        ten_gv = ''
+        lop_hp = ''
+        cau_hoi = ''
+        gia_tri = ''
+        
+        if ma_gv_index >= 0:
+            if ma_gv_index + 1 < len(row):
+                ho_dem_gv = row[ma_gv_index + 1].strip()
+            if ma_gv_index + 2 < len(row):
+                ten_gv = row[ma_gv_index + 2].strip()
+            if ma_gv_index + 3 < len(row):
+                lop_hp = row[ma_gv_index + 3].strip()
+            if ma_gv_index + 4 < len(row):
+                cau_hoi = row[ma_gv_index + 4].strip()
+            if ma_gv_index + 5 < len(row):
+                gia_tri = row[ma_gv_index + 5].strip()
+        
+        # Buoc 8: Xac dinh cot NULL (cot ngay sau GiaTri)
+        null_index = -1
+        gia_tri_index = ma_gv_index + 5 if ma_gv_index >= 0 else -1
+        if gia_tri_index >= 0 and gia_tri_index + 1 < len(row):
+            null_value = row[gia_tri_index + 1].strip()
+            if null_value.upper() == 'NULL' or null_value == '':
+                null_index = gia_tri_index + 1
+        
+        # ========== PHAN 2: XU LY CAC COT SAU COT NULL ==========
+        cau13 = cau14 = cau15 = cau16 = ''
+        error_rows = []
+        
+        if null_index >= 0 and null_index + 1 < len(row):
+            # Lay phan sau cot NULL
+            after_null = row[null_index + 1:]
+            
+            # Ap dung quy tac tach
+            split_result = split_after_null_by_rules(after_null)
+            
+            if len(split_result) >= 4:
+                cau13 = split_result[0]
+                cau14 = split_result[1]
+                cau15 = split_result[2]
+                cau16 = split_result[3]
+            elif len(split_result) > 4:
+                # Dua vao danh sach loi de kiem tra thu cong
+                error_rows.append({
+                    'original': ','.join(row),
+                    'after_null': ','.join(after_null),
+                    'split_result': split_result
+                })
+                # Van lay 4 cot dau
+                cau13 = split_result[0] if len(split_result) > 0 else ''
+                cau14 = split_result[1] if len(split_result) > 1 else ''
+                cau15 = split_result[2] if len(split_result) > 2 else ''
+                cau16 = split_result[3] if len(split_result) > 3 else ''
+        
+        # Tao ket qua
+        result = {
+            'Lop': lop,
+            'MaSV': ma_sv,
+            'HoDem': ho_dem,
+            'Ten': ten,
+            'NgaySinh': ngay_sinh,
+            'MaHP': ma_hp,
+            'TenHP': ten_hp,
+            'MaGV': ma_gv,
+            'HoDemGV': ho_dem_gv,
+            'TenGV': ten_gv,
+            'LopHP': lop_hp,
+            'CauHoi': cau_hoi,
+            'GiaTri': gia_tri,
+            'NULL': 'NULL' if null_index >= 0 else '',
+            'Cau13': cau13,
+            'Cau14': cau14,
+            'Cau15': cau15,
+            'Cau16': cau16
+        }
+        
+        return result, error_rows
+        
+    except Exception as e:
+        print(f"Loi xu ly dong: {e}")
+        print(f"Dong bi loi: {row}")
+        return None, []
+
+def main():
+    # Khoi tao Blob Service
+    try:
+        blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
+        print("Ket noi blob storage thanh cong")
+    except Exception as e:
+        print(f"Loi ket noi blob: {e}")
+        sys.exit(1)
+    
+    # Download file
     download_from_blob(blob_service)
-
-    # Xử lý file
-    df_result = process_file(SURVEY_FILE)
-
-    # Tên file output
-    output_filename = f"{FILE_NAME}_PROCESSED_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-
-    # Upload kết quả
-    success = upload_to_blob(blob_service, df_result, f"{SEMESTER}/{output_filename}")
-
-    if success:
-        print("Hoàn tất toàn bộ quá trình xử lý!")
+    
+    # Doc file CSV
+    try:
+        df = pd.read_csv(SURVEY_FILE, header=None, dtype=str)
+        print(f"Da doc file CSV, so dong: {len(df)}")
+    except Exception as e:
+        print(f"Loi doc file CSV: {e}")
+        sys.exit(1)
+    
+    # Xu ly tung dong
+    processed_rows = []
+    all_errors = []
+    
+    for idx, row in df.iterrows():
+        row_list = [str(val) if pd.notna(val) else '' for val in row.values]
+        
+        result, errors = process_row(row_list)
+        
+        if result:
+            processed_rows.append(result)
+        
+        if errors:
+            all_errors.extend(errors)
+    
+    # Tao DataFrame ket qua
+    result_df = pd.DataFrame(processed_rows)
+    
+    # In ra cac dong loi can kiem tra thu cong
+    if all_errors:
+        print(f"\n=== CANH BAO: Co {len(all_errors)} dong can kiem tra thu cong ===")
+        for i, error in enumerate(all_errors[:10]):  # In 10 dong dau
+            print(f"\n--- Dong loi {i+1} ---")
+            print(f"Original: {error['original'][:200]}...")
+            print(f"After NULL: {error['after_null'][:200]}...")
+            print(f"Split result ({len(error['split_result'])} cot): {error['split_result']}")
+        
+        # Luu file loi de kiem tra
+        error_df = pd.DataFrame(all_errors)
+        error_df.to_csv(f"{FILE_NAME}_errors.csv", index=False, encoding='utf-8-sig')
+        print(f"\nDa luu {len(all_errors)} dong loi vao file {FILE_NAME}_errors.csv")
+    
+    # Xuat file ket qua
+    output_filename = f"{FILE_NAME}_processed_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    output_path = f"{SEMESTER}/{output_filename}"
+    
+    # Upload len blob
+    if upload_to_blob(blob_service, result_df, output_path):
+        print(f"\n=== THANH CONG ===")
+        print(f"So dong da xu ly: {len(processed_rows)}")
+        print(f"So dong loi: {len(all_errors)}")
+        print(f"File ket qua: {output_path}")
     else:
-        print("Có lỗi khi upload kết quả.")
+        print("Upload file that bai")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()

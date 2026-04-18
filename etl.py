@@ -38,6 +38,7 @@ def smart_split_by_comma(line):
     Tách dòng bằng dấu phẩy với logic:
     - Nếu sau dấu phẩy KHÔNG có khoảng trắng -> ĐÓ LÀ DẤU PHẨY PHÂN CÁCH CỘT (DELIMITER)
     - Nếu sau dấu phẩy CÓ khoảng trắng -> ĐÓ LÀ DẤU PHẨY TRONG NỘI DUNG (KHÔNG TÁCH)
+    Sau đó xóa các cột rỗng (kể cả cột từ dấu phẩy liên tiếp)
     """
     parts = []
     current = []
@@ -64,7 +65,10 @@ def smart_split_by_comma(line):
             
             if is_delimiter:
                 # Kết thúc phần tử hiện tại
-                parts.append(''.join(current).strip())
+                current_str = ''.join(current).strip()
+                # Chỉ thêm vào parts nếu không rỗng (xóa cột rỗng)
+                if current_str:
+                    parts.append(current_str)
                 current = []
             else:
                 # Dấu phẩy trong nội dung, thêm vào current
@@ -75,7 +79,9 @@ def smart_split_by_comma(line):
     
     # Thêm phần tử cuối cùng
     if current:
-        parts.append(''.join(current).strip())
+        current_str = ''.join(current).strip()
+        if current_str:
+            parts.append(current_str)
     
     return parts
 
@@ -97,7 +103,7 @@ def inspect_error_lines(filepath):
             if not line:
                 continue
             
-            # Tách bằng logic dấu phẩy mới
+            # Tách bằng logic dấu phẩy mới (đã xóa cột rỗng)
             parts = smart_split_by_comma(line)
             num_cols = len(parts)
             

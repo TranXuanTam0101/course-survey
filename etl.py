@@ -2,7 +2,7 @@ import os
 import sys
 import re
 import hashlib
-import pyodbc
+import pymssql
 import pandas as pd
 import io
 from azure.storage.blob import BlobServiceClient
@@ -104,15 +104,14 @@ class DatabaseLoader:
             return 'K' + match.group(1).split('-')[0]
         return None
     
+
     def connect(self):
-        conn_str = (
-            "DRIVER={ODBC Driver 17 for SQL Server};"
-            "SERVER=course-survey.database.windows.net;"
-            "DATABASE=course-survey-db;"
-            "UID=sqladmin;"
-            "PWD=Due@2026"
+        return pymssql.connect(
+            server='course-survey.database.windows.net',
+            user='sqladmin',
+            password='Due@2026',
+            database='course-survey-db'
         )
-        return pyodbc.connect(conn_str)
     
     def load_mapping(self):
         mapping = {'hoc_phan': {}, 'chuyen_nganh': {}}

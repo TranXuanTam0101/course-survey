@@ -25,7 +25,7 @@ KEYWORDS_CAU13 = [
     'sát chương trình', 'dễ tiếp cận', 'kiến thức cơ bản', 'trang bị',
     'cung cấp', 'đào tạo', 'mục tiêu', 'chất lượng', 'đảm bảo',
     'bổ ích', 'cần thiết', 'quan trọng', 'trọng tâm', 'chi tiết',
-    'cụ thể', 'đúng', 'chuẩn', 'ổn', 'hay', 'tốt', 'được', 'phương pháp', 'tệ'
+    'cụ thể', 'đúng', 'chuẩn', 'ổn', 'hay', 'tốt', 'được', 'phương pháp', 'tệ','không','ko','k'
 ]
 
 # Cau14: Hoạt động dạy - học / Giảng viên
@@ -41,7 +41,7 @@ KEYWORDS_CAU14 = [
     'thấu hiểu', 'quan tâm', 'chu đáo', 'tận tụy', 'sẵn sàng giúp đỡ',
     'giải đáp thắc mắc', 'hỗ trợ', 'chỉ bảo', 'năng nổ', 'có tâm',
     'truyền cảm hứng', 'gần gũi', 'thoải mái', 'hào hứng', 'vui',
-    'dui dẻ', 'hòa đồng', 'thương học trò'
+    'dui dẻ', 'hòa đồng', 'thương học trò','hay'
 ]
 
 # Cau15: Kiểm tra - Đánh giá
@@ -52,7 +52,7 @@ KEYWORDS_CAU15 = [
     'giữa kỳ', 'cuối kỳ', 'bài kiểm tra', 'cho điểm',
     'công khai', 'rõ ràng', 'đảm bảo tính công bằng',
     'nghiêm ngặt', 'đánh giá đúng', 'phản ánh đúng', 'thuyết phục',
-    'chính xác', 'kỹ càng', 'chỉnh chu', 'đa dạng hình thức', 'tài liệu', 'đọc thêm'
+    'chính xác', 'kỹ càng', 'chỉnh chu', 'đa dạng hình thức', 'tài liệu', 'đọc thêm','không','ko','k'
 ]
 
 # Cau16: Góp ý khác

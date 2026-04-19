@@ -52,7 +52,7 @@ KEYWORDS_CAU15 = [
     'giữa kỳ', 'cuối kỳ', 'bài kiểm tra', 'cho điểm',
     'công khai', 'rõ ràng', 'đảm bảo tính công bằng',
     'nghiêm ngặt', 'đánh giá đúng', 'phản ánh đúng', 'thuyết phục',
-    'chính xác', 'kỹ càng', 'chỉnh chu', 'đa dạng hình thức'
+    'chính xác', 'kỹ càng', 'chỉnh chu', 'đa dạng hình thức', 'tài liệu', 'đọc thêm'
 ]
 
 # Cau16: Góp ý khác
@@ -64,7 +64,7 @@ KEYWORDS_CAU16 = [
     'em không có', 'dạ không có', 'không có ạ', 'ko có',
     'không gì', 'không có gì', 'không còn góp ý',
     'mãi yêu cô', 'yêu cô', 'cảm ơn cô', 'cảm ơn thầy',
-    'tuyệt vời', 'quá ok', 'rất ok', 'ổn hết'
+    'tuyệt vời', 'quá ok', 'rất ok', 'ổn hết', 'tốt hơn'
 ]
 
 
@@ -123,7 +123,7 @@ def has_keyword(text, keywords):
 
 
 def is_special_character(text):
-    """Kiểm tra xem text có phải là ký tự đặc biệt cần gán None không"""
+    """Kiểm tra xem text có phải là ký tự đặc biệt cần bỏ qua không"""
     if not text or not isinstance(text, str):
         return True
     
@@ -157,12 +157,10 @@ def is_special_character(text):
 
 
 def clean_special_characters(parts):
-    """Lọc và thay thế các phần tử đặc biệt bằng None"""
+    """Lọc các phần tử đặc biệt (trả về danh sách chỉ các phần tử hợp lệ)"""
     cleaned = []
     for part in parts:
-        if is_special_character(part):
-            cleaned.append(None)
-        else:
+        if not is_special_character(part):
             cleaned.append(part)
     return cleaned
 
@@ -174,94 +172,67 @@ def classify_general_parts(parts):
     KHÔNG NHẢY CÓC: chỉ có thể chuyển từ Cau13 -> Cau14 -> Cau15 -> Cau16
     """
     if not parts:
-        return "Không có dữ liệu", "Không có đánh giá", "Không có đánh giá", "Không có góp ý"
+        return "", "", "", ""
     
     # Làm sạch ký tự đặc biệt
-    cleaned = clean_special_characters(parts)
-    valid_parts = [p for p in cleaned if p is not None]
+    valid_parts = clean_special_characters(parts)
     
     if not valid_parts:
-        return "Không có dữ liệu", "Không có đánh giá", "Không có đánh giá", "Không có góp ý"
+        return "", "", "", ""
     
-    # Khởi tạo kết quả
-    cau13 = ""
+    # ========== KHỞI TẠO ==========
+    # current_col: 1=Cau13, 2=Cau14, 3=Cau15, 4=Cau16
+    current_col = 1
+    
+    # P1 (phần tử đầu) luôn là Cau13
+    cau13 = valid_parts[0]
     cau14 = ""
     cau15 = ""
     cau16 = ""
     
-    # current_col: 1=Cau13, 2=Cau14, 3=Cau15, 4=Cau16
-    current_col = 1
+    # Các phần tử còn lại (P2, P3, ..., P_n)
+    if len(valid_parts) == 1:
+        return cau13, cau14, cau15, cau16
     
-    # XỬ LÝ ĐẶC BIỆT CHO PHẦN TỬ CUỐI
-    last_part = valid_parts[-1]
+    remaining_parts = valid_parts[1:]
+    
+    # XỬ LÝ ĐẶC BIỆT CHO PHẦN TỬ CUỐI (P_last)
+    last_part = remaining_parts[-1]
     is_special_last = has_keyword(last_part, KEYWORDS_CAU16) and last_part.lower() in ['không', 'k', 'không có', 'ko']
     
     if is_special_last:
         # TH1: P_last là "không", "k", "KHÔNG" -> chỉ gán riêng cho Cau16
         cau16 = last_part
-        remaining_parts = valid_parts[:-1]  # Loại bỏ phần tử cuối
-    else:
-        # TH2: P_last không phải giá trị đặc biệt -> xử lý cùng các phần tử khác
-        remaining_parts = valid_parts[:]
+        remaining_parts = remaining_parts[:-1]  # Loại bỏ phần tử cuối
+    # TH2: giữ nguyên remaining_parts (P_last sẽ được xử lý cùng)
     
-    # Gán P1 vào Cau13 (mặc định)
-    if remaining_parts:
-        cau13 = remaining_parts[0]
-        remaining_parts = remaining_parts[1:]
-    
-    # Duyệt các phần tử còn lại
+    # DUYỆT CÁC PHẦN TỬ CÒN LẠI
     for part in remaining_parts:
         if current_col == 1:  # Đang ở Cau13
-            # Kiểm tra từ khóa Cau13 trước
             if has_keyword(part, KEYWORDS_CAU13):
-                # Có từ khóa Cau13 -> gán vào Cau13
-                cau13 = f"{cau13}, {part}" if cau13 else part
+                cau13 = f"{cau13}, {part}"
             elif has_keyword(part, KEYWORDS_CAU14):
-                # Có từ khóa Cau14 -> chuyển sang Cau14, gán vào Cau14
                 current_col = 2
                 cau14 = part
             else:
-                # Không có từ khóa -> gán vào Cau13
-                cau13 = f"{cau13}, {part}" if cau13 else part
+                cau13 = f"{cau13}, {part}"
         
         elif current_col == 2:  # Đang ở Cau14
             if has_keyword(part, KEYWORDS_CAU15):
-                # Có từ khóa Cau15 -> chuyển sang Cau15, gán vào Cau15
                 current_col = 3
                 cau15 = part
-            elif has_keyword(part, KEYWORDS_CAU14):
-                # Có từ khóa Cau14 -> gán vào Cau14
-                cau14 = f"{cau14}, {part}" if cau14 else part
             else:
-                # Không có từ khóa -> gán vào Cau14
                 cau14 = f"{cau14}, {part}" if cau14 else part
         
         elif current_col == 3:  # Đang ở Cau15
             if has_keyword(part, KEYWORDS_CAU16):
-                # Có từ khóa Cau16 -> chuyển sang Cau16, gán vào Cau16
                 current_col = 4
                 cau16 = f"{cau16}, {part}" if cau16 else part
-            elif has_keyword(part, KEYWORDS_CAU15):
-                # Có từ khóa Cau15 -> gán vào Cau15
-                cau15 = f"{cau15}, {part}" if cau15 else part
             else:
-                # Không có từ khóa -> gán vào Cau15
                 cau15 = f"{cau15}, {part}" if cau15 else part
         
         else:  # current_col == 4 (Cau16)
             cau16 = f"{cau16}, {part}" if cau16 else part
-    
-    # ĐẢM BẢO KHÔNG CÓ CỘT NÀO BỊ RỖNG
-    if cau13 == "":
-        cau13 = "Không có đánh giá"
-    if cau14 == "":
-        cau14 = "Không có đánh giá"
-    if cau15 == "":
-        cau15 = "Không có đánh giá"
-    if cau16 == "" and not is_special_last:
-        cau16 = "Không có góp ý"
-    elif cau16 == "" and is_special_last:
-        cau16 = "Không có góp ý"
     
     return cau13, cau14, cau15, cau16
 
@@ -284,67 +255,39 @@ def classify_5_parts(parts):
     P1 → Cau13 (luôn)
     P5 → Cau16 (luôn)
     """
-    cleaned = clean_special_characters(parts)
-    P1, P2, P3, P4, P5 = cleaned
+    valid_parts = clean_special_characters(parts)
     
-    valid_parts = [p for p in cleaned if p is not None]
+    if len(valid_parts) < 5:
+        return classify_general_parts(valid_parts)
     
-    cau13 = P1 if P1 is not None else ""
-    cau16 = P5 if P5 is not None else ""
+    P1, P2, P3, P4, P5 = valid_parts
+    
+    cau13 = P1
+    cau16 = P5
     cau14 = ""
     cau15 = ""
     
-    if cau13 == "" and valid_parts:
-        cau13 = valid_parts.pop(0) if valid_parts else ""
+    middle = [P2, P3, P4]
     
-    if cau16 == "" and valid_parts:
-        cau16 = valid_parts.pop() if valid_parts else ""
-    
-    middle = [p for p in [P2, P3, P4] if p is not None]
-    
-    if not middle:
-        return cau13, cau14, cau15, cau16
-    
-    if len(middle) >= 1 and has_keyword(middle[0], KEYWORDS_CAU14):
-        cau14 = middle[0]
-        if len(middle) >= 2:
-            if has_keyword(middle[1], KEYWORDS_CAU14):
-                cau14 = f"{cau14}, {middle[1]}"
-                if len(middle) >= 3:
-                    cau15 = middle[2]
-            else:
-                cau15 = middle[1]
-                if len(middle) >= 3:
-                    cau15 = f"{cau15}, {middle[2]}"
-    elif len(middle) >= 2 and has_keyword(middle[1], KEYWORDS_CAU14):
-        cau14 = middle[1]
-        if cau13:
-            cau13 = f"{cau13}, {middle[0]}"
+    if has_keyword(P2, KEYWORDS_CAU14):
+        cau14 = P2
+        if has_keyword(P3, KEYWORDS_CAU14):
+            cau14 = f"{cau14}, {P3}"
+            cau15 = P4
         else:
-            cau13 = middle[0]
-        if len(middle) >= 3:
-            cau15 = middle[2]
+            cau15 = P3
+            cau15 = f"{cau15}, {P4}" if P4 else cau15
+    elif has_keyword(P3, KEYWORDS_CAU14):
+        cau14 = P3
+        cau13 = f"{cau13}, {P2}"
+        cau15 = P4
     else:
-        if cau13:
-            cau13 = f"{cau13}, {middle[0]}"
+        cau13 = f"{cau13}, {P2}"
+        if has_keyword(P4, KEYWORDS_CAU15):
+            cau15 = P4
         else:
-            cau13 = middle[0]
-        
-        remaining = middle[1:]
-        if remaining:
-            if has_keyword(remaining[0], KEYWORDS_CAU15):
-                cau15 = remaining[0]
-                if len(remaining) > 1:
-                    cau15 = f"{cau15}, {remaining[1]}"
-            else:
-                cau14 = remaining[0]
-                if len(remaining) > 1:
-                    cau15 = remaining[1]
-    
-    if not cau14 and valid_parts:
-        cau14 = valid_parts[0] if valid_parts else ""
-    if not cau15 and valid_parts and len(valid_parts) > 1:
-        cau15 = valid_parts[1] if len(valid_parts) > 1 else ""
+            cau14 = P3
+            cau15 = P4
     
     return cau13, cau14, cau15, cau16
 
@@ -355,76 +298,45 @@ def classify_6_parts(parts):
     P1 → Cau13 (luôn)
     P6 → Cau16 (luôn)
     """
-    cleaned = clean_special_characters(parts)
-    P1, P2, P3, P4, P5, P6 = cleaned
+    valid_parts = clean_special_characters(parts)
     
-    valid_parts = [p for p in cleaned if p is not None]
+    if len(valid_parts) < 6:
+        return classify_general_parts(valid_parts)
     
-    cau13 = P1 if P1 is not None else ""
-    cau16 = P6 if P6 is not None else ""
+    P1, P2, P3, P4, P5, P6 = valid_parts
+    
+    cau13 = P1
+    cau16 = P6
     cau14 = ""
     cau15 = ""
     
-    if cau13 == "" and valid_parts:
-        cau13 = valid_parts.pop(0) if valid_parts else ""
+    middle = [P2, P3, P4, P5]
     
-    if cau16 == "" and valid_parts:
-        cau16 = valid_parts.pop() if valid_parts else ""
-    
-    middle = [p for p in [P2, P3, P4, P5] if p is not None]
-    
-    if len(middle) < 2:
-        return cau13, cau14, cau15, cau16
-    
-    if has_keyword(middle[0], KEYWORDS_CAU14):
-        cau14 = middle[0]
+    if has_keyword(P2, KEYWORDS_CAU14):
+        cau14 = P2
         if len(middle) >= 2:
-            cau14 = f"{cau14}, {middle[1]}"
-        if len(middle) >= 3:
-            if has_keyword(middle[2], KEYWORDS_CAU15):
-                cau15 = middle[2]
-            else:
-                cau14 = f"{cau14}, {middle[2]}"
-        if len(middle) >= 4:
-            if cau15:
-                cau15 = f"{cau15}, {middle[3]}"
-            else:
-                cau15 = middle[3]
-    elif len(middle) >= 2 and has_keyword(middle[1], KEYWORDS_CAU14):
-        cau14 = middle[1]
-        if len(middle) >= 3:
-            cau14 = f"{cau14}, {middle[2]}"
-        if cau13:
-            cau13 = f"{cau13}, {middle[0]}"
+            cau14 = f"{cau14}, {P3}"
+        if has_keyword(P4, KEYWORDS_CAU15):
+            cau15 = P4
+            cau15 = f"{cau15}, {P5}" if P5 else cau15
         else:
-            cau13 = middle[0]
-        if len(middle) >= 4:
-            cau15 = middle[3]
+            cau14 = f"{cau14}, {P4}"
+            cau15 = P5
+    elif has_keyword(P3, KEYWORDS_CAU14):
+        cau14 = P3
+        cau14 = f"{cau14}, {P4}"
+        cau13 = f"{cau13}, {P2}"
+        cau15 = P5
     else:
-        if cau13:
-            cau13 = f"{cau13}, {middle[0]}"
+        cau13 = f"{cau13}, {P2}"
+        if has_keyword(P3, KEYWORDS_CAU15):
+            cau15 = P3
+            cau15 = f"{cau15}, {P4}" if P4 else cau15
+            cau15 = f"{cau15}, {P5}" if P5 else cau15
         else:
-            cau13 = middle[0]
-        
-        remaining = middle[1:]
-        if remaining:
-            if has_keyword(remaining[0], KEYWORDS_CAU15):
-                cau15 = remaining[0]
-                if len(remaining) > 1:
-                    cau15 = f"{cau15}, {remaining[1]}"
-                if len(remaining) > 2:
-                    cau15 = f"{cau15}, {remaining[2]}"
-            else:
-                cau14 = remaining[0]
-                if len(remaining) > 1:
-                    cau15 = remaining[1]
-                if len(remaining) > 2:
-                    cau15 = f"{cau15}, {remaining[2]}" if cau15 else remaining[2]
-    
-    if not cau14 and valid_parts:
-        cau14 = valid_parts[0] if valid_parts else ""
-    if not cau15 and valid_parts and len(valid_parts) > 1:
-        cau15 = valid_parts[1] if len(valid_parts) > 1 else ""
+            cau14 = P3
+            cau15 = P4
+            cau15 = f"{cau15}, {P5}" if P5 else cau15
     
     return cau13, cau14, cau15, cau16
 

@@ -5,6 +5,7 @@ import hashlib
 import pymssql
 import pandas as pd
 import io
+from datetime import datetime
 from azure.storage.blob import BlobServiceClient
 
 CONNECTION_STRING = os.environ.get("CONNECTION_STRING")
@@ -17,7 +18,7 @@ if not SEMESTER or not SURVEY_FILE:
 
 FILE_NAME = os.path.splitext(os.path.basename(SURVEY_FILE))[0]
 
-# ========== TỪ KHÓA CHO CÁC CỘT ==========
+# ========== TỪ KHÓA CHO CÁC CỘT (GIỮ NGUYÊN) ==========
 
 KEYWORDS_CAU13 = [
     'nội dung', 'chuẩn đầu ra', 'chương trình', 'học phần', 'môn học',
@@ -72,15 +73,13 @@ class DatabaseLoader:
         self.semester = semester
         self.survey_file = survey_file
         
-        # Lấy năm học và học kỳ - GIỚI HẠN ĐỘ DÀI
-        self.nam_hoc = semester  # "2024-2025"
-        self.hoc_ky = self._extract_hocky(survey_file)  # 2
-        # Giới hạn MaHocKy chỉ còn 10 ký tự: "HK2-2024-2" -> "HK2-2024-2"
-        self.ma_hoc_ky = f"HK{self.hoc_ky}-{self.nam_hoc[-4:]}"  # "HK2-2025" hoặc "HK2-2024-2"
+        # Lấy năm học và học kỳ
+        self.nam_hoc = semester
+        self.hoc_ky = self._extract_hocky(survey_file)
+        self.ma_hoc_ky = f"HK{self.hoc_ky}-{self.nam_hoc[-4:]}"
         if len(self.ma_hoc_ky) > 10:
             self.ma_hoc_ky = self.ma_hoc_ky[:10]
         
-        # Năm học cho mapping
         if '-' in semester:
             year = semester.split('-')[0]
             self.school_year = f"{year}-{int(year)+1}"
@@ -98,7 +97,7 @@ class DatabaseLoader:
             return 'UNK'
         words = ten_khoa.split()
         result = ''.join([word[0].upper() for word in words])
-        return result[:10]  # Giới hạn 10 ký tự
+        return result[:10]
     
     def _parse_ma_lop(self, ma_lop):
         if not ma_lop:
@@ -106,8 +105,21 @@ class DatabaseLoader:
         match = re.search(r'K([A-Z0-9\-]+)', ma_lop)
         if match:
             result = 'K' + match.group(1).split('-')[0]
-            return result[:20]  # Giới hạn 20 ký tự
+            return result[:20]
         return None
+    
+    def _convert_date(self, date_str):
+        """Chuyển đổi ngày tháng từ dd/mm/yyyy sang yyyy-mm-dd"""
+        if not date_str:
+            return None
+        try:
+            # Xử lý định dạng dd/mm/yyyy
+            if '/' in date_str:
+                day, month, year = date_str.split('/')
+                return f"{year}-{month}-{day}"
+            return date_str
+        except:
+            return None
     
     def connect(self):
         return pymssql.connect(
@@ -121,9 +133,10 @@ class DatabaseLoader:
     def load_mapping(self):
         mapping = {'hoc_phan': {}, 'chuyen_nganh': {}}
         
-        # Thử tải file HP-Khoa.csv
         try:
             container = self.blob_service.get_container_client("tailieu")
+            
+            # HP-Khoa.csv
             path = f"tailieu/{self.school_year}/HP-Khoa.csv"
             blob_client = container.get_blob_client(path)
             if blob_client.exists():
@@ -135,12 +148,8 @@ class DatabaseLoader:
                         'TenHP': row['Tên học phần'],
                         'Khoa': row['Khoa']
                     }
-        except Exception as e:
-            pass  # Bỏ qua lỗi, tiếp tục xử lý
-        
-        # Thử tải file TenChuyenNganh-Khoa
-        try:
-            container = self.blob_service.get_container_client("tailieu")
+            
+            # TenChuyenNganh-Khoa
             path = f"tailieu/{self.school_year}/TenChuyenNganh-Khoa"
             blob_client = container.get_blob_client(path)
             if blob_client.exists():
@@ -153,7 +162,7 @@ class DatabaseLoader:
                         'Khoa': row['Khoa']
                     }
         except Exception as e:
-            pass  # Bỏ qua lỗi, tiếp tục xử lý
+            pass
         
         return mapping
     
@@ -163,7 +172,7 @@ class DatabaseLoader:
         mapping = self.load_mapping()
         
         try:
-            # Bảng DIM_HOC_KY
+            # 1. DIM_HOC_KY
             cursor.execute("""
                 IF NOT EXISTS (SELECT 1 FROM DIM_HOC_KY WHERE MaHocKy = %s)
                 INSERT INTO DIM_HOC_KY (MaHocKy, NamHoc, HocKy)
@@ -171,7 +180,7 @@ class DatabaseLoader:
             """, (self.ma_hoc_ky, self.ma_hoc_ky, self.nam_hoc, self.hoc_ky))
             conn.commit()
             
-            # 16 câu hỏi
+            # 2. DIM_CAU_HOI (16 câu)
             cau_hoi_list = [
                 (1, 1, 'I', 'Giảng viên giới thiệu rõ ràng, đầy đủ về đề cương chi tiết học phần', 'so'),
                 (2, 2, 'I', 'Nội dung của học phần phù hợp với năng lực của người học', 'so'),
@@ -200,62 +209,83 @@ class DatabaseLoader:
             conn.commit()
             
         except Exception as e:
-            print(f"Lỗi khởi tạo bảng: {e}")
-            conn.rollback()
+            print(f"Lỗi khởi tạo: {e}")
             conn.close()
             return 0
         
         success = 0
+        error_count = 0
+        
         for idx, row in enumerate(rows, 1):
             try:
-                # Xử lý chuyên ngành từ mã lớp
-                ma_lop = row.get('Lop', '')
-                ma_chuyen_nganh = self._parse_ma_lop(ma_lop)
+                # Lấy thông tin từ row
+                ma_lop = row.get('Lop', '')[:20]
+                ma_sv = row.get('MaSV', '')[:20]
+                ho_dem = row.get('HoDem', '')[:50]
+                ten = row.get('Ten', '')[:50]
+                ngay_sinh_raw = row.get('NgaySinh', '')
+                ngay_sinh = self._convert_date(ngay_sinh_raw)
+                ma_hp = row.get('MaHP', '')[:20]
+                ma_gv = row.get('MaGV', '')[:20]
+                ho_dem_gv = row.get('HoDemGV', '')[:50]
+                ten_gv = row.get('TenGV', '')[:50]
+                lop_hp = row.get('LopHP', '')[:100]
                 
-                if ma_chuyen_nganh and ma_chuyen_nganh in mapping['chuyen_nganh']:
-                    cn = mapping['chuyen_nganh'][ma_chuyen_nganh]
-                    ten_khoa = cn['Khoa']
-                    ma_khoa = self._create_ma_khoa(ten_khoa)
+                # BẮT ĐẦU TRANSACTION
+                cursor.execute("BEGIN TRANSACTION")
+                
+                # === THỨ TỰ QUAN TRỌNG: DIM_LOP_SINH_VIEN TRƯỚC DIM_SINH_VIEN ===
+                
+                # 1. Xử lý DIM_LOP_SINH_VIEN (bảng cha)
+                if ma_lop:
+                    # Tìm mã chuyên ngành từ mã lớp
+                    ma_chuyen_nganh = self._parse_ma_lop(ma_lop)
                     
-                    # DIM_KHOA
-                    cursor.execute("""
-                        IF NOT EXISTS (SELECT 1 FROM DIM_KHOA WHERE MaKhoa = %s)
-                        INSERT INTO DIM_KHOA (MaKhoa, TenKhoa)
-                        VALUES (%s, %s)
-                    """, (ma_khoa, ma_khoa, ten_khoa))
+                    if ma_chuyen_nganh and ma_chuyen_nganh in mapping['chuyen_nganh']:
+                        cn = mapping['chuyen_nganh'][ma_chuyen_nganh]
+                        ten_khoa = cn['Khoa']
+                        ma_khoa = self._create_ma_khoa(ten_khoa)
+                        
+                        # DIM_KHOA
+                        cursor.execute("""
+                            IF NOT EXISTS (SELECT 1 FROM DIM_KHOA WHERE MaKhoa = %s)
+                            INSERT INTO DIM_KHOA (MaKhoa, TenKhoa)
+                            VALUES (%s, %s)
+                        """, (ma_khoa, ma_khoa, ten_khoa))
+                        
+                        # DIM_CHUYEN_NGANH
+                        cursor.execute("""
+                            IF NOT EXISTS (SELECT 1 FROM DIM_CHUYEN_NGANH WHERE MaChuyenNganh = %s)
+                            INSERT INTO DIM_CHUYEN_NGANH (MaChuyenNganh, TenChuyenNganh, MaKhoa, MaCTDT)
+                            VALUES (%s, %s, %s, %s)
+                        """, (ma_chuyen_nganh, ma_chuyen_nganh, cn['TenChuyenNganh'], ma_khoa, 'CTDT001'))
                     
-                    # DIM_CHUYEN_NGANH
-                    cursor.execute("""
-                        IF NOT EXISTS (SELECT 1 FROM DIM_CHUYEN_NGANH WHERE MaChuyenNganh = %s)
-                        INSERT INTO DIM_CHUYEN_NGANH (MaChuyenNganh, TenChuyenNganh, MaKhoa, MaCTDT)
-                        VALUES (%s, %s, %s, %s)
-                    """, (ma_chuyen_nganh, ma_chuyen_nganh, cn['TenChuyenNganh'], ma_khoa, 'CTDT001'))
-                    
-                    # DIM_LOP_SINH_VIEN
+                    # DIM_LOP_SINH_VIEN (bảng cha)
                     cursor.execute("""
                         IF NOT EXISTS (SELECT 1 FROM DIM_LOP_SINH_VIEN WHERE MaLop = %s)
                         INSERT INTO DIM_LOP_SINH_VIEN (MaLop, Lop, MaChuyenNganh)
                         VALUES (%s, %s, %s)
                     """, (ma_lop, ma_lop, ma_lop, ma_chuyen_nganh))
                 
-                # DIM_SINH_VIEN
-                cursor.execute("""
-                    IF NOT EXISTS (SELECT 1 FROM DIM_SINH_VIEN WHERE MaSV = %s)
-                    INSERT INTO DIM_SINH_VIEN (MaSV, HoDem, Ten, NgaySinh, MaLop)
-                    VALUES (%s, %s, %s, %s, %s)
-                """, (row['MaSV'], row['MaSV'], row.get('HoDem', '')[:50], row.get('Ten', '')[:50], row.get('NgaySinh'), row.get('Lop', '')[:20]))
+                # 2. DIM_SINH_VIEN (bảng con, phụ thuộc DIM_LOP_SINH_VIEN)
+                if ma_sv and ngay_sinh:
+                    cursor.execute("""
+                        IF NOT EXISTS (SELECT 1 FROM DIM_SINH_VIEN WHERE MaSV = %s)
+                        INSERT INTO DIM_SINH_VIEN (MaSV, HoDem, Ten, NgaySinh, MaLop)
+                        VALUES (%s, %s, %s, %s, %s)
+                    """, (ma_sv, ma_sv, ho_dem, ten, ngay_sinh, ma_lop))
                 
-                # DIM_GIANG_VIEN
-                if row.get('MaGV'):
+                # 3. DIM_GIANG_VIEN
+                if ma_gv:
                     cursor.execute("""
                         IF NOT EXISTS (SELECT 1 FROM DIM_GIANG_VIEN WHERE MaGV = %s)
                         INSERT INTO DIM_GIANG_VIEN (MaGV, HoDemGV, TenGV)
                         VALUES (%s, %s, %s)
-                    """, (row['MaGV'], row['MaGV'], row.get('HoDemGV', '')[:50], row.get('TenGV', '')[:50]))
+                    """, (ma_gv, ma_gv, ho_dem_gv, ten_gv))
                 
-                # DIM_HOC_PHAN
-                if row.get('MaHP') and row['MaHP'] in mapping['hoc_phan']:
-                    hp = mapping['hoc_phan'][row['MaHP']]
+                # 4. DIM_HOC_PHAN
+                if ma_hp and ma_hp in mapping['hoc_phan']:
+                    hp = mapping['hoc_phan'][ma_hp]
                     ma_khoa_hp = self._create_ma_khoa(hp['Khoa'])
                     
                     cursor.execute("""
@@ -268,46 +298,48 @@ class DatabaseLoader:
                         IF NOT EXISTS (SELECT 1 FROM DIM_HOC_PHAN WHERE MaHP = %s)
                         INSERT INTO DIM_HOC_PHAN (MaHP, TenHP, MaKhoa)
                         VALUES (%s, %s, %s)
-                    """, (row['MaHP'], row['MaHP'], hp['TenHP'][:100], ma_khoa_hp))
+                    """, (ma_hp, ma_hp, hp['TenHP'][:100], ma_khoa_hp))
                 
-                # DIM_LOP_HOC_PHAN
-                ma_lop_hp = f"{row['MaHP']}_{row['LopHP']}_{self.ma_hoc_ky}"[:50]
+                # 5. DIM_LOP_HOC_PHAN
+                ma_lop_hp = f"{ma_hp}_{lop_hp}_{self.ma_hoc_ky}"[:50]
                 cursor.execute("""
                     IF NOT EXISTS (SELECT 1 FROM DIM_LOP_HOC_PHAN WHERE MaLopHP = %s)
                     INSERT INTO DIM_LOP_HOC_PHAN (MaLopHP, LopHP, MaHP, MaGV, MaHocKy)
                     VALUES (%s, %s, %s, %s, %s)
-                """, (ma_lop_hp, ma_lop_hp, row['LopHP'][:100], row['MaHP'], row.get('MaGV'), self.ma_hoc_ky))
+                """, (ma_lop_hp, ma_lop_hp, lop_hp, ma_hp, ma_gv, self.ma_hoc_ky))
                 
-                # FACT_TRA_LOI_KHAO_SAT
+                # 6. FACT_TRA_LOI_KHAO_SAT
                 submission_id = hashlib.md5(
-                    f"{row['MaSV']}_{ma_lop_hp}_{row.get('MaGV', '')}_{self.ma_hoc_ky}_{self.survey_file}".encode()
+                    f"{ma_sv}_{ma_lop_hp}_{ma_gv}_{self.ma_hoc_ky}_{self.survey_file}".encode()
                 ).hexdigest()[:50]
                 
                 for ma_cau, col in [(13, 'Cau13'), (14, 'Cau14'), (15, 'Cau15'), (16, 'Cau16')]:
-                    if row.get(col):
-                        tra_loi = row[col]
+                    tra_loi = row.get(col, '')
+                    if tra_loi:
                         if len(tra_loi) > 8000:
                             tra_loi = tra_loi[:8000]
                         cursor.execute("""
                             IF NOT EXISTS (SELECT 1 FROM FACT_TRA_LOI_KHAO_SAT WHERE SubmissionID = %s AND MaCauHoi = %s)
                             INSERT INTO FACT_TRA_LOI_KHAO_SAT (SubmissionID, MaCauHoi, MaSV, MaLopHP, TraLoiText)
                             VALUES (%s, %s, %s, %s, %s)
-                        """, (submission_id, ma_cau, submission_id, ma_cau, row['MaSV'], ma_lop_hp, tra_loi))
+                        """, (submission_id, ma_cau, submission_id, ma_cau, ma_sv, ma_lop_hp, tra_loi))
                 
-                conn.commit()
+                cursor.execute("COMMIT")
                 success += 1
                 
                 if success % 10000 == 0:
-                    print(f"Đã chèn {success}/{len(rows)} dòng...")
+                    print(f"Đã chèn {success} dòng...")
                 
             except Exception as e:
-                conn.rollback()
-                print(f"Lỗi dòng {idx}: {e}")
+                cursor.execute("ROLLBACK")
+                error_count += 1
+                if error_count <= 10:  # Chỉ in 10 lỗi đầu
+                    print(f"Lỗi dòng {idx}: {str(e)[:200]}")
                 continue
         
         cursor.close()
         conn.close()
-        print(f"Đã chèn {success}/{len(rows)} dòng vào database")
+        print(f"Kết quả: Thành công {success}, Thất bại {error_count}")
         return success
 
 # ========== CÁC HÀM XỬ LÝ CSV (GIỮ NGUYÊN) ==========

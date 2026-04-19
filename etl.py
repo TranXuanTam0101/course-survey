@@ -25,7 +25,7 @@ KEYWORDS_CAU13 = [
     'sát chương trình', 'dễ tiếp cận', 'kiến thức cơ bản', 'trang bị',
     'cung cấp', 'đào tạo', 'mục tiêu', 'chất lượng', 'đảm bảo',
     'bổ ích', 'cần thiết', 'quan trọng', 'trọng tâm', 'chi tiết',
-    'cụ thể', 'đúng', 'chuẩn', 'ổn', 'hay', 'tốt', 'được', 'phương pháp', 'tệ','không','ko','k'
+    'cụ thể', 'đúng', 'chuẩn', 'ổn', 'hay', 'tốt', 'được', 'phương pháp', 'tệ','không','ko','k','rõ rãng'
 ]
 
 # Cau14: Hoạt động dạy - học / Giảng viên
@@ -52,7 +52,7 @@ KEYWORDS_CAU15 = [
     'giữa kỳ', 'cuối kỳ', 'bài kiểm tra', 'cho điểm',
     'công khai', 'rõ ràng', 'đảm bảo tính công bằng',
     'nghiêm ngặt', 'đánh giá đúng', 'phản ánh đúng', 'thuyết phục',
-    'chính xác', 'kỹ càng', 'chỉnh chu', 'đa dạng hình thức', 'tài liệu', 'đọc thêm','không','ko','k'
+    'chính xác', 'kỹ càng', 'chỉnh chu', 'đa dạng hình thức', 'tài liệu', 'đọc thêm','không','ko','k','công tác'
 ]
 
 # Cau16: Góp ý khác

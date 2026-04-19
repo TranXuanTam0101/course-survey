@@ -25,7 +25,7 @@ KEYWORDS_CAU13 = [
     'sát chương trình', 'dễ tiếp cận', 'kiến thức cơ bản', 'trang bị',
     'cung cấp', 'đào tạo', 'mục tiêu', 'chất lượng', 'đảm bảo',
     'bổ ích', 'cần thiết', 'quan trọng', 'trọng tâm', 'chi tiết',
-    'cụ thể', 'đúng', 'chuẩn', 'ổn', 'hay', 'tốt', 'được', 'phương pháp'
+    'cụ thể', 'đúng', 'chuẩn', 'ổn', 'hay', 'tốt', 'được', 'phương pháp','không','k'
 ]
 
 # Cau14: Hoạt động dạy - học / Giảng viên

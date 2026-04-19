@@ -25,7 +25,7 @@ KEYWORDS_CAU13 = [
     'sát chương trình', 'dễ tiếp cận', 'kiến thức cơ bản', 'trang bị',
     'cung cấp', 'đào tạo', 'mục tiêu', 'chất lượng', 'đảm bảo',
     'bổ ích', 'cần thiết', 'quan trọng', 'trọng tâm', 'chi tiết',
-    'cụ thể', 'đúng', 'chuẩn', 'ổn', 'hay', 'tốt', 'được', 'phương pháp', 'tệ','không','ko','k','rõ rãng'
+    'cụ thể', 'đúng', 'chuẩn', 'ổn', 'hay', 'được', 'phương pháp', 'tệ','không','ko','k','rõ rãng'
 ]
 
 # Cau14: Hoạt động dạy - học / Giảng viên
@@ -224,47 +224,103 @@ def try_create_4th_column(parts):
     return False, parts
 
 
-def classify_4_parts(parts):
+def classify_general_parts(parts):
     """
-    Phân loại cho 4 phần tử: [P1, P2, P3, P4]
-    P1 → Cau13, P4 → Cau16
-    P2, P3 phân loại vào Cau14 và Cau15 dựa trên từ khóa
+    Phân loại tổng quát cho N phần tử (N >= 7)
+    Duyệt từ trái sang phải theo logic:
+    - current_col bắt đầu = "Cau13"
+    - cau13 = P1 (mặc định)
+    - cau16 = P_last (mặc định, có thể bị thay đổi theo TH đặc biệt)
     """
     valid_parts = clean_special_characters(parts)
     
-    if len(valid_parts) != 4:
-        return classify_general_parts(valid_parts)
+    if not valid_parts:
+        return "", "", "", ""
     
-    P1, P2, P3, P4 = valid_parts
+    # ========== KHỞI TẠO ==========
+    current_col = "Cau13"
     
-    cau13 = P1
-    cau16 = P4
+    # P1 là Cau13 (mặc định)
+    cau13 = valid_parts[0]
     cau14 = ""
     cau15 = ""
+    cau16 = ""
     
-    # Xử lý P2 và P3
-    if has_keyword(P2, KEYWORDS_CAU14):
-        cau14 = P2
-        if has_keyword(P3, KEYWORDS_CAU15):
-            cau15 = P3
-        else:
-            cau15 = P3
-    elif has_keyword(P3, KEYWORDS_CAU14):
-        cau14 = P3
-        cau15 = P2
+    # Các phần tử còn lại (P2, P3, ..., P_n)
+    if len(valid_parts) == 1:
+        return cau13, cau14, cau15, cau16
+    
+    remaining_parts = valid_parts[1:]
+    
+    # ========== XỬ LÝ ĐẶC BIỆT CHO P_last (phần tử cuối cùng) ==========
+    last_part = remaining_parts[-1]
+    is_special_last = has_keyword(last_part, KEYWORDS_CAU16) and last_part.lower() in ['không', 'k', 'không có', 'ko']
+    
+    if is_special_last:
+        # TH1: P_last là "không", "k", "KHÔNG" -> chỉ gán riêng cho Cau16
+        cau16 = last_part
+        remaining_parts = remaining_parts[:-1]  # Loại bỏ phần tử cuối khỏi danh sách duyệt
     else:
-        # Cả P2 và P3 đều không có từ khóa Cau14
-        if has_keyword(P2, KEYWORDS_CAU15):
-            cau15 = P2
-            cau14 = P3
-        elif has_keyword(P3, KEYWORDS_CAU15):
-            cau15 = P3
-            cau14 = P2
-        else:
-            cau14 = P2
-            cau15 = P3
+        # TH2: P_last không phải giá trị đặc biệt -> gán vào Cau16 (có thể gán thêm sau)
+        cau16 = last_part
+        remaining_parts = remaining_parts[:-1]  # Loại bỏ phần tử cuối khỏi danh sách duyệt
+    
+    # ========== DUYỆT CÁC PHẦN TỬ CÒN LẠI (P2, P3, ...) ==========
+    for part in remaining_parts:
+        if current_col == "Cau13":
+            if has_keyword(part, KEYWORDS_CAU13):
+                # Có từ khóa Cau13 -> gán vào Cau13
+                cau13 = f"{cau13}, {part}"
+            elif has_keyword(part, KEYWORDS_CAU14):
+                # Có từ khóa Cau14 -> chuyển sang Cau14, gán vào Cau14
+                current_col = "Cau14"
+                cau14 = part
+            else:
+                # Không có từ khóa -> gán vào Cau13
+                cau13 = f"{cau13}, {part}"
+        
+        elif current_col == "Cau14":
+            if has_keyword(part, KEYWORDS_CAU14):
+                # Có từ khóa Cau14 -> gán vào Cau14
+                cau14 = f"{cau14}, {part}"
+            elif has_keyword(part, KEYWORDS_CAU15):
+                # Có từ khóa Cau15 -> chuyển sang Cau15, gán vào Cau15
+                current_col = "Cau15"
+                cau15 = part
+            else:
+                # Không có từ khóa -> gán vào Cau15
+                current_col = "Cau15"
+                cau15 = part
+        
+        elif current_col == "Cau15":
+            if has_keyword(part, KEYWORDS_CAU15):
+                # Có từ khóa Cau15 -> gán vào Cau15
+                cau15 = f"{cau15}, {part}"
+            elif has_keyword(part, KEYWORDS_CAU16):
+                # Có từ khóa Cau16 -> chuyển sang Cau16, gán vào Cau16
+                current_col = "Cau16"
+                cau16 = f"{cau16}, {part}" if cau16 else part
+            else:
+                # Không có từ khóa -> gán vào Cau16
+                current_col = "Cau16"
+                cau16 = f"{cau16}, {part}" if cau16 else part
+        
+        else:  # current_col == "Cau16"
+            cau16 = f"{cau16}, {part}" if cau16 else part
     
     return cau13, cau14, cau15, cau16
+
+
+def classify_by_position_and_keywords(parts):
+    """Phân loại các phần tử dựa trên số lượng phần tử"""
+    num_parts = len(parts)
+    
+    if num_parts == 5:
+        return classify_5_parts(parts)
+    elif num_parts == 6:
+        return classify_6_parts(parts)
+    else:
+        return classify_general_parts(parts)
 
 
 def classify_5_parts(parts):
@@ -294,8 +350,7 @@ def classify_5_parts(parts):
             cau15 = P4
         else:
             cau15 = P3
-            if P4:
-                cau15 = f"{cau15}, {P4}"
+            cau15 = f"{cau15}, {P4}" if P4 else cau15
     elif has_keyword(P3, KEYWORDS_CAU14):
         cau14 = P3
         cau13 = f"{cau13}, {P2}"
@@ -337,8 +392,7 @@ def classify_6_parts(parts):
             cau14 = f"{cau14}, {P3}"
         if has_keyword(P4, KEYWORDS_CAU15):
             cau15 = P4
-            if P5:
-                cau15 = f"{cau15}, {P5}"
+            cau15 = f"{cau15}, {P5}" if P5 else cau15
         else:
             cau14 = f"{cau14}, {P4}"
             cau15 = P5
@@ -351,101 +405,14 @@ def classify_6_parts(parts):
         cau13 = f"{cau13}, {P2}"
         if has_keyword(P3, KEYWORDS_CAU15):
             cau15 = P3
-            if P4:
-                cau15 = f"{cau15}, {P4}"
-            if P5:
-                cau15 = f"{cau15}, {P5}"
+            cau15 = f"{cau15}, {P4}" if P4 else cau15
+            cau15 = f"{cau15}, {P5}" if P5 else cau15
         else:
             cau14 = P3
             cau15 = P4
-            if P5:
-                cau15 = f"{cau15}, {P5}"
+            cau15 = f"{cau15}, {P5}" if P5 else cau15
     
     return cau13, cau14, cau15, cau16
-
-
-def classify_general_parts(parts):
-    """
-    Phân loại tổng quát cho N phần tử (N >= 7)
-    Duyệt từ trái sang phải, chuyển cột theo từ khóa
-    """
-    valid_parts = clean_special_characters(parts)
-    
-    if not valid_parts:
-        return "", "", "", ""
-    
-    current_col = "Cau13"
-    
-    cau13 = valid_parts[0]
-    cau14 = ""
-    cau15 = ""
-    cau16 = ""
-    
-    if len(valid_parts) == 1:
-        return cau13, cau14, cau15, cau16
-    
-    remaining_parts = valid_parts[1:]
-    
-    # Xử lý đặc biệt phần tử cuối
-    last_part = remaining_parts[-1]
-    is_special_last = has_keyword(last_part, KEYWORDS_CAU16) and last_part.lower() in ['không', 'k', 'không có', 'ko']
-    
-    if is_special_last:
-        cau16 = last_part
-        remaining_parts = remaining_parts[:-1]
-    else:
-        cau16 = last_part
-        remaining_parts = remaining_parts[:-1]
-    
-    # Duyệt các phần tử còn lại
-    for part in remaining_parts:
-        if current_col == "Cau13":
-            if has_keyword(part, KEYWORDS_CAU13):
-                cau13 = f"{cau13}, {part}"
-            elif has_keyword(part, KEYWORDS_CAU14):
-                current_col = "Cau14"
-                cau14 = part
-            else:
-                cau13 = f"{cau13}, {part}"
-        
-        elif current_col == "Cau14":
-            if has_keyword(part, KEYWORDS_CAU14):
-                cau14 = f"{cau14}, {part}"
-            elif has_keyword(part, KEYWORDS_CAU15):
-                current_col = "Cau15"
-                cau15 = part
-            else:
-                current_col = "Cau15"
-                cau15 = part
-        
-        elif current_col == "Cau15":
-            if has_keyword(part, KEYWORDS_CAU15):
-                cau15 = f"{cau15}, {part}"
-            elif has_keyword(part, KEYWORDS_CAU16):
-                current_col = "Cau16"
-                cau16 = f"{cau16}, {part}" if cau16 else part
-            else:
-                current_col = "Cau16"
-                cau16 = f"{cau16}, {part}" if cau16 else part
-        
-        else:
-            cau16 = f"{cau16}, {part}" if cau16 else part
-    
-    return cau13, cau14, cau15, cau16
-
-
-def classify_by_position_and_keywords(parts):
-    """Phân loại các phần tử dựa trên số lượng phần tử"""
-    num_parts = len(parts)
-    
-    if num_parts == 4:
-        return classify_4_parts(parts)
-    elif num_parts == 5:
-        return classify_5_parts(parts)
-    elif num_parts == 6:
-        return classify_6_parts(parts)
-    else:
-        return classify_general_parts(parts)
 
 
 def split_after_null_by_rules(after_null_list, row_number=None):
@@ -463,35 +430,29 @@ def split_after_null_by_rules(after_null_list, row_number=None):
     # CẤP 1
     parts_level1 = split_by_condition_1(original_text)
     if len(parts_level1) == 4:
-        cau13, cau14, cau15, cau16 = classify_4_parts(parts_level1)
-        return [cau13, cau14, cau15, cau16], None
+        return parts_level1[:4], None
     if len(parts_level1) == 3:
         success, new_parts = try_create_4th_column(parts_level1)
         if success:
-            cau13, cau14, cau15, cau16 = classify_4_parts(new_parts)
-            return [cau13, cau14, cau15, cau16], None
+            return new_parts[:4], None
     
     # CẤP 2
     parts_level2 = split_by_condition_2(original_text)
     if len(parts_level2) == 4:
-        cau13, cau14, cau15, cau16 = classify_4_parts(parts_level2)
-        return [cau13, cau14, cau15, cau16], None
+        return parts_level2[:4], None
     if len(parts_level2) == 3:
         success, new_parts = try_create_4th_column(parts_level2)
         if success:
-            cau13, cau14, cau15, cau16 = classify_4_parts(new_parts)
-            return [cau13, cau14, cau15, cau16], None
+            return new_parts[:4], None
     
     # CẤP 3
     parts_level3 = split_by_condition_3(original_text)
     if len(parts_level3) == 4:
-        cau13, cau14, cau15, cau16 = classify_4_parts(parts_level3)
-        return [cau13, cau14, cau15, cau16], None
+        return parts_level3[:4], None
     if len(parts_level3) == 3:
         success, new_parts = try_create_4th_column(parts_level3)
         if success:
-            cau13, cau14, cau15, cau16 = classify_4_parts(new_parts)
-            return [cau13, cau14, cau15, cau16], None
+            return new_parts[:4], None
     
     # Chọn bộ parts có số lượng phần tử lớn nhất để phân loại
     best_parts = parts_level3 if len(parts_level3) >= len(parts_level2) else parts_level2
@@ -731,7 +692,7 @@ def main():
             print(f"\n{'='*60}")
             print("THÀNH CÔNG!")
             print(f"{'='*60}")
-            print(f"File kết quá: {output_path}")
+            print(f"File kết quả: {output_path}")
             print(f"Số dòng đã xử lý: {len(processed_rows)}")
             print(f"{'='*60}")
         else:

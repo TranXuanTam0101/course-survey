@@ -27,7 +27,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pandas azure-storage-blob pyodbc
+          pip install pandas azure-storage-blob pymssql
       
       - name: Run ETL
         run: python etl.py

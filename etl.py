@@ -122,49 +122,6 @@ def has_keyword(text, keywords):
     return any(kw in text_lower for kw in keywords)
 
 
-def is_special_character(text):
-    """Kiểm tra xem text có phải là ký tự đặc biệt cần bỏ qua không"""
-    if not text or not isinstance(text, str):
-        return True
-    
-    text = text.strip()
-    if text == "":
-        return True
-    
-    special_patterns = [
-        r'^\.+$', r'^[,\.]+$', r'^[,]+$',
-        r'^[mnkzjx]$', r'^[mnkzjx]{2,5}$', r'^[0-9]+$', r'^[a-zA-Z]{1,3}$',
-        r'^[,/]+$', r'^[.,/]+$', r'^[a-zA-Z0-9]{1,2}$', r'^[!@#$%^&*()]+$'
-    ]
-    
-    for pattern in special_patterns:
-        if re.match(pattern, text):
-            return True
-    
-    meaningful_words = ['ok', 'ko', 'kh', 'không', 'cô', 'thầy', 'dạy', 'hay', 'tốt', 'k', 'm', 'n']
-    if len(text) <= 2 and not any(kw in text.lower() for kw in meaningful_words):
-        return True
-    
-    garbage_patterns = [
-        r'^nhm$', r'^bdv', r'^ebq', r'^dbq', r'^zswej', r'^dsjfr',
-        r'^ilikj', r'^jhgbf', r'^p;kjhy', r'^sdhsd', r'^áhsac'
-    ]
-    for pattern in garbage_patterns:
-        if re.match(pattern, text.lower()):
-            return True
-    
-    return False
-
-
-def clean_special_characters(parts):
-    """Lọc các phần tử đặc biệt (trả về danh sách chỉ các phần tử hợp lệ)"""
-    cleaned = []
-    for part in parts:
-        if not is_special_character(part):
-            cleaned.append(part)
-    return cleaned
-
-
 def classify_general_parts(parts):
     """
     Phân loại tổng quát cho N phần tử (N >= 2)
@@ -174,27 +131,16 @@ def classify_general_parts(parts):
     if not parts:
         return "", "", "", ""
     
-    # Làm sạch ký tự đặc biệt
-    valid_parts = clean_special_characters(parts)
-    
-    if not valid_parts:
-        return "", "", "", ""
-    
-    # ========== KHỞI TẠO ==========
-    # current_col: 1=Cau13, 2=Cau14, 3=Cau15, 4=Cau16
-    current_col = 1
-    
     # P1 (phần tử đầu) luôn là Cau13
-    cau13 = valid_parts[0]
+    cau13 = parts[0]
     cau14 = ""
     cau15 = ""
     cau16 = ""
     
-    # Các phần tử còn lại (P2, P3, ..., P_n)
-    if len(valid_parts) == 1:
+    if len(parts) == 1:
         return cau13, cau14, cau15, cau16
     
-    remaining_parts = valid_parts[1:]
+    remaining_parts = parts[1:]
     
     # XỬ LÝ ĐẶC BIỆT CHO PHẦN TỬ CUỐI (P_last)
     last_part = remaining_parts[-1]
@@ -205,6 +151,13 @@ def classify_general_parts(parts):
         cau16 = last_part
         remaining_parts = remaining_parts[:-1]  # Loại bỏ phần tử cuối
     # TH2: giữ nguyên remaining_parts (P_last sẽ được xử lý cùng)
+    
+    # Nếu không còn phần tử nào, trả về kết quả hiện tại
+    if not remaining_parts:
+        return cau13, cau14, cau15, cau16
+    
+    # current_col: 1=Cau13, 2=Cau14, 3=Cau15, 4=Cau16
+    current_col = 1
     
     # DUYỆT CÁC PHẦN TỬ CÒN LẠI
     for part in remaining_parts:
@@ -234,6 +187,27 @@ def classify_general_parts(parts):
         else:  # current_col == 4 (Cau16)
             cau16 = f"{cau16}, {part}" if cau16 else part
     
+    # ========== ĐẢM BẢO KHÔNG CÓ CỘT RỖNG ==========
+    # Nếu Cau14 rỗng và Cau15 có dữ liệu, lấy phần tử đầu của Cau15
+    if cau14 == "" and cau15 != "":
+        parts_list = cau15.split(", ", 1)
+        cau14 = parts_list[0]
+        cau15 = parts_list[1] if len(parts_list) > 1 else ""
+    
+    # Nếu Cau15 rỗng và Cau14 có dữ liệu, lấy phần tử cuối của Cau14
+    if cau15 == "" and cau14 != "":
+        parts_list = cau14.rsplit(", ", 1)
+        if len(parts_list) == 2:
+            cau15 = parts_list[1]
+            cau14 = parts_list[0]
+    
+    # Nếu Cau16 rỗng và Cau15 có dữ liệu, lấy phần tử cuối của Cau15
+    if cau16 == "" and cau15 != "":
+        parts_list = cau15.rsplit(", ", 1)
+        if len(parts_list) == 2:
+            cau15 = parts_list[0]
+            cau16 = parts_list[1]
+    
     return cau13, cau14, cau15, cau16
 
 
@@ -255,12 +229,7 @@ def classify_5_parts(parts):
     P1 → Cau13 (luôn)
     P5 → Cau16 (luôn)
     """
-    valid_parts = clean_special_characters(parts)
-    
-    if len(valid_parts) < 5:
-        return classify_general_parts(valid_parts)
-    
-    P1, P2, P3, P4, P5 = valid_parts
+    P1, P2, P3, P4, P5 = parts
     
     cau13 = P1
     cau16 = P5
@@ -298,12 +267,7 @@ def classify_6_parts(parts):
     P1 → Cau13 (luôn)
     P6 → Cau16 (luôn)
     """
-    valid_parts = clean_special_characters(parts)
-    
-    if len(valid_parts) < 6:
-        return classify_general_parts(valid_parts)
-    
-    P1, P2, P3, P4, P5, P6 = valid_parts
+    P1, P2, P3, P4, P5, P6 = parts
     
     cau13 = P1
     cau16 = P6

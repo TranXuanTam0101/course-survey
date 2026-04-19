@@ -676,9 +676,6 @@ def main():
         print(f"{'='*60}")
 
         split_error_df = pd.DataFrame(split_errors)
-        split_error_filename = f"{FILE_NAME}_split_errors_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        split_error_df.to_csv(split_error_filename, index=False, encoding='utf-8-sig')
-        print(f"\nĐã lưu {len(split_errors)} dòng lỗi vào file: {split_error_filename}")
     
     if len(processed_rows) > 0:
         output_filename = f"{FILE_NAME}_processed.csv"

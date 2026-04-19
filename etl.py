@@ -52,7 +52,7 @@ KEYWORDS_CAU15 = [
     'giữa kỳ', 'cuối kỳ', 'bài kiểm tra', 'cho điểm',
     'công khai', 'rõ ràng', 'đảm bảo tính công bằng',
     'nghiêm ngặt', 'đánh giá đúng', 'phản ánh đúng', 'thuyết phục',
-    'chính xác', 'kỹ càng', 'chỉnh chu', 'đa dạng hình thức', 'tài liệu', 'đọc thêm','không','ko','k','công tác'
+    'chính xác', 'kỹ càng', 'chỉnh chu', 'đa dạng hình thức', 'tài liệu', 'đọc thêm','không','ko','k','công tác','CÔNG BẰNG','RÕ RÀNG'
 ]
 
 # Cau16: Góp ý khác

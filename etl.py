@@ -1,11 +1,8 @@
 import os
 import sys
 import re
-import hashlib
-import pymssql
+import csv
 import pandas as pd
-import io
-from datetime import datetime
 from azure.storage.blob import BlobServiceClient
 
 CONNECTION_STRING = os.environ.get("CONNECTION_STRING")
@@ -18,8 +15,9 @@ if not SEMESTER or not SURVEY_FILE:
 
 FILE_NAME = os.path.splitext(os.path.basename(SURVEY_FILE))[0]
 
-# ========== TỪ KHÓA CHO CÁC CỘT (GIỮ NGUYÊN) ==========
+# ========== TỪ KHÓA CHO CÁC CỘT ==========
 
+# Cau13: Nội dung học phần / Chuẩn đầu ra
 KEYWORDS_CAU13 = [
     'nội dung', 'chuẩn đầu ra', 'chương trình', 'học phần', 'môn học',
     'đáp ứng', 'phù hợp', 'bám sát', 'rõ ràng', 'đầy đủ', 'hợp lý', 'hợp lí',
@@ -29,6 +27,7 @@ KEYWORDS_CAU13 = [
     'cụ thể', 'đúng', 'chuẩn', 'ổn', 'hay', 'được', 'phương pháp', 'tệ','không','ko','k','rõ rãng'
 ]
 
+# Cau14: Hoạt động dạy - học / Giảng viên
 KEYWORDS_CAU14 = [
     'thầy', 'cô', 'giảng viên', 'gv', 'thầy giáo', 'cô giáo',
     'dạy', 'giảng', 'bài giảng', 'dễ hiểu', 'nhiệt tình', 
@@ -44,6 +43,7 @@ KEYWORDS_CAU14 = [
     'dui dẻ', 'hòa đồng', 'thương học trò','hay','tâm huyết'
 ]
 
+# Cau15: Kiểm tra - Đánh giá
 KEYWORDS_CAU15 = [
     'kiểm tra', 'đánh giá', 'thi', 'bài tập', 'điểm', 'chấm',
     'đề thi', 'công bằng', 'minh bạch', 'nghiêm túc', 'phù hợp',
@@ -54,6 +54,7 @@ KEYWORDS_CAU15 = [
     'chính xác', 'kỹ càng', 'chỉnh chu', 'đa dạng hình thức', 'tài liệu', 'đọc thêm','không','ko','k','công tác'
 ]
 
+# Cau16: Góp ý khác
 KEYWORDS_CAU16 = [
     'không', 'ko', 'ok', 'oki', 'ổn', 'được',
     'không có', 'không ạ', 'dạ không', 'không có ý kiến',
@@ -65,284 +66,6 @@ KEYWORDS_CAU16 = [
     'tuyệt vời', 'quá ok', 'rất ok', 'ổn hết', 'tốt hơn'
 ]
 
-# ========== LỚP XỬ LÝ DATABASE ==========
-
-class DatabaseLoader:
-    def __init__(self, blob_service, semester, survey_file):
-        self.blob_service = blob_service
-        self.semester = semester
-        self.survey_file = survey_file
-        
-        # Lấy năm học và học kỳ
-        self.nam_hoc = semester
-        self.hoc_ky = self._extract_hocky(survey_file)
-        self.ma_hoc_ky = f"HK{self.hoc_ky}-{self.nam_hoc[-4:]}"
-        if len(self.ma_hoc_ky) > 10:
-            self.ma_hoc_ky = self.ma_hoc_ky[:10]
-        
-        if '-' in semester:
-            year = semester.split('-')[0]
-            self.school_year = f"{year}-{int(year)+1}"
-        else:
-            self.school_year = semester
-    
-    def _extract_hocky(self, filename):
-        match = re.search(r'(\d{3})', filename)
-        if match:
-            return int(match.group(1)[0])
-        return 1
-    
-    def _create_ma_khoa(self, ten_khoa):
-        if not ten_khoa:
-            return 'UNK'
-        words = ten_khoa.split()
-        result = ''.join([word[0].upper() for word in words])
-        return result[:10]
-    
-    def _parse_ma_lop(self, ma_lop):
-        if not ma_lop:
-            return None
-        match = re.search(r'K([A-Z0-9\-]+)', ma_lop)
-        if match:
-            result = 'K' + match.group(1).split('-')[0]
-            return result[:20]
-        return None
-    
-    def _convert_date(self, date_str):
-        """Chuyển đổi ngày tháng từ dd/mm/yyyy sang yyyy-mm-dd"""
-        if not date_str:
-            return None
-        try:
-            # Xử lý định dạng dd/mm/yyyy
-            if '/' in date_str:
-                day, month, year = date_str.split('/')
-                return f"{year}-{month}-{day}"
-            return date_str
-        except:
-            return None
-    
-    def connect(self):
-        return pymssql.connect(
-            server='course-survey.database.windows.net',
-            user='sqladmin',
-            password='Due@2026',
-            database='course-survey-db',
-            autocommit=False
-        )
-    
-    def load_mapping(self):
-        mapping = {'hoc_phan': {}, 'chuyen_nganh': {}}
-        
-        try:
-            container = self.blob_service.get_container_client("tailieu")
-            
-            # HP-Khoa.csv
-            path = f"tailieu/{self.school_year}/HP-Khoa.csv"
-            blob_client = container.get_blob_client(path)
-            if blob_client.exists():
-                data = blob_client.download_blob().readall()
-                df = pd.read_csv(io.BytesIO(data), encoding='utf-8-sig')
-                df.columns = df.columns.str.strip()
-                for _, row in df.iterrows():
-                    mapping['hoc_phan'][row['Mã học phần']] = {
-                        'TenHP': row['Tên học phần'],
-                        'Khoa': row['Khoa']
-                    }
-            
-            # TenChuyenNganh-Khoa
-            path = f"tailieu/{self.school_year}/TenChuyenNganh-Khoa"
-            blob_client = container.get_blob_client(path)
-            if blob_client.exists():
-                data = blob_client.download_blob().readall()
-                df = pd.read_csv(io.BytesIO(data), encoding='utf-8-sig')
-                df.columns = df.columns.str.strip()
-                for _, row in df.iterrows():
-                    mapping['chuyen_nganh'][row['MaChuyenNganh']] = {
-                        'TenChuyenNganh': row['TenChuyenNganh'],
-                        'Khoa': row['Khoa']
-                    }
-        except Exception as e:
-            pass
-        
-        return mapping
-    
-    def insert(self, rows):
-        conn = self.connect()
-        cursor = conn.cursor()
-        mapping = self.load_mapping()
-        
-        try:
-            # 1. DIM_HOC_KY
-            cursor.execute("""
-                IF NOT EXISTS (SELECT 1 FROM DIM_HOC_KY WHERE MaHocKy = %s)
-                INSERT INTO DIM_HOC_KY (MaHocKy, NamHoc, HocKy)
-                VALUES (%s, %s, %s)
-            """, (self.ma_hoc_ky, self.ma_hoc_ky, self.nam_hoc, self.hoc_ky))
-            conn.commit()
-            
-            # 2. DIM_CAU_HOI (16 câu)
-            cau_hoi_list = [
-                (1, 1, 'I', 'Giảng viên giới thiệu rõ ràng, đầy đủ về đề cương chi tiết học phần', 'so'),
-                (2, 2, 'I', 'Nội dung của học phần phù hợp với năng lực của người học', 'so'),
-                (3, 3, 'I', 'Phương pháp dạy - học phù hợp với chuẩn đầu ra và nội dung của học phần', 'so'),
-                (4, 4, 'I', 'Giảng viên thực hiện đầy đủ kế hoạch dạy - học đã công bố', 'so'),
-                (5, 5, 'I', 'Giảng viên có cập nhật kiến thức mới và thực tế trong bài giảng', 'so'),
-                (6, 6, 'I', 'Hoạt động dạy - học khơi gợi đam mê khám phá và giúp phát triển khả năng tự học', 'so'),
-                (7, 7, 'I', 'Giảng viên khuyến khích người học chủ động tham gia thảo luận', 'so'),
-                (8, 8, 'I', 'Giảng viên tận tụy, sẵn sàng giúp đỡ, giải đáp thắc mắc của người học', 'so'),
-                (9, 9, 'I', 'Giảng viên sử dụng hiệu quả Elearning và các phương tiện công nghệ', 'so'),
-                (10, 10, 'I', 'Phương pháp kiểm tra, đánh giá phù hợp với chuẩn đầu ra và nội dung', 'so'),
-                (11, 11, 'I', 'Việc đánh giá được thực hiện công bằng, khách quan và đảm bảo độ tin cậy', 'so'),
-                (12, 12, 'I', 'Anh/Chị hài lòng về chất lượng và hiệu quả giảng dạy của giảng viên', 'so'),
-                (13, 13, 'II', 'Về chuẩn đầu ra và nội dung của học phần', 'text'),
-                (14, 14, 'II', 'Về hoạt động dạy - học', 'text'),
-                (15, 15, 'II', 'Về công tác kiểm tra – đánh giá', 'text'),
-                (16, 16, 'II', 'Các góp ý khác', 'text')
-            ]
-            
-            for ma, tt, phan, nd, loai in cau_hoi_list:
-                cursor.execute("""
-                    IF NOT EXISTS (SELECT 1 FROM DIM_CAU_HOI WHERE MaCauHoi = %s)
-                    INSERT INTO DIM_CAU_HOI (MaCauHoi, ThuTuCauHoi, Phan, NoiDung, LoaiTraLoi)
-                    VALUES (%s, %s, %s, %s, %s)
-                """, (ma, ma, tt, phan, nd, loai))
-            conn.commit()
-            
-        except Exception as e:
-            print(f"Lỗi khởi tạo: {e}")
-            conn.close()
-            return 0
-        
-        success = 0
-        error_count = 0
-        
-        for idx, row in enumerate(rows, 1):
-            try:
-                # Lấy thông tin từ row
-                ma_lop = row.get('Lop', '')[:20]
-                ma_sv = row.get('MaSV', '')[:20]
-                ho_dem = row.get('HoDem', '')[:50]
-                ten = row.get('Ten', '')[:50]
-                ngay_sinh_raw = row.get('NgaySinh', '')
-                ngay_sinh = self._convert_date(ngay_sinh_raw)
-                ma_hp = row.get('MaHP', '')[:20]
-                ma_gv = row.get('MaGV', '')[:20]
-                ho_dem_gv = row.get('HoDemGV', '')[:50]
-                ten_gv = row.get('TenGV', '')[:50]
-                lop_hp = row.get('LopHP', '')[:100]
-                
-                # BẮT ĐẦU TRANSACTION
-                cursor.execute("BEGIN TRANSACTION")
-                
-                # === THỨ TỰ QUAN TRỌNG: DIM_LOP_SINH_VIEN TRƯỚC DIM_SINH_VIEN ===
-                
-                # 1. Xử lý DIM_LOP_SINH_VIEN (bảng cha)
-                if ma_lop:
-                    # Tìm mã chuyên ngành từ mã lớp
-                    ma_chuyen_nganh = self._parse_ma_lop(ma_lop)
-                    
-                    if ma_chuyen_nganh and ma_chuyen_nganh in mapping['chuyen_nganh']:
-                        cn = mapping['chuyen_nganh'][ma_chuyen_nganh]
-                        ten_khoa = cn['Khoa']
-                        ma_khoa = self._create_ma_khoa(ten_khoa)
-                        
-                        # DIM_KHOA
-                        cursor.execute("""
-                            IF NOT EXISTS (SELECT 1 FROM DIM_KHOA WHERE MaKhoa = %s)
-                            INSERT INTO DIM_KHOA (MaKhoa, TenKhoa)
-                            VALUES (%s, %s)
-                        """, (ma_khoa, ma_khoa, ten_khoa))
-                        
-                        # DIM_CHUYEN_NGANH
-                        cursor.execute("""
-                            IF NOT EXISTS (SELECT 1 FROM DIM_CHUYEN_NGANH WHERE MaChuyenNganh = %s)
-                            INSERT INTO DIM_CHUYEN_NGANH (MaChuyenNganh, TenChuyenNganh, MaKhoa, MaCTDT)
-                            VALUES (%s, %s, %s, %s)
-                        """, (ma_chuyen_nganh, ma_chuyen_nganh, cn['TenChuyenNganh'], ma_khoa, 'CTDT001'))
-                    
-                    # DIM_LOP_SINH_VIEN (bảng cha)
-                    cursor.execute("""
-                        IF NOT EXISTS (SELECT 1 FROM DIM_LOP_SINH_VIEN WHERE MaLop = %s)
-                        INSERT INTO DIM_LOP_SINH_VIEN (MaLop, Lop, MaChuyenNganh)
-                        VALUES (%s, %s, %s)
-                    """, (ma_lop, ma_lop, ma_lop, ma_chuyen_nganh))
-                
-                # 2. DIM_SINH_VIEN (bảng con, phụ thuộc DIM_LOP_SINH_VIEN)
-                if ma_sv and ngay_sinh:
-                    cursor.execute("""
-                        IF NOT EXISTS (SELECT 1 FROM DIM_SINH_VIEN WHERE MaSV = %s)
-                        INSERT INTO DIM_SINH_VIEN (MaSV, HoDem, Ten, NgaySinh, MaLop)
-                        VALUES (%s, %s, %s, %s, %s)
-                    """, (ma_sv, ma_sv, ho_dem, ten, ngay_sinh, ma_lop))
-                
-                # 3. DIM_GIANG_VIEN
-                if ma_gv:
-                    cursor.execute("""
-                        IF NOT EXISTS (SELECT 1 FROM DIM_GIANG_VIEN WHERE MaGV = %s)
-                        INSERT INTO DIM_GIANG_VIEN (MaGV, HoDemGV, TenGV)
-                        VALUES (%s, %s, %s)
-                    """, (ma_gv, ma_gv, ho_dem_gv, ten_gv))
-                
-                # 4. DIM_HOC_PHAN
-                if ma_hp and ma_hp in mapping['hoc_phan']:
-                    hp = mapping['hoc_phan'][ma_hp]
-                    ma_khoa_hp = self._create_ma_khoa(hp['Khoa'])
-                    
-                    cursor.execute("""
-                        IF NOT EXISTS (SELECT 1 FROM DIM_KHOA WHERE MaKhoa = %s)
-                        INSERT INTO DIM_KHOA (MaKhoa, TenKhoa)
-                        VALUES (%s, %s)
-                    """, (ma_khoa_hp, ma_khoa_hp, hp['Khoa']))
-                    
-                    cursor.execute("""
-                        IF NOT EXISTS (SELECT 1 FROM DIM_HOC_PHAN WHERE MaHP = %s)
-                        INSERT INTO DIM_HOC_PHAN (MaHP, TenHP, MaKhoa)
-                        VALUES (%s, %s, %s)
-                    """, (ma_hp, ma_hp, hp['TenHP'][:100], ma_khoa_hp))
-                
-                # 5. DIM_LOP_HOC_PHAN
-                ma_lop_hp = f"{ma_hp}_{lop_hp}_{self.ma_hoc_ky}"[:50]
-                cursor.execute("""
-                    IF NOT EXISTS (SELECT 1 FROM DIM_LOP_HOC_PHAN WHERE MaLopHP = %s)
-                    INSERT INTO DIM_LOP_HOC_PHAN (MaLopHP, LopHP, MaHP, MaGV, MaHocKy)
-                    VALUES (%s, %s, %s, %s, %s)
-                """, (ma_lop_hp, ma_lop_hp, lop_hp, ma_hp, ma_gv, self.ma_hoc_ky))
-                
-                # 6. FACT_TRA_LOI_KHAO_SAT
-                submission_id = hashlib.md5(
-                    f"{ma_sv}_{ma_lop_hp}_{ma_gv}_{self.ma_hoc_ky}_{self.survey_file}".encode()
-                ).hexdigest()[:50]
-                
-                for ma_cau, col in [(13, 'Cau13'), (14, 'Cau14'), (15, 'Cau15'), (16, 'Cau16')]:
-                    tra_loi = row.get(col, '')
-                    if tra_loi:
-                        if len(tra_loi) > 8000:
-                            tra_loi = tra_loi[:8000]
-                        cursor.execute("""
-                            IF NOT EXISTS (SELECT 1 FROM FACT_TRA_LOI_KHAO_SAT WHERE SubmissionID = %s AND MaCauHoi = %s)
-                            INSERT INTO FACT_TRA_LOI_KHAO_SAT (SubmissionID, MaCauHoi, MaSV, MaLopHP, TraLoiText)
-                            VALUES (%s, %s, %s, %s, %s)
-                        """, (submission_id, ma_cau, submission_id, ma_cau, ma_sv, ma_lop_hp, tra_loi))
-                
-                cursor.execute("COMMIT")
-                success += 1
-                
-                if success % 10000 == 0:
-                    print(f"Đã chèn {success} dòng...")
-                
-            except Exception as e:
-                cursor.execute("ROLLBACK")
-                error_count += 1
-                if error_count <= 10:  # Chỉ in 10 lỗi đầu
-                    print(f"Lỗi dòng {idx}: {str(e)[:200]}")
-                continue
-        
-        cursor.close()
-        conn.close()
-        print(f"Kết quả: Thành công {success}, Thất bại {error_count}")
-        return success
-
-# ========== CÁC HÀM XỬ LÝ CSV (GIỮ NGUYÊN) ==========
 
 def download_from_blob(blob_service):
     try:
@@ -350,27 +73,32 @@ def download_from_blob(blob_service):
         data = blob_client.download_blob().readall()
         with open(SURVEY_FILE, "wb") as f:
             f.write(data)
+        print(f"Đã tải file {SURVEY_FILE} từ blob")
         return True
     except Exception as e:
-        print(f"Lỗi tải file: {e}")
+        print(f"Lỗi tải file từ blob: {e}")
         sys.exit(1)
+
 
 def upload_to_blob(blob_service, df, output_path):
     try:
         output = df.to_csv(index=False, encoding='utf-8-sig')
-        container = blob_service.get_container_client("processed-data")
-        if not container.exists():
-            container.create_container()
-        container.get_blob_client(output_path).upload_blob(output, overwrite=True)
+        processed_container = blob_service.get_container_client("processed-data")
+        if not processed_container.exists():
+            processed_container.create_container()
+        processed_container.get_blob_client(output_path).upload_blob(output, overwrite=True)
+        print(f"Đã upload file {output_path} lên blob")
         return True
     except Exception as e:
-        print(f"Lỗi upload: {e}")
+        print(f"Lỗi upload file lên blob: {e}")
         return False
+
 
 def is_date_format(value):
     if not isinstance(value, str):
         return False
     return bool(re.match(r'^\d{2}/\d{2}/\d{4}$', value.strip()))
+
 
 def is_ma_gv_format(value):
     if not isinstance(value, str):
@@ -384,27 +112,35 @@ def is_ma_gv_format(value):
         return True
     return False
 
+
 def has_keyword(text, keywords):
+    """Kiểm tra text có chứa bất kỳ từ khóa nào không"""
     if not text or not isinstance(text, str):
         return False
     text_lower = text.lower()
     return any(kw in text_lower for kw in keywords)
 
+
 def clean_special_characters(parts):
+    """Lọc các phần tử rỗng"""
     cleaned = []
     for part in parts:
         if part and part.strip():
             cleaned.append(part)
     return cleaned
 
+
 def split_by_condition_1(text):
+    """Cấp 1: Tách với điều kiện trước và sau dấu phẩy đều không có khoảng trắng"""
     parts = []
     current = []
     i = 0
+    
     while i < len(text):
         if text[i] == ',':
             has_space_before = (i > 0 and text[i-1] == ' ')
             has_space_after = (i + 1 < len(text) and text[i+1] == ' ')
+            
             if not has_space_before and not has_space_after:
                 if current:
                     parts.append(''.join(current).strip())
@@ -414,14 +150,19 @@ def split_by_condition_1(text):
         else:
             current.append(text[i])
         i += 1
+    
     if current:
         parts.append(''.join(current).strip())
+    
     return [p for p in parts if p]
 
+
 def split_by_condition_2(text):
+    """Cấp 2: Tách với điều kiện sau dấu phẩy không có khoảng trắng"""
     parts = []
     current = []
     i = 0
+    
     while i < len(text):
         if text[i] == ',':
             if i + 1 < len(text) and text[i+1] == ' ':
@@ -433,14 +174,19 @@ def split_by_condition_2(text):
         else:
             current.append(text[i])
         i += 1
+    
     if current:
         parts.append(''.join(current).strip())
+    
     return [p for p in parts if p]
 
+
 def split_by_condition_3(text):
+    """Cấp 3: Tách với điều kiện sau dấu phẩy không có khoảng trắng VÀ chữ in hoa đầu tiên"""
     parts = []
     current = []
     i = 0
+    
     while i < len(text):
         if text[i] == ',':
             if i + 1 < len(text):
@@ -456,11 +202,15 @@ def split_by_condition_3(text):
         else:
             current.append(text[i])
         i += 1
+    
     if current:
         parts.append(''.join(current).strip())
+    
     return [p for p in parts if p]
 
+
 def try_create_4th_column(parts):
+    """Thử lấy phần tử cuối cùng sau dấu phẩy của cột cuối để tạo cột thứ 4"""
     if len(parts) == 3:
         last_col = parts[-1]
         if ',' in last_col:
@@ -472,65 +222,98 @@ def try_create_4th_column(parts):
                 return True, parts
     return False, parts
 
+
 def classify_general_parts(parts):
+    """
+    Phân loại tổng quát cho N phần tử (N >= 7)
+    Duyệt từ trái sang phải theo logic:
+    - current_col bắt đầu = "Cau13"
+    - cau13 = P1 (mặc định)
+    - cau16 = P_last (mặc định, có thể bị thay đổi theo TH đặc biệt)
+    """
     valid_parts = clean_special_characters(parts)
+    
     if not valid_parts:
         return "", "", "", ""
     
+    # ========== KHỞI TẠO ==========
     current_col = "Cau13"
+    
+    # P1 là Cau13 (mặc định)
     cau13 = valid_parts[0]
     cau14 = ""
     cau15 = ""
     cau16 = ""
     
+    # Các phần tử còn lại (P2, P3, ..., P_n)
     if len(valid_parts) == 1:
         return cau13, cau14, cau15, cau16
     
     remaining_parts = valid_parts[1:]
+    
+    # ========== XỬ LÝ ĐẶC BIỆT CHO P_last (phần tử cuối cùng) ==========
     last_part = remaining_parts[-1]
     is_special_last = has_keyword(last_part, KEYWORDS_CAU16) and last_part.lower() in ['không', 'k', 'không có', 'ko']
     
     if is_special_last:
+        # TH1: P_last là "không", "k", "KHÔNG" -> chỉ gán riêng cho Cau16
         cau16 = last_part
-        remaining_parts = remaining_parts[:-1]
+        remaining_parts = remaining_parts[:-1]  # Loại bỏ phần tử cuối khỏi danh sách duyệt
     else:
+        # TH2: P_last không phải giá trị đặc biệt -> gán vào Cau16 (có thể gán thêm sau)
         cau16 = last_part
-        remaining_parts = remaining_parts[:-1]
+        remaining_parts = remaining_parts[:-1]  # Loại bỏ phần tử cuối khỏi danh sách duyệt
     
+    # ========== DUYỆT CÁC PHẦN TỬ CÒN LẠI (P2, P3, ...) ==========
     for part in remaining_parts:
         if current_col == "Cau13":
             if has_keyword(part, KEYWORDS_CAU13):
+                # Có từ khóa Cau13 -> gán vào Cau13
                 cau13 = f"{cau13}, {part}"
             elif has_keyword(part, KEYWORDS_CAU14):
+                # Có từ khóa Cau14 -> chuyển sang Cau14, gán vào Cau14
                 current_col = "Cau14"
                 cau14 = part
             else:
+                # Không có từ khóa -> gán vào Cau13
                 cau13 = f"{cau13}, {part}"
+        
         elif current_col == "Cau14":
             if has_keyword(part, KEYWORDS_CAU14):
+                # Có từ khóa Cau14 -> gán vào Cau14
                 cau14 = f"{cau14}, {part}"
             elif has_keyword(part, KEYWORDS_CAU15):
+                # Có từ khóa Cau15 -> chuyển sang Cau15, gán vào Cau15
                 current_col = "Cau15"
                 cau15 = part
             else:
+                # Không có từ khóa -> gán vào Cau15
                 current_col = "Cau15"
                 cau15 = part
+        
         elif current_col == "Cau15":
             if has_keyword(part, KEYWORDS_CAU15):
+                # Có từ khóa Cau15 -> gán vào Cau15
                 cau15 = f"{cau15}, {part}"
             elif has_keyword(part, KEYWORDS_CAU16):
+                # Có từ khóa Cau16 -> chuyển sang Cau16, gán vào Cau16
                 current_col = "Cau16"
                 cau16 = f"{cau16}, {part}" if cau16 else part
             else:
+                # Không có từ khóa -> gán vào Cau16
                 current_col = "Cau16"
                 cau16 = f"{cau16}, {part}" if cau16 else part
-        else:
+        
+        else:  # current_col == "Cau16"
             cau16 = f"{cau16}, {part}" if cau16 else part
     
     return cau13, cau14, cau15, cau16
 
+
 def classify_by_position_and_keywords(parts):
+    """Phân loại các phần tử dựa trên số lượng phần tử"""
     num_parts = len(parts)
+    
     if num_parts == 5:
         return classify_5_parts(parts)
     elif num_parts == 6:
@@ -538,16 +321,26 @@ def classify_by_position_and_keywords(parts):
     else:
         return classify_general_parts(parts)
 
+
 def classify_5_parts(parts):
+    """
+    Phân loại cho 5 phần tử: [P1, P2, P3, P4, P5]
+    P1 → Cau13 (luôn)
+    P5 → Cau16 (luôn)
+    """
     valid_parts = clean_special_characters(parts)
+    
     if len(valid_parts) < 5:
         return classify_general_parts(valid_parts)
     
     P1, P2, P3, P4, P5 = valid_parts
+    
     cau13 = P1
     cau16 = P5
     cau14 = ""
     cau15 = ""
+    
+    middle = [P2, P3, P4]
     
     if has_keyword(P2, KEYWORDS_CAU14):
         cau14 = P2
@@ -571,20 +364,30 @@ def classify_5_parts(parts):
     
     return cau13, cau14, cau15, cau16
 
+
 def classify_6_parts(parts):
+    """
+    Phân loại cho 6 phần tử: [P1, P2, P3, P4, P5, P6]
+    P1 → Cau13 (luôn)
+    P6 → Cau16 (luôn)
+    """
     valid_parts = clean_special_characters(parts)
+    
     if len(valid_parts) < 6:
         return classify_general_parts(valid_parts)
     
     P1, P2, P3, P4, P5, P6 = valid_parts
+    
     cau13 = P1
     cau16 = P6
     cau14 = ""
     cau15 = ""
     
+    middle = [P2, P3, P4, P5]
+    
     if has_keyword(P2, KEYWORDS_CAU14):
         cau14 = P2
-        if len(valid_parts) >= 4:
+        if len(middle) >= 2:
             cau14 = f"{cau14}, {P3}"
         if has_keyword(P4, KEYWORDS_CAU15):
             cau15 = P4
@@ -610,12 +413,20 @@ def classify_6_parts(parts):
     
     return cau13, cau14, cau15, cau16
 
+
 def split_after_null_by_rules(after_null_list, row_number=None):
+    """
+    Xử lý các cột sau cột NULL:
+    1. Dùng 3 cấp rule-based để tách
+    2. Phân loại theo vị trí + từ khóa
+    3. Nếu không thể, để toàn bộ vào cột đầu
+    """
     if not after_null_list:
         return ['', '', '', ''], None
     
     original_text = ','.join(after_null_list)
     
+    # CẤP 1
     parts_level1 = split_by_condition_1(original_text)
     if len(parts_level1) == 4:
         return parts_level1[:4], None
@@ -624,6 +435,7 @@ def split_after_null_by_rules(after_null_list, row_number=None):
         if success:
             return new_parts[:4], None
     
+    # CẤP 2
     parts_level2 = split_by_condition_2(original_text)
     if len(parts_level2) == 4:
         return parts_level2[:4], None
@@ -632,6 +444,7 @@ def split_after_null_by_rules(after_null_list, row_number=None):
         if success:
             return new_parts[:4], None
     
+    # CẤP 3
     parts_level3 = split_by_condition_3(original_text)
     if len(parts_level3) == 4:
         return parts_level3[:4], None
@@ -640,6 +453,7 @@ def split_after_null_by_rules(after_null_list, row_number=None):
         if success:
             return new_parts[:4], None
     
+    # Chọn bộ parts có số lượng phần tử lớn nhất để phân loại
     best_parts = parts_level3 if len(parts_level3) >= len(parts_level2) else parts_level2
     best_parts = best_parts if len(best_parts) >= len(parts_level1) else parts_level1
     
@@ -648,14 +462,27 @@ def split_after_null_by_rules(after_null_list, row_number=None):
         if cau13 or cau14 or cau15 or cau16:
             return [cau13, cau14, cau15, cau16], None
     
-    error_info = {'row_number': row_number, 'original_after_null': original_text}
+    # Nếu không phân loại được -> để toàn bộ vào cột đầu
+    error_info = {
+        'row_number': row_number,
+        'original_after_null': original_text,
+        'level1_result': parts_level1,
+        'level2_result': parts_level2,
+        'level3_result': parts_level3,
+        'final_count': len(best_parts),
+        'message': f'Sau 3 cấp có {len(best_parts)} cột, không phân loại được'
+    }
     return [original_text, '', '', ''], error_info
 
+
 def process_row(row, row_number=None):
+    """Xử lý một dòng CSV theo logic"""
     if not row or len(row) < 2:
         return None, None, []
     
     try:
+        # ========== PHẦN 1: XỬ LÝ CÁC CỘT TRƯỚC CỘT NULL ==========
+        
         lop = row[0].strip() if len(row) > 0 else ''
         ma_sv = row[1].strip() if len(row) > 1 else ''
         
@@ -726,85 +553,151 @@ def process_row(row, row_number=None):
                 null_index = gia_tri_index + 1
                 null_value = potential_null if potential_null else 'NULL'
         
+        # ========== PHẦN 2: XỬ LÝ CÁC CỘT SAU CỘT NULL ==========
         cau13 = cau14 = cau15 = cau16 = ''
         split_errors = []
         
         if null_index >= 0 and null_index + 1 < len(row):
             after_null = row[null_index + 1:]
             split_result, error = split_after_null_by_rules(after_null, row_number)
+            
             if len(split_result) >= 4:
                 cau13 = split_result[0]
                 cau14 = split_result[1]
                 cau15 = split_result[2]
                 cau16 = split_result[3]
+            
             if error:
                 split_errors.append(error)
         
         result = {
-            'Lop': lop, 'MaSV': ma_sv, 'HoDem': ho_dem, 'Ten': ten,
-            'NgaySinh': ngay_sinh, 'MaHP': ma_hp, 'TenHP': ten_hp,
-            'MaGV': ma_gv, 'HoDemGV': ho_dem_gv, 'TenGV': ten_gv,
-            'LopHP': lop_hp, 'CauHoi': cau_hoi, 'GiaTri': gia_tri,
-            'NULL': null_value, 'Cau13': cau13, 'Cau14': cau14,
-            'Cau15': cau15, 'Cau16': cau16
+            'Lop': lop,
+            'MaSV': ma_sv,
+            'HoDem': ho_dem,
+            'Ten': ten,
+            'NgaySinh': ngay_sinh,
+            'MaHP': ma_hp,
+            'TenHP': ten_hp,
+            'MaGV': ma_gv,
+            'HoDemGV': ho_dem_gv,
+            'TenGV': ten_gv,
+            'LopHP': lop_hp,
+            'CauHoi': cau_hoi,
+            'GiaTri': gia_tri,
+            'NULL': null_value,
+            'Cau13': cau13,
+            'Cau14': cau14,
+            'Cau15': cau15,
+            'Cau16': cau16
         }
+        
         return result, None, split_errors
+        
     except Exception as e:
+        print(f"Lỗi xử lý dòng {row_number}: {e}")
         return None, str(e), []
+
 
 def read_csv_manual(filename):
     rows = []
-    with open(filename, 'r', encoding='utf-8-sig') as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            row = line.split(',')
-            row = [col.strip() for col in row]
-            rows.append(row)
-    return rows, []
+    error_rows = []
+    try:
+        with open(filename, 'r', encoding='utf-8-sig') as f:
+            for line_num, line in enumerate(f, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                row = line.split(',')
+                row = [col.strip() for col in row]
+                rows.append(row)
+                if line_num % 1000 == 0:
+                    print(f"Đã đọc {line_num} dòng...")
+        print(f"Đã đọc xong file: {len(rows)} dòng")
+        return rows, error_rows
+    except Exception as e:
+        print(f"Lỗi đọc file: {e}")
+        return [], []
 
-# ========== MAIN ==========
 
 def main():
     try:
         blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
+        print("Kết nối blob storage thành công")
     except Exception as e:
         print(f"Lỗi kết nối blob: {e}")
         sys.exit(1)
     
     download_from_blob(blob_service)
     
-    rows, _ = read_csv_manual(SURVEY_FILE)
+    print("Đang đọc file CSV...")
+    rows, read_errors = read_csv_manual(SURVEY_FILE)
+    
     if not rows:
-        print("Không có dữ liệu")
+        print("Không có dữ liệu để xử lý")
         sys.exit(1)
     
+    print(f"Bắt đầu xử lý {len(rows)} dòng...")
+    
     processed_rows = []
+    process_errors = []
+    split_errors = []
+    
     for idx, row in enumerate(rows, 1):
-        result, _, _ = process_row(row, idx)
+        result, error, split_errs = process_row(row, idx)
+        
         if result:
             processed_rows.append(result)
+        
+        if error:
+            process_errors.append({
+                'line_number': idx,
+                'error': error,
+                'row_length': len(row)
+            })
+        
+        if split_errs:
+            split_errors.extend(split_errs)
+        
+        if idx % 1000 == 0:
+            print(f"Đã xử lý {idx}/{len(rows)} dòng...")
     
     result_df = pd.DataFrame(processed_rows)
     
-    print(f"Đã xử lý: {len(processed_rows)}/{len(rows)} dòng")
+    print(f"\n{'='*60}")
+    print("BÁO CÁO XỬ LÝ")
+    print(f"{'='*60}")
+    print(f"Tổng số dòng đọc được: {len(rows)}")
+    print(f"Số dòng xử lý thành công: {len(processed_rows)}")
+    print(f"Số dòng xử lý lỗi: {len(process_errors)}")
+    
+    if split_errors:
+        print(f"\n{'='*60}")
+        print(f"CÁC DÒNG KHÔNG PHÂN LOẠI ĐƯỢC ({len(split_errors)} dòng)")
+        print(f"{'='*60}")
+
+        split_error_df = pd.DataFrame(split_errors)
+        split_error_filename = f"{FILE_NAME}_split_errors_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        split_error_df.to_csv(split_error_filename, index=False, encoding='utf-8-sig')
+        print(f"\nĐã lưu {len(split_errors)} dòng lỗi vào file: {split_error_filename}")
     
     if len(processed_rows) > 0:
         output_filename = f"{FILE_NAME}_processed.csv"
         output_path = f"{SEMESTER}/{output_filename}"
         
         if upload_to_blob(blob_service, result_df, output_path):
-            print(f"Đã upload: {output_path}")
-            
-            # Chèn database
-            loader = DatabaseLoader(blob_service, SEMESTER, SURVEY_FILE)
-            loader.insert(processed_rows)
+            print(f"\n{'='*60}")
+            print("THÀNH CÔNG!")
+            print(f"{'='*60}")
+            print(f"File kết quả: {output_path}")
+            print(f"Số dòng đã xử lý: {len(processed_rows)}")
+            print(f"{'='*60}")
         else:
+            print("Upload file thất bại!")
             sys.exit(1)
     else:
-        print("Không có dòng nào được xử lý")
+        print("Không có dòng nào được xử lý thành công!")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

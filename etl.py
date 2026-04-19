@@ -17,26 +17,63 @@ if not SEMESTER or not SURVEY_FILE:
 FILE_NAME = os.path.splitext(os.path.basename(SURVEY_FILE))[0]
 
 # ========== TỪ KHÓA CHO CÁC CỘT ==========
-# Ưu tiên hàng đầu cho Cau14: thầy, cô, giảng viên
+# Cau14: Hoạt động dạy - học / Giảng viên
 KEYWORDS_CAU14 = [
     'thầy', 'cô', 'giảng viên', 'gv', 'thầy giáo', 'cô giáo',
     'dạy', 'giảng', 'bài giảng', 'dễ hiểu', 'nhiệt tình', 
     'tận tâm', 'tận tình', 'vui vẻ', 'thân thiện', 'hấp dẫn', 
     'thú vị', 'tương tác', 'sôi nổi', 'truyền đạt', 'giải thích', 
-    'hướng dẫn', 'phương pháp', 'nhiệt huyết', 'rõ', 'kỹ'
+    'hướng dẫn', 'phương pháp', 'nhiệt huyết', 'rõ', 'kỹ',
+    # Bổ sung mới
+    'sinh động', 'linh hoạt', 'đa dạng', 'thu hút', 'hay',
+    'ví dụ thực tế', 'dẫn dắt', 'tạo hứng thú', 'năng động', 
+    'đáng yêu', 'dễ thương', 'dễ mến', 'dễ gần', 'tâm lý', 
+    'thấu hiểu', 'quan tâm', 'chu đáo', 'tận tụy', 'sẵn sàng giúp đỡ',
+    'giải đáp thắc mắc', 'hỗ trợ', 'chỉ bảo', 'năng nổ', 'có tâm',
+    'truyền cảm hứng', 'gần gũi', 'thoải mái', 'hào hứng', 'vui',
+    'dui dẻ', 'hòa đồng', 'thương học trò', 'nghiêm khắc', 'khắt khe',
+    'kĩ tính', 'tạo điều kiện', 'minh bạch trong giảng dạy', 
+    'công bằng trong dạy học', 'thực tế', 'thực tiễn'
 ]
 
+# Cau15: Kiểm tra - Đánh giá
 KEYWORDS_CAU15 = [
     'kiểm tra', 'đánh giá', 'thi', 'bài tập', 'điểm', 'chấm',
     'đề thi', 'công bằng', 'minh bạch', 'nghiêm túc', 'phù hợp',
     'thực lực', 'khách quan', 'công tâm', 'đề kiểm tra',
-    'giữa kỳ', 'cuối kỳ', 'bài kiểm tra', 'cho điểm'
+    'giữa kỳ', 'cuối kỳ', 'bài kiểm tra', 'cho điểm',
+    'công khai', 'rõ ràng', 'đảm bảo tính công bằng',
+    # Bổ sung mới
+    'nghiêm ngặt', 'đánh giá đúng', 'phản ánh đúng', 'thuyết phục',
+    'ma trận chấm điểm', 'đề mở', 'tự luận', 'trắc nghiệm',
+    'giới hạn kiến thức', 'trọng tâm', 'đúng thực lực',
+    'liêm chính', 'đáng tin cậy', 'chính xác', 'kỹ càng',
+    'chỉnh chu', 'sát với chương trình', 'phù hợp năng lực',
+    'đa dạng hình thức', 'bài tập nhóm', 'thuyết trình', 'báo cáo'
 ]
 
+# Cau16: Góp ý khác
 KEYWORDS_CAU16 = [
     'không', 'ko', 'ok', 'oki', 'ổn', 'tốt', 'được',
     'không có', 'không ạ', 'dạ không', 'không có ý kiến',
-    'hết', 'xong', 'cảm ơn', 'thanks', 'k', 'không góp ý'
+    'hết', 'xong', 'cảm ơn', 'thanks', 'k', 'không góp ý',
+    # Bổ sung mới
+    'không có góp ý', 'không góp ý gì', 'không ý kiến',
+    'em không có', 'dạ không có', 'không có ạ', 'ko có',
+    'không gì', 'không có gì', 'không còn góp ý',
+    'mãi yêu cô', 'yêu cô', 'cảm ơn cô', 'cảm ơn thầy',
+    'tuyệt vời', 'quá ok', 'rất ok', 'ổn hết'
+]
+
+# Cau13: Nội dung học phần / Chuẩn đầu ra (bổ sung mới)
+KEYWORDS_CAU13 = [
+    'nội dung', 'chuẩn đầu ra', 'chương trình', 'học phần', 'môn học',
+    'đáp ứng', 'phù hợp', 'bám sát', 'rõ ràng', 'đầy đủ', 'hợp lý', 'hợp lí',
+    # Bổ sung mới
+    'sát chương trình', 'dễ tiếp cận', 'kiến thức cơ bản', 'trang bị',
+    'cung cấp', 'đào tạo', 'mục tiêu', 'chất lượng', 'đảm bảo',
+    'bổ ích', 'cần thiết', 'quan trọng', 'trọng tâm', 'chi tiết',
+    'cụ thể', 'đúng', 'chuẩn', 'ổn', 'hay'
 ]
 
 
@@ -117,6 +154,10 @@ def is_special_character(text):
         r'^[mnkzjx]{2,5}$', # mm, nn, kk, mmmm
         r'^[0-9]+$',        # số đơn thuần
         r'^[a-zA-Z]{1,3}$', # chuỗi ngắn không có nghĩa
+        r'^[,/]+$',         # ,/,/,/
+        r'^[.,/]+$',        # .,/,.
+        r'^[a-zA-Z0-9]{1,2}$', # 1-2 ký tự không rõ nghĩa
+        r'^[!@#$%^&*()]+$', # ký tự đặc biệt
     ]
     
     for pattern in special_patterns:
@@ -124,9 +165,18 @@ def is_special_character(text):
             return True
     
     # Chuỗi có độ dài <= 2 và không phải từ có nghĩa
-    meaningful_words = ['ok', 'ko', 'kh', 'không', 'cô', 'thầy', 'dạy', 'hay', 'tốt']
+    meaningful_words = ['ok', 'ko', 'kh', 'không', 'cô', 'thầy', 'dạy', 'hay', 'tốt', 'k', 'm', 'n']
     if len(text) <= 2 and not any(kw in text.lower() for kw in meaningful_words):
         return True
+    
+    # Các từ viết tắt hoặc rác đặc biệt
+    garbage_patterns = [
+        r'^nhm$', r'^bdv', r'^ebq', r'^dbq', r'^zswej', r'^dsjfr',
+        r'^ilikj', r'^jhgbf', r'^p;kjhy', r'^sdhsd', r'^áhsac'
+    ]
+    for pattern in garbage_patterns:
+        if re.match(pattern, text.lower()):
+            return True
     
     return False
 

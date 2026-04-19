@@ -18,47 +18,54 @@ FILE_NAME = os.path.splitext(os.path.basename(SURVEY_FILE))[0]
 
 # ========== TỪ KHÓA CHO CÁC CỘT ==========
 
+# Cau13: Nội dung học phần / Chuẩn đầu ra
 KEYWORDS_CAU13 = [
     'nội dung', 'chuẩn đầu ra', 'chương trình', 'học phần', 'môn học',
     'đáp ứng', 'phù hợp', 'bám sát', 'rõ ràng', 'đầy đủ', 'hợp lý', 'hợp lí',
-    'sát chương trình', 'dễ tiếp cận', 'kiến thức', 'trang bị', 'cung cấp',
-    'đào tạo', 'mục tiêu', 'chất lượng', 'đảm bảo', 'bổ ích', 'cần thiết',
-    'quan trọng', 'trọng tâm', 'chi tiết', 'cụ thể', 'đúng', 'chuẩn', 'ổn', 'hay', 'phương pháp'
+    'sát chương trình', 'dễ tiếp cận', 'kiến thức cơ bản', 'trang bị',
+    'cung cấp', 'đào tạo', 'mục tiêu', 'chất lượng', 'đảm bảo',
+    'bổ ích', 'cần thiết', 'quan trọng', 'trọng tâm', 'chi tiết',
+    'cụ thể', 'đúng', 'chuẩn', 'ổn', 'hay', 'tốt', 'được', 'phương pháp'
 ]
 
+# Cau14: Hoạt động dạy - học / Giảng viên
 KEYWORDS_CAU14 = [
     'thầy', 'cô', 'giảng viên', 'gv', 'thầy giáo', 'cô giáo',
-    'dạy', 'giảng', 'bài giảng', 'dễ hiểu', 'nhiệt tình', 'tận tâm',
-    'tận tình', 'vui vẻ', 'thân thiện', 'hấp dẫn', 'thú vị', 'tương tác',
-    'sôi nổi', 'truyền đạt', 'giải thích', 'hướng dẫn', 'phương pháp',
-    'nhiệt huyết', 'rõ', 'kỹ', 'sinh động', 'linh hoạt', 'đa dạng', 'thu hút',
-    'ví dụ thực tế', 'dẫn dắt', 'năng động', 'đáng yêu', 'dễ thương', 'dễ mến',
-    'dễ gần', 'tâm lý', 'thấu hiểu', 'quan tâm', 'chu đáo', 'tận tụy',
-    'sẵn sàng giúp đỡ', 'giải đáp thắc mắc', 'hỗ trợ', 'chỉ bảo', 'năng nổ',
-    'có tâm', 'truyền cảm hứng', 'gần gũi', 'thoải mái', 'hào hứng', 'vui',
-    'hòa đồng', 'thương học trò', 'thực tế', 'thực tiễn'
+    'dạy', 'giảng', 'bài giảng', 'dễ hiểu', 'nhiệt tình', 
+    'tận tâm', 'tận tình', 'vui vẻ', 'thân thiện', 'hấp dẫn', 
+    'thú vị', 'tương tác', 'sôi nổi', 'truyền đạt', 'giải thích', 
+    'hướng dẫn', 'phương pháp', 'nhiệt huyết', 'rõ', 'kỹ',
+    'sinh động', 'linh hoạt', 'đa dạng', 'thu hút',
+    'ví dụ thực tế', 'dẫn dắt', 'tạo hứng thú', 'năng động', 
+    'đáng yêu', 'dễ thương', 'dễ mến', 'dễ gần', 'tâm lý', 
+    'thấu hiểu', 'quan tâm', 'chu đáo', 'tận tụy', 'sẵn sàng giúp đỡ',
+    'giải đáp thắc mắc', 'hỗ trợ', 'chỉ bảo', 'năng nổ', 'có tâm',
+    'truyền cảm hứng', 'gần gũi', 'thoải mái', 'hào hứng', 'vui',
+    'dui dẻ', 'hòa đồng', 'thương học trò'
 ]
 
+# Cau15: Kiểm tra - Đánh giá
 KEYWORDS_CAU15 = [
-    'kiểm tra', 'đánh giá', 'thi', 'bài tập', 'điểm', 'chấm', 'đề thi',
-    'công bằng', 'minh bạch', 'nghiêm túc', 'phù hợp', 'thực lực',
-    'khách quan', 'công tâm', 'đề kiểm tra', 'giữa kỳ', 'cuối kỳ',
-    'bài kiểm tra', 'cho điểm', 'công khai', 'đảm bảo tính công bằng',
+    'kiểm tra', 'đánh giá', 'thi', 'bài tập', 'điểm', 'chấm',
+    'đề thi', 'công bằng', 'minh bạch', 'nghiêm túc', 'phù hợp',
+    'thực lực', 'khách quan', 'công tâm', 'đề kiểm tra',
+    'giữa kỳ', 'cuối kỳ', 'bài kiểm tra', 'cho điểm',
+    'công khai', 'rõ ràng', 'đảm bảo tính công bằng',
     'nghiêm ngặt', 'đánh giá đúng', 'phản ánh đúng', 'thuyết phục',
     'chính xác', 'kỹ càng', 'chỉnh chu', 'đa dạng hình thức'
 ]
 
+# Cau16: Góp ý khác
 KEYWORDS_CAU16 = [
-    'không', 'ko', 'ok', 'oki', 'ổn', 'được', 'không có', 'không ạ',
-    'dạ không', 'không có ý kiến', 'hết', 'xong', 'cảm ơn', 'thanks',
-    'k', 'không góp ý', 'không có góp ý', 'không góp ý gì', 'không ý kiến',
-    'em không có', 'dạ không có', 'ko có', 'không gì', 'không có gì',
-    'không còn góp ý', 'mãi yêu cô', 'yêu cô', 'cảm ơn cô', 'cảm ơn thầy',
+    'không', 'ko', 'ok', 'oki', 'ổn', 'được',
+    'không có', 'không ạ', 'dạ không', 'không có ý kiến',
+    'hết', 'xong', 'cảm ơn', 'thanks', 'k', 'không góp ý',
+    'không có góp ý', 'không góp ý gì', 'không ý kiến',
+    'em không có', 'dạ không có', 'không có ạ', 'ko có',
+    'không gì', 'không có gì', 'không còn góp ý',
+    'mãi yêu cô', 'yêu cô', 'cảm ơn cô', 'cảm ơn thầy',
     'tuyệt vời', 'quá ok', 'rất ok', 'ổn hết'
 ]
-
-# Giá trị đặc biệt cho Cau16 (chỉ lấy phần tử cuối)
-CAU16_SPECIAL_VALUES = {'không', 'k', 'KHÔNG'}
 
 
 def download_from_blob(blob_service):
@@ -125,20 +132,23 @@ def is_special_character(text):
         return True
     
     special_patterns = [
-        r'^\.+$', r'^[,\.]+$', r'^[,]+$', r'^[mnkzjx]$',
-        r'^[mnkzjx]{2,5}$', r'^[0-9]+$', r'^[a-zA-Z]{1,3}$',
-        r'^[,/]+$', r'^[.,/]+$', r'^[!@#$%^&*()]+$'
+        r'^\.+$', r'^[,\.]+$', r'^[,]+$',
+        r'^[mnkzjx]$', r'^[mnkzjx]{2,5}$', r'^[0-9]+$', r'^[a-zA-Z]{1,3}$',
+        r'^[,/]+$', r'^[.,/]+$', r'^[a-zA-Z0-9]{1,2}$', r'^[!@#$%^&*()]+$'
     ]
     
     for pattern in special_patterns:
         if re.match(pattern, text):
             return True
     
-    meaningful_words = ['ok', 'ko', 'kh', 'không', 'cô', 'thầy', 'dạy', 'hay', 'tốt']
+    meaningful_words = ['ok', 'ko', 'kh', 'không', 'cô', 'thầy', 'dạy', 'hay', 'tốt', 'k', 'm', 'n']
     if len(text) <= 2 and not any(kw in text.lower() for kw in meaningful_words):
         return True
     
-    garbage_patterns = [r'^nhm', r'^bdv', r'^ebq', r'^dbq', r'^zswej', r'^dsjfr', r'^sdhsd']
+    garbage_patterns = [
+        r'^nhm$', r'^bdv', r'^ebq', r'^dbq', r'^zswej', r'^dsjfr',
+        r'^ilikj', r'^jhgbf', r'^p;kjhy', r'^sdhsd', r'^áhsac'
+    ]
     for pattern in garbage_patterns:
         if re.match(pattern, text.lower()):
             return True
@@ -146,8 +156,280 @@ def is_special_character(text):
     return False
 
 
+def clean_special_characters(parts):
+    """Lọc và thay thế các phần tử đặc biệt bằng None"""
+    cleaned = []
+    for part in parts:
+        if is_special_character(part):
+            cleaned.append(None)
+        else:
+            cleaned.append(part)
+    return cleaned
+
+
+def classify_general_parts(parts):
+    """
+    Phân loại tổng quát cho N phần tử (N >= 2)
+    Duyệt từ trái sang phải, gán tuần tự vào các cột dựa trên từ khóa
+    KHÔNG NHẢY CÓC: chỉ có thể chuyển từ Cau13 -> Cau14 -> Cau15 -> Cau16
+    """
+    if not parts:
+        return "Không có dữ liệu", "Không có đánh giá", "Không có đánh giá", "Không có góp ý"
+    
+    # Làm sạch ký tự đặc biệt
+    cleaned = clean_special_characters(parts)
+    valid_parts = [p for p in cleaned if p is not None]
+    
+    if not valid_parts:
+        return "Không có dữ liệu", "Không có đánh giá", "Không có đánh giá", "Không có góp ý"
+    
+    # Khởi tạo kết quả
+    cau13 = ""
+    cau14 = ""
+    cau15 = ""
+    cau16 = ""
+    
+    # current_col: 1=Cau13, 2=Cau14, 3=Cau15, 4=Cau16
+    current_col = 1
+    
+    # XỬ LÝ ĐẶC BIỆT CHO PHẦN TỬ CUỐI
+    last_part = valid_parts[-1]
+    is_special_last = has_keyword(last_part, KEYWORDS_CAU16) and last_part.lower() in ['không', 'k', 'không có', 'ko']
+    
+    if is_special_last:
+        # TH1: P_last là "không", "k", "KHÔNG" -> chỉ gán riêng cho Cau16
+        cau16 = last_part
+        remaining_parts = valid_parts[:-1]  # Loại bỏ phần tử cuối
+    else:
+        # TH2: P_last không phải giá trị đặc biệt -> xử lý cùng các phần tử khác
+        remaining_parts = valid_parts[:]
+    
+    # Gán P1 vào Cau13 (mặc định)
+    if remaining_parts:
+        cau13 = remaining_parts[0]
+        remaining_parts = remaining_parts[1:]
+    
+    # Duyệt các phần tử còn lại
+    for part in remaining_parts:
+        if current_col == 1:  # Đang ở Cau13
+            # Kiểm tra từ khóa Cau13 trước
+            if has_keyword(part, KEYWORDS_CAU13):
+                # Có từ khóa Cau13 -> gán vào Cau13
+                cau13 = f"{cau13}, {part}" if cau13 else part
+            elif has_keyword(part, KEYWORDS_CAU14):
+                # Có từ khóa Cau14 -> chuyển sang Cau14, gán vào Cau14
+                current_col = 2
+                cau14 = part
+            else:
+                # Không có từ khóa -> gán vào Cau13
+                cau13 = f"{cau13}, {part}" if cau13 else part
+        
+        elif current_col == 2:  # Đang ở Cau14
+            if has_keyword(part, KEYWORDS_CAU15):
+                # Có từ khóa Cau15 -> chuyển sang Cau15, gán vào Cau15
+                current_col = 3
+                cau15 = part
+            elif has_keyword(part, KEYWORDS_CAU14):
+                # Có từ khóa Cau14 -> gán vào Cau14
+                cau14 = f"{cau14}, {part}" if cau14 else part
+            else:
+                # Không có từ khóa -> gán vào Cau14
+                cau14 = f"{cau14}, {part}" if cau14 else part
+        
+        elif current_col == 3:  # Đang ở Cau15
+            if has_keyword(part, KEYWORDS_CAU16):
+                # Có từ khóa Cau16 -> chuyển sang Cau16, gán vào Cau16
+                current_col = 4
+                cau16 = f"{cau16}, {part}" if cau16 else part
+            elif has_keyword(part, KEYWORDS_CAU15):
+                # Có từ khóa Cau15 -> gán vào Cau15
+                cau15 = f"{cau15}, {part}" if cau15 else part
+            else:
+                # Không có từ khóa -> gán vào Cau15
+                cau15 = f"{cau15}, {part}" if cau15 else part
+        
+        else:  # current_col == 4 (Cau16)
+            cau16 = f"{cau16}, {part}" if cau16 else part
+    
+    # ĐẢM BẢO KHÔNG CÓ CỘT NÀO BỊ RỖNG
+    if cau13 == "":
+        cau13 = "Không có đánh giá"
+    if cau14 == "":
+        cau14 = "Không có đánh giá"
+    if cau15 == "":
+        cau15 = "Không có đánh giá"
+    if cau16 == "" and not is_special_last:
+        cau16 = "Không có góp ý"
+    elif cau16 == "" and is_special_last:
+        cau16 = "Không có góp ý"
+    
+    return cau13, cau14, cau15, cau16
+
+
+def classify_by_position_and_keywords(parts):
+    """Phân loại các phần tử dựa trên số lượng phần tử"""
+    num_parts = len(parts)
+    
+    if num_parts == 5:
+        return classify_5_parts(parts)
+    elif num_parts == 6:
+        return classify_6_parts(parts)
+    else:
+        return classify_general_parts(parts)
+
+
+def classify_5_parts(parts):
+    """
+    Phân loại cho 5 phần tử: [P1, P2, P3, P4, P5]
+    P1 → Cau13 (luôn)
+    P5 → Cau16 (luôn)
+    """
+    cleaned = clean_special_characters(parts)
+    P1, P2, P3, P4, P5 = cleaned
+    
+    valid_parts = [p for p in cleaned if p is not None]
+    
+    cau13 = P1 if P1 is not None else ""
+    cau16 = P5 if P5 is not None else ""
+    cau14 = ""
+    cau15 = ""
+    
+    if cau13 == "" and valid_parts:
+        cau13 = valid_parts.pop(0) if valid_parts else ""
+    
+    if cau16 == "" and valid_parts:
+        cau16 = valid_parts.pop() if valid_parts else ""
+    
+    middle = [p for p in [P2, P3, P4] if p is not None]
+    
+    if not middle:
+        return cau13, cau14, cau15, cau16
+    
+    if len(middle) >= 1 and has_keyword(middle[0], KEYWORDS_CAU14):
+        cau14 = middle[0]
+        if len(middle) >= 2:
+            if has_keyword(middle[1], KEYWORDS_CAU14):
+                cau14 = f"{cau14}, {middle[1]}"
+                if len(middle) >= 3:
+                    cau15 = middle[2]
+            else:
+                cau15 = middle[1]
+                if len(middle) >= 3:
+                    cau15 = f"{cau15}, {middle[2]}"
+    elif len(middle) >= 2 and has_keyword(middle[1], KEYWORDS_CAU14):
+        cau14 = middle[1]
+        if cau13:
+            cau13 = f"{cau13}, {middle[0]}"
+        else:
+            cau13 = middle[0]
+        if len(middle) >= 3:
+            cau15 = middle[2]
+    else:
+        if cau13:
+            cau13 = f"{cau13}, {middle[0]}"
+        else:
+            cau13 = middle[0]
+        
+        remaining = middle[1:]
+        if remaining:
+            if has_keyword(remaining[0], KEYWORDS_CAU15):
+                cau15 = remaining[0]
+                if len(remaining) > 1:
+                    cau15 = f"{cau15}, {remaining[1]}"
+            else:
+                cau14 = remaining[0]
+                if len(remaining) > 1:
+                    cau15 = remaining[1]
+    
+    if not cau14 and valid_parts:
+        cau14 = valid_parts[0] if valid_parts else ""
+    if not cau15 and valid_parts and len(valid_parts) > 1:
+        cau15 = valid_parts[1] if len(valid_parts) > 1 else ""
+    
+    return cau13, cau14, cau15, cau16
+
+
+def classify_6_parts(parts):
+    """
+    Phân loại cho 6 phần tử: [P1, P2, P3, P4, P5, P6]
+    P1 → Cau13 (luôn)
+    P6 → Cau16 (luôn)
+    """
+    cleaned = clean_special_characters(parts)
+    P1, P2, P3, P4, P5, P6 = cleaned
+    
+    valid_parts = [p for p in cleaned if p is not None]
+    
+    cau13 = P1 if P1 is not None else ""
+    cau16 = P6 if P6 is not None else ""
+    cau14 = ""
+    cau15 = ""
+    
+    if cau13 == "" and valid_parts:
+        cau13 = valid_parts.pop(0) if valid_parts else ""
+    
+    if cau16 == "" and valid_parts:
+        cau16 = valid_parts.pop() if valid_parts else ""
+    
+    middle = [p for p in [P2, P3, P4, P5] if p is not None]
+    
+    if len(middle) < 2:
+        return cau13, cau14, cau15, cau16
+    
+    if has_keyword(middle[0], KEYWORDS_CAU14):
+        cau14 = middle[0]
+        if len(middle) >= 2:
+            cau14 = f"{cau14}, {middle[1]}"
+        if len(middle) >= 3:
+            if has_keyword(middle[2], KEYWORDS_CAU15):
+                cau15 = middle[2]
+            else:
+                cau14 = f"{cau14}, {middle[2]}"
+        if len(middle) >= 4:
+            if cau15:
+                cau15 = f"{cau15}, {middle[3]}"
+            else:
+                cau15 = middle[3]
+    elif len(middle) >= 2 and has_keyword(middle[1], KEYWORDS_CAU14):
+        cau14 = middle[1]
+        if len(middle) >= 3:
+            cau14 = f"{cau14}, {middle[2]}"
+        if cau13:
+            cau13 = f"{cau13}, {middle[0]}"
+        else:
+            cau13 = middle[0]
+        if len(middle) >= 4:
+            cau15 = middle[3]
+    else:
+        if cau13:
+            cau13 = f"{cau13}, {middle[0]}"
+        else:
+            cau13 = middle[0]
+        
+        remaining = middle[1:]
+        if remaining:
+            if has_keyword(remaining[0], KEYWORDS_CAU15):
+                cau15 = remaining[0]
+                if len(remaining) > 1:
+                    cau15 = f"{cau15}, {remaining[1]}"
+                if len(remaining) > 2:
+                    cau15 = f"{cau15}, {remaining[2]}"
+            else:
+                cau14 = remaining[0]
+                if len(remaining) > 1:
+                    cau15 = remaining[1]
+                if len(remaining) > 2:
+                    cau15 = f"{cau15}, {remaining[2]}" if cau15 else remaining[2]
+    
+    if not cau14 and valid_parts:
+        cau14 = valid_parts[0] if valid_parts else ""
+    if not cau15 and valid_parts and len(valid_parts) > 1:
+        cau15 = valid_parts[1] if len(valid_parts) > 1 else ""
+    
+    return cau13, cau14, cau15, cau16
+
+
 def split_by_condition_1(text):
-    """Cấp 1: Tách nếu trước và sau dấu phẩy đều không có khoảng trắng"""
     parts = []
     current = []
     i = 0
@@ -170,7 +452,6 @@ def split_by_condition_1(text):
 
 
 def split_by_condition_2(text):
-    """Cấp 2: Tách nếu sau dấu phẩy không có khoảng trắng"""
     parts = []
     current = []
     i = 0
@@ -191,7 +472,6 @@ def split_by_condition_2(text):
 
 
 def split_by_condition_3(text):
-    """Cấp 3: Tách nếu sau dấu phẩy không có khoảng trắng VÀ chữ hoa"""
     parts = []
     current = []
     i = 0
@@ -216,7 +496,6 @@ def split_by_condition_3(text):
 
 
 def try_create_4th_column(parts):
-    """Thử tạo cột thứ 4 từ 3 phần tử"""
     if len(parts) == 3:
         last_col = parts[-1]
         if ',' in last_col:
@@ -229,111 +508,12 @@ def try_create_4th_column(parts):
     return False, parts
 
 
-def classify_parts_by_rules(parts):
-    """
-    Phân loại các phần tử vào 4 cột dựa trên logic đã định nghĩa:
-    - Duyệt từ trái sang phải
-    - current_col bắt đầu từ Cau13
-    - Mỗi phần tử chỉ có thể ở cột hiện tại hoặc cột kế tiếp
-    """
-    if not parts:
-        return "", "", "", ""
-    
-    # Lọc bỏ phần tử rỗng và ký tự đặc biệt
-    valid_parts = [p for p in parts if p and not is_special_character(p)]
-    
-    if not valid_parts:
-        return "", "", "", ""
-    
-    # Khởi tạo kết quả
-    cau13 = ""
-    cau14 = ""
-    cau15 = ""
-    cau16 = ""
-    
-    # P1 luôn vào Cau13
-    cau13 = valid_parts[0]
-    
-    # Xác định phần tử cuối và xử lý đặc biệt
-    last_part = valid_parts[-1]
-    is_special_last = last_part.strip() in CAU16_SPECIAL_VALUES
-    
-    # Các phần tử còn lại (từ P2 đến P_{n-1} hoặc đến P_n nếu không phải special)
-    if is_special_last:
-        # TH1: Phần tử cuối là "không", "k", "KHÔNG"
-        cau16 = last_part
-        remaining_parts = valid_parts[1:-1]  # Bỏ qua P1 và P_last
-    else:
-        # TH2: Phần tử cuối không phải special, đưa vào xử lý chung
-        remaining_parts = valid_parts[1:]  # Bỏ qua P1
-        cau16 = ""  # Sẽ được xác định sau
-    
-    # current_col: 1=Cau13, 2=Cau14, 3=Cau15, 4=Cau16
-    current_col = 1
-    
-    for part in remaining_parts:
-        # Xác định từ khóa của phần tử
-        has_cau13 = has_keyword(part, KEYWORDS_CAU13)
-        has_cau14 = has_keyword(part, KEYWORDS_CAU14)
-        has_cau15 = has_keyword(part, KEYWORDS_CAU15)
-        has_cau16 = has_keyword(part, KEYWORDS_CAU16)
-        
-        # Xử lý dựa trên current_col
-        if current_col == 1:  # Đang ở Cau13
-            if has_cau13:
-                # Có từ khóa Cau13, gán vào Cau13
-                cau13 = f"{cau13}, {part}" if cau13 else part
-            elif has_cau14:
-                # Có từ khóa Cau14, chuyển sang Cau14 và gán vào Cau14
-                current_col = 2
-                cau14 = part if not cau14 else f"{cau14}, {part}"
-            else:
-                # Không có từ khóa, gán vào Cau13
-                cau13 = f"{cau13}, {part}" if cau13 else part
-        
-        elif current_col == 2:  # Đang ở Cau14
-            if has_cau15:
-                # Có từ khóa Cau15, chuyển sang Cau15 và gán vào Cau15
-                current_col = 3
-                cau15 = part if not cau15 else f"{cau15}, {part}"
-            else:
-                # Không có từ khóa Cau15, gán vào Cau14
-                cau14 = part if not cau14 else f"{cau14}, {part}"
-        
-        elif current_col == 3:  # Đang ở Cau15
-            if has_cau16:
-                # Có từ khóa Cau16, chuyển sang Cau16 và gán vào Cau16
-                current_col = 4
-                cau16 = part if not cau16 else f"{cau16}, {part}"
-            else:
-                # Không có từ khóa Cau16, gán vào Cau15
-                cau15 = part if not cau15 else f"{cau15}, {part}"
-        
-        else:  # current_col == 4, đang ở Cau16
-            cau16 = part if not cau16 else f"{cau16}, {part}"
-    
-    # Xử lý TH2: Nếu chưa có Cau16 và vẫn còn cột, gán giá trị mặc định
-    if not is_special_last and not cau16:
-        cau16 = ""
-    
-    # Đảm bảo không có cột nào bị rỗng
-    if not cau13:
-        cau13 = "Không có đánh giá"
-    if not cau14:
-        cau14 = "Không có đánh giá"
-    if not cau15:
-        cau15 = "Không có đánh giá"
-    if not cau16:
-        cau16 = "Không có góp ý"
-    
-    return cau13, cau14, cau15, cau16
-
-
 def split_after_null_by_rules(after_null_list, row_number=None):
     """
     Xử lý các cột sau cột NULL:
     1. Dùng 3 cấp rule-based để tách
     2. Phân loại theo vị trí + từ khóa
+    3. Nếu không thể, để toàn bộ vào cột đầu
     """
     if not after_null_list:
         return ['', '', '', ''], None
@@ -341,38 +521,50 @@ def split_after_null_by_rules(after_null_list, row_number=None):
     original_text = ','.join(after_null_list)
     
     # CẤP 1
-    parts = split_by_condition_1(original_text)
-    if len(parts) == 4:
-        return classify_parts_by_rules(parts), None
-    if len(parts) == 3:
-        success, new_parts = try_create_4th_column(parts)
+    parts_level1 = split_by_condition_1(original_text)
+    if len(parts_level1) == 4:
+        return parts_level1[:4], None
+    if len(parts_level1) == 3:
+        success, new_parts = try_create_4th_column(parts_level1)
         if success:
-            return classify_parts_by_rules(new_parts), None
+            return new_parts[:4], None
     
     # CẤP 2
-    parts = split_by_condition_2(original_text)
-    if len(parts) == 4:
-        return classify_parts_by_rules(parts), None
-    if len(parts) == 3:
-        success, new_parts = try_create_4th_column(parts)
+    parts_level2 = split_by_condition_2(original_text)
+    if len(parts_level2) == 4:
+        return parts_level2[:4], None
+    if len(parts_level2) == 3:
+        success, new_parts = try_create_4th_column(parts_level2)
         if success:
-            return classify_parts_by_rules(new_parts), None
+            return new_parts[:4], None
     
     # CẤP 3
-    parts = split_by_condition_3(original_text)
-    if len(parts) == 4:
-        return classify_parts_by_rules(parts), None
-    if len(parts) == 3:
-        success, new_parts = try_create_4th_column(parts)
+    parts_level3 = split_by_condition_3(original_text)
+    if len(parts_level3) == 4:
+        return parts_level3[:4], None
+    if len(parts_level3) == 3:
+        success, new_parts = try_create_4th_column(parts_level3)
         if success:
-            return classify_parts_by_rules(new_parts), None
+            return new_parts[:4], None
+    
+    # Chọn bộ parts có số lượng phần tử lớn nhất để phân loại
+    best_parts = parts_level3 if len(parts_level3) >= len(parts_level2) else parts_level2
+    best_parts = best_parts if len(best_parts) >= len(parts_level1) else parts_level1
+    
+    if len(best_parts) >= 2:
+        cau13, cau14, cau15, cau16 = classify_by_position_and_keywords(best_parts)
+        if cau13 or cau14 or cau15 or cau16:
+            return [cau13, cau14, cau15, cau16], None
     
     # Nếu không phân loại được -> để toàn bộ vào cột đầu
     error_info = {
         'row_number': row_number,
         'original_after_null': original_text,
-        'split_parts': parts,
-        'message': f'Tách được {len(parts)} cột, không phân loại được'
+        'level1_result': parts_level1,
+        'level2_result': parts_level2,
+        'level3_result': parts_level3,
+        'final_count': len(best_parts),
+        'message': f'Sau 3 cấp có {len(best_parts)} cột, không phân loại được'
     }
     return [original_text, '', '', ''], error_info
 
@@ -463,8 +655,11 @@ def process_row(row, row_number=None):
             after_null = row[null_index + 1:]
             split_result, error = split_after_null_by_rules(after_null, row_number)
             
-            if split_result:
-                cau13, cau14, cau15, cau16 = split_result
+            if len(split_result) >= 4:
+                cau13 = split_result[0]
+                cau14 = split_result[1]
+                cau15 = split_result[2]
+                cau16 = split_result[3]
             
             if error:
                 split_errors.append(error)
@@ -499,6 +694,7 @@ def process_row(row, row_number=None):
 
 def read_csv_manual(filename):
     rows = []
+    error_rows = []
     try:
         with open(filename, 'r', encoding='utf-8-sig') as f:
             for line_num, line in enumerate(f, 1):
@@ -508,10 +704,10 @@ def read_csv_manual(filename):
                 row = line.split(',')
                 row = [col.strip() for col in row]
                 rows.append(row)
-                if line_num % 10000 == 0:
+                if line_num % 1000 == 0:
                     print(f"Đã đọc {line_num} dòng...")
         print(f"Đã đọc xong file: {len(rows)} dòng")
-        return rows, []
+        return rows, error_rows
     except Exception as e:
         print(f"Lỗi đọc file: {e}")
         return [], []
@@ -528,7 +724,7 @@ def main():
     download_from_blob(blob_service)
     
     print("Đang đọc file CSV...")
-    rows, _ = read_csv_manual(SURVEY_FILE)
+    rows, read_errors = read_csv_manual(SURVEY_FILE)
     
     if not rows:
         print("Không có dữ liệu để xử lý")
@@ -556,7 +752,7 @@ def main():
         if split_errs:
             split_errors.extend(split_errs)
         
-        if idx % 10000 == 0:
+        if idx % 1000 == 0:
             print(f"Đã xử lý {idx}/{len(rows)} dòng...")
     
     result_df = pd.DataFrame(processed_rows)
@@ -572,11 +768,14 @@ def main():
         print(f"\n{'='*60}")
         print(f"CÁC DÒNG KHÔNG PHÂN LOẠI ĐƯỢC ({len(split_errors)} dòng)")
         print(f"{'='*60}")
+        for err in split_errors[:10]:
+            print(f"\nDòng {err.get('row_number', '?')}:")
+            print(f"  Chuỗi sau NULL: {err.get('original_after_null', '')[:200]}")
         
         split_error_df = pd.DataFrame(split_errors)
         split_error_filename = f"{FILE_NAME}_split_errors_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         split_error_df.to_csv(split_error_filename, index=False, encoding='utf-8-sig')
-        print(f"Đã lưu {len(split_errors)} dòng lỗi vào file: {split_error_filename}")
+        print(f"\nĐã lưu {len(split_errors)} dòng lỗi vào file: {split_error_filename}")
     
     if len(processed_rows) > 0:
         output_filename = f"{FILE_NAME}_processed_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"

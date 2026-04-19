@@ -25,7 +25,7 @@ KEYWORDS_CAU13 = [
     'sát chương trình', 'dễ tiếp cận', 'kiến thức cơ bản', 'trang bị',
     'cung cấp', 'đào tạo', 'mục tiêu', 'chất lượng', 'đảm bảo',
     'bổ ích', 'cần thiết', 'quan trọng', 'trọng tâm', 'chi tiết',
-    'cụ thể', 'đúng', 'chuẩn', 'ổn', 'hay', 'tốt', 'được', 'phương pháp','tệ'
+    'cụ thể', 'đúng', 'chuẩn', 'ổn', 'hay', 'tốt', 'được', 'phương pháp', 'tệ'
 ]
 
 # Cau14: Hoạt động dạy - học / Giảng viên
@@ -52,7 +52,7 @@ KEYWORDS_CAU15 = [
     'giữa kỳ', 'cuối kỳ', 'bài kiểm tra', 'cho điểm',
     'công khai', 'rõ ràng', 'đảm bảo tính công bằng',
     'nghiêm ngặt', 'đánh giá đúng', 'phản ánh đúng', 'thuyết phục',
-    'chính xác', 'kỹ càng', 'chỉnh chu', 'đa dạng hình thức', 'tài liệu', 'đọc thêm','không'
+    'chính xác', 'kỹ càng', 'chỉnh chu', 'đa dạng hình thức', 'tài liệu', 'đọc thêm'
 ]
 
 # Cau16: Góp ý khác
@@ -122,45 +122,11 @@ def has_keyword(text, keywords):
     return any(kw in text_lower for kw in keywords)
 
 
-def is_special_character(text):
-    """Kiểm tra xem text có phải là ký tự đặc biệt cần bỏ qua không"""
-    if not text or not isinstance(text, str):
-        return True
-    
-    text = text.strip()
-    if text == "":
-        return True
-    
-    special_patterns = [
-        r'^\.+$', r'^[,\.]+$', r'^[,]+$',
-        r'^[mnkzjx]$', r'^[mnkzjx]{2,5}$', r'^[0-9]+$', r'^[a-zA-Z]{1,3}$',
-        r'^[,/]+$', r'^[.,/]+$', r'^[a-zA-Z0-9]{1,2}$', r'^[!@#$%^&*()]+$'
-    ]
-    
-    for pattern in special_patterns:
-        if re.match(pattern, text):
-            return True
-    
-    meaningful_words = ['ok', 'ko', 'kh', 'không', 'cô', 'thầy', 'dạy', 'hay', 'tốt', 'k', 'm', 'n']
-    if len(text) <= 2 and not any(kw in text.lower() for kw in meaningful_words):
-        return True
-    
-    garbage_patterns = [
-        r'^nhm$', r'^bdv', r'^ebq', r'^dbq', r'^zswej', r'^dsjfr',
-        r'^ilikj', r'^jhgbf', r'^p;kjhy', r'^sdhsd', r'^áhsac'
-    ]
-    for pattern in garbage_patterns:
-        if re.match(pattern, text.lower()):
-            return True
-    
-    return False
-
-
 def clean_special_characters(parts):
-    """Lọc các phần tử đặc biệt (trả về danh sách chỉ các phần tử hợp lệ)"""
+    """Lọc các phần tử rỗng"""
     cleaned = []
     for part in parts:
-        if not is_special_character(part):
+        if part and part.strip():
             cleaned.append(part)
     return cleaned
 
@@ -169,20 +135,18 @@ def classify_general_parts(parts):
     """
     Phân loại tổng quát cho N phần tử (N >= 2)
     Duyệt từ trái sang phải, gán tuần tự vào các cột dựa trên từ khóa
-    KHÔNG NHẢY CÓC: chỉ có thể chuyển từ Cau13 -> Cau14 -> Cau15 -> Cau16
     """
     if not parts:
         return "", "", "", ""
     
-    # Làm sạch ký tự đặc biệt
+    # Làm sạch phần tử rỗng
     valid_parts = clean_special_characters(parts)
     
     if not valid_parts:
         return "", "", "", ""
     
     # ========== KHỞI TẠO ==========
-    # current_col: 1=Cau13, 2=Cau14, 3=Cau15, 4=Cau16
-    current_col = 1
+    current_col = "Cau13"
     
     # P1 (phần tử đầu) luôn là Cau13
     cau13 = valid_parts[0]
@@ -204,34 +168,52 @@ def classify_general_parts(parts):
         # TH1: P_last là "không", "k", "KHÔNG" -> chỉ gán riêng cho Cau16
         cau16 = last_part
         remaining_parts = remaining_parts[:-1]  # Loại bỏ phần tử cuối
-    # TH2: giữ nguyên remaining_parts (P_last sẽ được xử lý cùng)
+    else:
+        # TH2: P_last không phải giá trị đặc biệt -> gán vào Cau16 (có thể gán thêm sau)
+        cau16 = last_part
+        remaining_parts = remaining_parts[:-1]  # Loại bỏ phần tử cuối khỏi danh sách duyệt
     
-    # DUYỆT CÁC PHẦN TỬ CÒN LẠI
+    # DUYỆT CÁC PHẦN TỬ CÒN LẠI TỪ P2 TRỞ ĐI
     for part in remaining_parts:
-        if current_col == 1:  # Đang ở Cau13
+        if current_col == "Cau13":
             if has_keyword(part, KEYWORDS_CAU13):
+                # Có từ khóa Cau13 -> gán vào Cau13
                 cau13 = f"{cau13}, {part}"
             elif has_keyword(part, KEYWORDS_CAU14):
-                current_col = 2
+                # Có từ khóa Cau14 -> chuyển sang Cau14, gán vào Cau14
+                current_col = "Cau14"
                 cau14 = part
             else:
+                # Không có từ khóa -> gán vào Cau13
                 cau13 = f"{cau13}, {part}"
         
-        elif current_col == 2:  # Đang ở Cau14
-            if has_keyword(part, KEYWORDS_CAU15):
-                current_col = 3
+        elif current_col == "Cau14":
+            if has_keyword(part, KEYWORDS_CAU14):
+                # Có từ khóa Cau14 -> gán vào Cau14
+                cau14 = f"{cau14}, {part}"
+            elif has_keyword(part, KEYWORDS_CAU15):
+                # Có từ khóa Cau15 -> chuyển sang Cau15, gán vào Cau15
+                current_col = "Cau15"
                 cau15 = part
             else:
-                cau14 = f"{cau14}, {part}" if cau14 else part
+                # Không có từ khóa -> gán vào Cau15
+                current_col = "Cau15"
+                cau15 = part
         
-        elif current_col == 3:  # Đang ở Cau15
-            if has_keyword(part, KEYWORDS_CAU16):
-                current_col = 4
+        elif current_col == "Cau15":
+            if has_keyword(part, KEYWORDS_CAU15):
+                # Có từ khóa Cau15 -> gán vào Cau15
+                cau15 = f"{cau15}, {part}"
+            elif has_keyword(part, KEYWORDS_CAU16):
+                # Có từ khóa Cau16 -> chuyển sang Cau16, gán vào Cau16
+                current_col = "Cau16"
                 cau16 = f"{cau16}, {part}" if cau16 else part
             else:
-                cau15 = f"{cau15}, {part}" if cau15 else part
+                # Không có từ khóa -> gán vào Cau16
+                current_col = "Cau16"
+                cau16 = f"{cau16}, {part}" if cau16 else part
         
-        else:  # current_col == 4 (Cau16)
+        else:  # current_col == "Cau16"
             cau16 = f"{cau16}, {part}" if cau16 else part
     
     return cau13, cau14, cau15, cau16

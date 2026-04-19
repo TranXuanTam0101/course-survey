@@ -131,15 +131,107 @@ def clean_special_characters(parts):
     return cleaned
 
 
+def split_by_condition_1(text):
+    """Cấp 1: Tách với điều kiện trước và sau dấu phẩy đều không có khoảng trắng"""
+    parts = []
+    current = []
+    i = 0
+    
+    while i < len(text):
+        if text[i] == ',':
+            has_space_before = (i > 0 and text[i-1] == ' ')
+            has_space_after = (i + 1 < len(text) and text[i+1] == ' ')
+            
+            if not has_space_before and not has_space_after:
+                if current:
+                    parts.append(''.join(current).strip())
+                    current = []
+            else:
+                current.append(',')
+        else:
+            current.append(text[i])
+        i += 1
+    
+    if current:
+        parts.append(''.join(current).strip())
+    
+    return [p for p in parts if p]
+
+
+def split_by_condition_2(text):
+    """Cấp 2: Tách với điều kiện sau dấu phẩy không có khoảng trắng"""
+    parts = []
+    current = []
+    i = 0
+    
+    while i < len(text):
+        if text[i] == ',':
+            if i + 1 < len(text) and text[i+1] == ' ':
+                current.append(',')
+            else:
+                if current:
+                    parts.append(''.join(current).strip())
+                    current = []
+        else:
+            current.append(text[i])
+        i += 1
+    
+    if current:
+        parts.append(''.join(current).strip())
+    
+    return [p for p in parts if p]
+
+
+def split_by_condition_3(text):
+    """Cấp 3: Tách với điều kiện sau dấu phẩy không có khoảng trắng VÀ chữ in hoa đầu tiên"""
+    parts = []
+    current = []
+    i = 0
+    
+    while i < len(text):
+        if text[i] == ',':
+            if i + 1 < len(text):
+                next_char = text[i + 1]
+                if next_char != ' ' and next_char.isupper():
+                    if current:
+                        parts.append(''.join(current).strip())
+                        current = []
+                else:
+                    current.append(',')
+            else:
+                current.append(',')
+        else:
+            current.append(text[i])
+        i += 1
+    
+    if current:
+        parts.append(''.join(current).strip())
+    
+    return [p for p in parts if p]
+
+
+def try_create_4th_column(parts):
+    """Thử lấy phần tử cuối cùng sau dấu phẩy của cột cuối để tạo cột thứ 4"""
+    if len(parts) == 3:
+        last_col = parts[-1]
+        if ',' in last_col:
+            sub_parts = last_col.split(',')
+            if len(sub_parts) >= 2:
+                last_element = sub_parts[-1].strip()
+                parts[-1] = ','.join(sub_parts[:-1]).strip()
+                parts.append(last_element)
+                return True, parts
+    return False, parts
+
+
 def classify_general_parts(parts):
     """
-    Phân loại tổng quát cho N phần tử (N >= 2)
-    Duyệt từ trái sang phải, gán tuần tự vào các cột dựa trên từ khóa
+    Phân loại tổng quát cho N phần tử (N >= 7)
+    Duyệt từ trái sang phải theo logic:
+    - current_col bắt đầu = "Cau13"
+    - cau13 = P1 (mặc định)
+    - cau16 = P_last (mặc định, có thể bị thay đổi theo TH đặc biệt)
     """
-    if not parts:
-        return "", "", "", ""
-    
-    # Làm sạch phần tử rỗng
     valid_parts = clean_special_characters(parts)
     
     if not valid_parts:
@@ -148,7 +240,7 @@ def classify_general_parts(parts):
     # ========== KHỞI TẠO ==========
     current_col = "Cau13"
     
-    # P1 (phần tử đầu) luôn là Cau13
+    # P1 là Cau13 (mặc định)
     cau13 = valid_parts[0]
     cau14 = ""
     cau15 = ""
@@ -160,20 +252,20 @@ def classify_general_parts(parts):
     
     remaining_parts = valid_parts[1:]
     
-    # XỬ LÝ ĐẶC BIỆT CHO PHẦN TỬ CUỐI (P_last)
+    # ========== XỬ LÝ ĐẶC BIỆT CHO P_last (phần tử cuối cùng) ==========
     last_part = remaining_parts[-1]
     is_special_last = has_keyword(last_part, KEYWORDS_CAU16) and last_part.lower() in ['không', 'k', 'không có', 'ko']
     
     if is_special_last:
         # TH1: P_last là "không", "k", "KHÔNG" -> chỉ gán riêng cho Cau16
         cau16 = last_part
-        remaining_parts = remaining_parts[:-1]  # Loại bỏ phần tử cuối
+        remaining_parts = remaining_parts[:-1]  # Loại bỏ phần tử cuối khỏi danh sách duyệt
     else:
         # TH2: P_last không phải giá trị đặc biệt -> gán vào Cau16 (có thể gán thêm sau)
         cau16 = last_part
         remaining_parts = remaining_parts[:-1]  # Loại bỏ phần tử cuối khỏi danh sách duyệt
     
-    # DUYỆT CÁC PHẦN TỬ CÒN LẠI TỪ P2 TRỞ ĐI
+    # ========== DUYỆT CÁC PHẦN TỬ CÒN LẠI (P2, P3, ...) ==========
     for part in remaining_parts:
         if current_col == "Cau13":
             if has_keyword(part, KEYWORDS_CAU13):
@@ -321,85 +413,6 @@ def classify_6_parts(parts):
             cau15 = f"{cau15}, {P5}" if P5 else cau15
     
     return cau13, cau14, cau15, cau16
-
-
-def split_by_condition_1(text):
-    parts = []
-    current = []
-    i = 0
-    while i < len(text):
-        if text[i] == ',':
-            has_space_before = (i > 0 and text[i-1] == ' ')
-            has_space_after = (i + 1 < len(text) and text[i+1] == ' ')
-            if not has_space_before and not has_space_after:
-                if current:
-                    parts.append(''.join(current).strip())
-                    current = []
-            else:
-                current.append(',')
-        else:
-            current.append(text[i])
-        i += 1
-    if current:
-        parts.append(''.join(current).strip())
-    return [p for p in parts if p]
-
-
-def split_by_condition_2(text):
-    parts = []
-    current = []
-    i = 0
-    while i < len(text):
-        if text[i] == ',':
-            if i + 1 < len(text) and text[i+1] == ' ':
-                current.append(',')
-            else:
-                if current:
-                    parts.append(''.join(current).strip())
-                    current = []
-        else:
-            current.append(text[i])
-        i += 1
-    if current:
-        parts.append(''.join(current).strip())
-    return [p for p in parts if p]
-
-
-def split_by_condition_3(text):
-    parts = []
-    current = []
-    i = 0
-    while i < len(text):
-        if text[i] == ',':
-            if i + 1 < len(text):
-                next_char = text[i + 1]
-                if next_char != ' ' and next_char.isupper():
-                    if current:
-                        parts.append(''.join(current).strip())
-                        current = []
-                else:
-                    current.append(',')
-            else:
-                current.append(',')
-        else:
-            current.append(text[i])
-        i += 1
-    if current:
-        parts.append(''.join(current).strip())
-    return [p for p in parts if p]
-
-
-def try_create_4th_column(parts):
-    if len(parts) == 3:
-        last_col = parts[-1]
-        if ',' in last_col:
-            sub_parts = last_col.split(',')
-            if len(sub_parts) >= 2:
-                last_element = sub_parts[-1].strip()
-                parts[-1] = ','.join(sub_parts[:-1]).strip()
-                parts.append(last_element)
-                return True, parts
-    return False, parts
 
 
 def split_after_null_by_rules(after_null_list, row_number=None):

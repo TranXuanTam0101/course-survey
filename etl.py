@@ -687,4 +687,58 @@ def process_row(row, row_number=None):
 
 def read_csv_manual(filename):
     rows = []
-    with open(filename, 'r', encoding='utf-8-sig') as
+    with open(filename, 'r', encoding='utf-8-sig') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            row = line.split(',')
+            row = [col.strip() for col in row]
+            rows.append(row)
+    return rows, []
+
+# ========== MAIN ==========
+
+def main():
+    try:
+        blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
+    except Exception as e:
+        print(f"Lỗi kết nối blob: {e}")
+        sys.exit(1)
+    
+    download_from_blob(blob_service)
+    
+    rows, _ = read_csv_manual(SURVEY_FILE)
+    if not rows:
+        print("Không có dữ liệu")
+        sys.exit(1)
+    
+    processed_rows = []
+    for idx, row in enumerate(rows, 1):
+        result, _, _ = process_row(row, idx)
+        if result:
+            processed_rows.append(result)
+    
+    result_df = pd.DataFrame(processed_rows)
+    
+    print(f"Đã xử lý: {len(processed_rows)}/{len(rows)} dòng")
+    
+    if len(processed_rows) > 0:
+        # Tên file không có datetime
+        output_filename = f"{FILE_NAME}_processed.csv"
+        output_path = f"{SEMESTER}/{output_filename}"
+        
+        if upload_to_blob(blob_service, result_df, output_path):
+            print(f"Đã upload: {output_path}")
+            
+            # Chèn database
+            loader = DatabaseLoader(blob_service, SEMESTER, SURVEY_FILE)
+            loader.insert(processed_rows)
+        else:
+            sys.exit(1)
+    else:
+        print("Không có dòng nào được xử lý")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()

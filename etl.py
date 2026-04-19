@@ -41,7 +41,7 @@ KEYWORDS_CAU14 = [
     'thấu hiểu', 'quan tâm', 'chu đáo', 'tận tụy', 'sẵn sàng giúp đỡ',
     'giải đáp thắc mắc', 'hỗ trợ', 'chỉ bảo', 'năng nổ', 'có tâm',
     'truyền cảm hứng', 'gần gũi', 'thoải mái', 'hào hứng', 'vui',
-    'dui dẻ', 'hòa đồng', 'thương học trò','hay'
+    'dui dẻ', 'hòa đồng', 'thương học trò','hay','tâm huyết'
 ]
 
 # Cau15: Kiểm tra - Đánh giá

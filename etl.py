@@ -72,12 +72,10 @@ class DatabaseLoader:
         self.semester = semester
         self.survey_file = survey_file
         
-        # Trích xuất năm học và học kỳ
         self.nam_hoc = semester
         self.hoc_ky = self._extract_hocky(survey_file)
         self.ma_hoc_ky = f"HK{self.hoc_ky}-{self.nam_hoc}"
         
-        # Năm học cho mapping
         if '-' in semester:
             year = semester.split('-')[0]
             self.school_year = f"{year}-{int(year)+1}"
@@ -104,7 +102,6 @@ class DatabaseLoader:
             return 'K' + match.group(1).split('-')[0]
         return None
     
-
     def connect(self):
         return pymssql.connect(
             server='course-survey.database.windows.net',
@@ -118,7 +115,6 @@ class DatabaseLoader:
         try:
             container = self.blob_service.get_container_client("tailieu")
             
-            # HP-Khoa.csv
             path = f"tailieu/{self.school_year}/HP-Khoa.csv"
             data = container.get_blob_client(path).download_blob().readall()
             df = pd.read_csv(io.BytesIO(data), encoding='utf-8-sig')
@@ -129,7 +125,6 @@ class DatabaseLoader:
                     'Khoa': row['Khoa']
                 }
             
-            # TenChuyenNganh-Khoa
             path = f"tailieu/{self.school_year}/TenChuyenNganh-Khoa"
             data = container.get_blob_client(path).download_blob().readall()
             df = pd.read_csv(io.BytesIO(data), encoding='utf-8-sig')
@@ -150,11 +145,12 @@ class DatabaseLoader:
         cursor = conn.cursor()
         mapping = self.load_mapping()
         
-        # Bảng độc lập
+        # Bảng DIM_HOC_KY
         cursor.execute("""
-            IF NOT EXISTS (SELECT 1 FROM DIM_HOC_KY WHERE MaHocKy = ?)
-            INSERT INTO DIM_HOC_KY VALUES (?, ?, ?)
-        """, self.ma_hoc_ky, self.ma_hoc_ky, self.nam_hoc, self.hoc_ky)
+            IF NOT EXISTS (SELECT 1 FROM DIM_HOC_KY WHERE MaHocKy = %s)
+            INSERT INTO DIM_HOC_KY (MaHocKy, NamHoc, HocKy)
+            VALUES (%s, %s, %s)
+        """, (self.ma_hoc_ky, self.ma_hoc_ky, self.nam_hoc, self.hoc_ky))
         
         # 16 câu hỏi
         cau_hoi_list = [
@@ -178,15 +174,14 @@ class DatabaseLoader:
         
         for ma, tt, phan, nd, loai in cau_hoi_list:
             cursor.execute("""
-                IF NOT EXISTS (SELECT 1 FROM DIM_CAU_HOI WHERE MaCauHoi = ?)
-                INSERT INTO DIM_CAU_HOI VALUES (?, ?, ?, ?, ?)
-            """, ma, ma, tt, phan, nd, loai)
+                IF NOT EXISTS (SELECT 1 FROM DIM_CAU_HOI WHERE MaCauHoi = %s)
+                INSERT INTO DIM_CAU_HOI (MaCauHoi, ThuTuCauHoi, Phan, NoiDung, LoaiTraLoi)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (ma, ma, tt, phan, nd, loai))
         
         success = 0
         for row in rows:
             try:
-                cursor.execute("BEGIN TRANSACTION")
-                
                 # Xử lý chuyên ngành từ mã lớp
                 ma_lop = row.get('Lop', '')
                 ma_chuyen_nganh = self._parse_ma_lop(ma_lop)
@@ -198,57 +193,64 @@ class DatabaseLoader:
                     
                     # DIM_KHOA
                     cursor.execute("""
-                        IF NOT EXISTS (SELECT 1 FROM DIM_KHOA WHERE MaKhoa = ?)
-                        INSERT INTO DIM_KHOA VALUES (?, ?)
-                    """, ma_khoa, ma_khoa, ten_khoa)
+                        IF NOT EXISTS (SELECT 1 FROM DIM_KHOA WHERE MaKhoa = %s)
+                        INSERT INTO DIM_KHOA (MaKhoa, TenKhoa)
+                        VALUES (%s, %s)
+                    """, (ma_khoa, ma_khoa, ten_khoa))
                     
                     # DIM_CHUYEN_NGANH
                     cursor.execute("""
-                        IF NOT EXISTS (SELECT 1 FROM DIM_CHUYEN_NGANH WHERE MaChuyenNganh = ?)
-                        INSERT INTO DIM_CHUYEN_NGANH VALUES (?, ?, ?, ?)
-                    """, ma_chuyen_nganh, ma_chuyen_nganh, cn['TenChuyenNganh'], ma_khoa, 'CTDT001')
+                        IF NOT EXISTS (SELECT 1 FROM DIM_CHUYEN_NGANH WHERE MaChuyenNganh = %s)
+                        INSERT INTO DIM_CHUYEN_NGANH (MaChuyenNganh, TenChuyenNganh, MaKhoa, MaCTDT)
+                        VALUES (%s, %s, %s, %s)
+                    """, (ma_chuyen_nganh, ma_chuyen_nganh, cn['TenChuyenNganh'], ma_khoa, 'CTDT001'))
                     
                     # DIM_LOP_SINH_VIEN
                     cursor.execute("""
-                        IF NOT EXISTS (SELECT 1 FROM DIM_LOP_SINH_VIEN WHERE MaLop = ?)
-                        INSERT INTO DIM_LOP_SINH_VIEN VALUES (?, ?, ?)
-                    """, ma_lop, ma_lop, ma_lop, ma_chuyen_nganh)
+                        IF NOT EXISTS (SELECT 1 FROM DIM_LOP_SINH_VIEN WHERE MaLop = %s)
+                        INSERT INTO DIM_LOP_SINH_VIEN (MaLop, Lop, MaChuyenNganh)
+                        VALUES (%s, %s, %s)
+                    """, (ma_lop, ma_lop, ma_lop, ma_chuyen_nganh))
                 
                 # DIM_SINH_VIEN
                 cursor.execute("""
-                    IF NOT EXISTS (SELECT 1 FROM DIM_SINH_VIEN WHERE MaSV = ?)
-                    INSERT INTO DIM_SINH_VIEN VALUES (?, ?, ?, ?, ?)
-                """, row['MaSV'], row['MaSV'], row.get('HoDem', ''), row.get('Ten', ''), row.get('NgaySinh'), row.get('Lop', ''))
+                    IF NOT EXISTS (SELECT 1 FROM DIM_SINH_VIEN WHERE MaSV = %s)
+                    INSERT INTO DIM_SINH_VIEN (MaSV, HoDem, Ten, NgaySinh, MaLop)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (row['MaSV'], row['MaSV'], row.get('HoDem', ''), row.get('Ten', ''), row.get('NgaySinh'), row.get('Lop', '')))
                 
                 # DIM_GIANG_VIEN
                 if row.get('MaGV'):
                     cursor.execute("""
-                        IF NOT EXISTS (SELECT 1 FROM DIM_GIANG_VIEN WHERE MaGV = ?)
-                        INSERT INTO DIM_GIANG_VIEN VALUES (?, ?, ?)
-                    """, row['MaGV'], row['MaGV'], row.get('HoDemGV', ''), row.get('TenGV', ''))
+                        IF NOT EXISTS (SELECT 1 FROM DIM_GIANG_VIEN WHERE MaGV = %s)
+                        INSERT INTO DIM_GIANG_VIEN (MaGV, HoDemGV, TenGV)
+                        VALUES (%s, %s, %s)
+                    """, (row['MaGV'], row['MaGV'], row.get('HoDemGV', ''), row.get('TenGV', '')))
                 
                 # DIM_HOC_PHAN
-                ma_khoa_hp = None
                 if row.get('MaHP') and row['MaHP'] in mapping['hoc_phan']:
                     hp = mapping['hoc_phan'][row['MaHP']]
                     ma_khoa_hp = self._create_ma_khoa(hp['Khoa'])
                     
                     cursor.execute("""
-                        IF NOT EXISTS (SELECT 1 FROM DIM_KHOA WHERE MaKhoa = ?)
-                        INSERT INTO DIM_KHOA VALUES (?, ?)
-                    """, ma_khoa_hp, ma_khoa_hp, hp['Khoa'])
+                        IF NOT EXISTS (SELECT 1 FROM DIM_KHOA WHERE MaKhoa = %s)
+                        INSERT INTO DIM_KHOA (MaKhoa, TenKhoa)
+                        VALUES (%s, %s)
+                    """, (ma_khoa_hp, ma_khoa_hp, hp['Khoa']))
                     
                     cursor.execute("""
-                        IF NOT EXISTS (SELECT 1 FROM DIM_HOC_PHAN WHERE MaHP = ?)
-                        INSERT INTO DIM_HOC_PHAN VALUES (?, ?, ?)
-                    """, row['MaHP'], row['MaHP'], hp['TenHP'], ma_khoa_hp)
+                        IF NOT EXISTS (SELECT 1 FROM DIM_HOC_PHAN WHERE MaHP = %s)
+                        INSERT INTO DIM_HOC_PHAN (MaHP, TenHP, MaKhoa)
+                        VALUES (%s, %s, %s)
+                    """, (row['MaHP'], row['MaHP'], hp['TenHP'], ma_khoa_hp))
                 
                 # DIM_LOP_HOC_PHAN
                 ma_lop_hp = f"{row['MaHP']}_{row['LopHP']}_{self.ma_hoc_ky}"
                 cursor.execute("""
-                    IF NOT EXISTS (SELECT 1 FROM DIM_LOP_HOC_PHAN WHERE MaLopHP = ?)
-                    INSERT INTO DIM_LOP_HOC_PHAN VALUES (?, ?, ?, ?, ?)
-                """, ma_lop_hp, ma_lop_hp, row['LopHP'], row['MaHP'], row.get('MaGV'), self.ma_hoc_ky)
+                    IF NOT EXISTS (SELECT 1 FROM DIM_LOP_HOC_PHAN WHERE MaLopHP = %s)
+                    INSERT INTO DIM_LOP_HOC_PHAN (MaLopHP, LopHP, MaHP, MaGV, MaHocKy)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (ma_lop_hp, ma_lop_hp, row['LopHP'], row['MaHP'], row.get('MaGV'), self.ma_hoc_ky))
                 
                 # FACT_TRA_LOI_KHAO_SAT
                 submission_id = hashlib.md5(
@@ -258,15 +260,16 @@ class DatabaseLoader:
                 for ma_cau, col in [(13, 'Cau13'), (14, 'Cau14'), (15, 'Cau15'), (16, 'Cau16')]:
                     if row.get(col):
                         cursor.execute("""
-                            IF NOT EXISTS (SELECT 1 FROM FACT_TRA_LOI_KHAO_SAT WHERE SubmissionID = ? AND MaCauHoi = ?)
-                            INSERT INTO FACT_TRA_LOI_KHAO_SAT VALUES (?, ?, ?, ?, ?, ?)
-                        """, submission_id, ma_cau, submission_id, ma_cau, row['MaSV'], ma_lop_hp, None, row[col])
+                            IF NOT EXISTS (SELECT 1 FROM FACT_TRA_LOI_KHAO_SAT WHERE SubmissionID = %s AND MaCauHoi = %s)
+                            INSERT INTO FACT_TRA_LOI_KHAO_SAT (SubmissionID, MaCauHoi, MaSV, MaLopHP, TraLoiText)
+                            VALUES (%s, %s, %s, %s, %s)
+                        """, (submission_id, ma_cau, submission_id, ma_cau, row['MaSV'], ma_lop_hp, row[col]))
                 
-                cursor.execute("COMMIT")
+                conn.commit()
                 success += 1
                 
             except Exception as e:
-                cursor.execute("ROLLBACK")
+                conn.rollback()
                 print(f"Lỗi dòng {row.get('MaSV', '?')}: {e}")
         
         cursor.close()

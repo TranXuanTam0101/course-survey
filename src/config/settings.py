@@ -20,7 +20,7 @@ class Settings:
     DB_CONFIG = {
         'server': os.getenv("DB_SERVER", "course-survey.database.windows.net"),
         'user': os.getenv("DB_USER", "sqladmin"),
-        'password': os.getenv("DB_PASSWORD"),
+        'password': os.getenv("DB_PASSWORD", "Due@2026"),
         'database': os.getenv("DB_NAME", "course-survey-db"),
         'timeout': 60,  # Giảm timeout để tăng tốc
         'autocommit': False,

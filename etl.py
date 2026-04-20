@@ -1,14 +1,15 @@
-
-
 import os
 import sys
 import re
+import io
+import time
 from datetime import datetime
 import pandas as pd
 import numpy as np
 import pyodbc
 from azure.storage.blob import BlobServiceClient
 
+# ================= CONFIG =================
 CONNECTION_STRING = os.environ.get("CONNECTION_STRING")
 SEMESTER = os.environ.get("SEMESTER")
 SURVEY_FILE = os.environ.get("SURVEY_FILE")
@@ -27,11 +28,18 @@ CONN_STR = (
     f"DATABASE=course-survey-db;"
     f"UID=sqladmin;"
     f"PWD={DB_PASSWORD};"
+    f"Encrypt=yes;TrustServerCertificate=no;"
 )
 
-BATCH_SIZE = 50000
+BATCH_SIZE = 25000
 
-# ========== TRỌNG SỐ CHO TỪNG CỘT (GIỮ NGUYÊN) ==========
+# ========== CẤU TRÚC THƯ MỤC MỚI ==========
+CONTAINER_NAME = SEMESTER  # ← Container là năm học
+RAWDATA_PATH = "rawdata"    # ← Thư mục con
+TAILIEU_PATH = "tailieu"    # ← Thư mục con
+PROCESSED_PATH = "processed-data"  # ← Thư mục con
+
+# ========== TRỌNG SỐ (GIỮ NGUYÊN) ==========
 WEIGHTS_CAU13 = {
     'chuẩn đầu ra': 5.0, 'mục tiêu môn học': 4.5, 'đáp ứng chương trình': 4.0,
     'nội dung': 3.0, 'học phần': 3.0, 'chương trình': 2.5, 'môn học': 2.5,
@@ -352,7 +360,7 @@ def split_after_null_by_scoring(after_null_list, row_number=None):
             result[col] = text
     return [result['Cau13'], result['Cau14'], result['Cau15'], result['Cau16']], None
 
-# ========== PROCESS ROW (GIỮ NGUYÊN) ==========
+# ========== PROCESS ROW ==========
 def process_row(row, row_number=None):
     if not row or len(row) < 2:
         return None, None, []
@@ -434,8 +442,11 @@ def read_csv_manual(content):
 
 # ========== LOAD DATABASE ==========
 def get_existing_ids(cursor, table, id_col):
+    print(f"    -> Query existing {id_col} from {table}...")
     cursor.execute(f"SELECT {id_col} FROM {table}")
-    return {row[0] for row in cursor.fetchall()}
+    ids = {row[0] for row in cursor.fetchall()}
+    print(f"    -> Found {len(ids)} existing records")
+    return ids
 
 def load_dimension(cursor, table, df, columns, id_col):
     if df.empty:
@@ -444,6 +455,8 @@ def load_dimension(cursor, table, df, columns, id_col):
     new_data = df[~df[id_col].isin(existing)]
     if new_data.empty:
         return 0
+    
+    print(f"    -> Inserting {len(new_data)} new records into {table}...")
     placeholders = ', '.join(['?'] * len(columns))
     query = f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders})"
     data = []
@@ -465,6 +478,7 @@ def load_dimension(cursor, table, df, columns, id_col):
             else:
                 tuple_data.append(to_str(row[c]))
         data.append(tuple(tuple_data))
+    
     cursor.executemany(query, data)
     cursor.connection.commit()
     return len(new_data)
@@ -472,80 +486,116 @@ def load_dimension(cursor, table, df, columns, id_col):
 def load_fact_all(cursor, fact_df):
     if fact_df.empty:
         return 0
-    print(f"  -> Insert FACT: {len(fact_df):,} dòng...")
-    start = time.time()
-    data = list(zip(
-        fact_df['SubmissionID'].astype(str).str[:500],
-        fact_df['MaCauHoi'].fillna(0).astype(int),
-        fact_df['MaSV'].astype(str).str[:50],
-        fact_df['MaLopHP'].astype(str).str[:200],
-        fact_df['TraLoiSo'].fillna(0).astype(float),
-        fact_df['TraLoiText'].fillna('').astype(str).str[:1000],
-        fact_df['IsCTS'].fillna(0).astype(int)
-    ))
+    
+    print(f"  -> Preparing FACT data: {len(fact_df):,} dòng...")
+    total_rows = len(fact_df)
+    total_inserted = 0
+    
+    print(f"  -> Disabling constraints...")
     cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT NOCHECK CONSTRAINT ALL")
     cursor.connection.commit()
-    total = 0
-    for i in range(0, len(data), BATCH_SIZE):
-        batch = data[i:i+BATCH_SIZE]
+    
+    batch_num = 0
+    for i in range(0, total_rows, BATCH_SIZE):
+        batch_num += 1
+        batch_start = time.time()
+        
+        batch_df = fact_df.iloc[i:i+BATCH_SIZE]
+        
+        data = list(zip(
+            batch_df['SubmissionID'].astype(str).str[:500],
+            batch_df['MaCauHoi'].fillna(0).astype(int),
+            batch_df['MaSV'].astype(str).str[:50],
+            batch_df['MaLopHP'].astype(str).str[:200],
+            batch_df['TraLoiSo'].fillna(0).astype(float),
+            batch_df['TraLoiText'].fillna('').astype(str).str[:1000],
+            batch_df['IsCTS'].fillna(0).astype(int)
+        ))
+        
+        print(f"    -> Batch {batch_num}: Inserting {len(data):,} rows...")
         cursor.executemany("""
             INSERT INTO FACT_TRA_LOI_KHAO_SAT 
             (SubmissionID, MaCauHoi, MaSV, MaLopHP, TraLoiSo, TraLoiText, IsCTS)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, batch)
+        """, data)
         cursor.connection.commit()
-        total += len(batch)
+        
+        total_inserted += len(data)
+        print(f"    -> Batch {batch_num} done in {time.time()-batch_start:.2f}s (Total: {total_inserted:,}/{total_rows:,})")
+    
+    print(f"  -> Re-enabling constraints...")
     cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT CHECK CONSTRAINT ALL")
     cursor.connection.commit()
-    print(f"  ✅ FACT done: {total:,} dòng ({time.time()-start:.2f}s)")
-    return total
+    
+    return total_inserted
 
 def load_to_database(dims, fact_df):
     print("  -> Load...")
     start = time.time()
+    
+    print("  -> Connecting to database...")
     conn = pyodbc.connect(CONN_STR)
     cursor = conn.cursor()
     cursor.fast_executemany = True
+    print("  -> Connected!")
+    
     try:
+        print("\n  --- DIMENSIONS ---")
         count = load_dimension(cursor, 'DIM_HOC_KY', dims['hoc_ky'], ['MaHocKy', 'NamHoc', 'HocKy'], 'MaHocKy')
         print(f"  ✅ DIM_HOC_KY: {count} new")
+        
         count = load_dimension(cursor, 'DIM_KHOA', dims['khoa'], ['MaKhoa', 'TenKhoa'], 'MaKhoa')
         print(f"  ✅ DIM_KHOA: {count} new")
+        
         cursor.execute("""
             IF NOT EXISTS (SELECT 1 FROM DIM_CHUONG_TRINH_DAO_TAO WHERE MaCTDT = 'CTDT_CHINHQUY')
             INSERT INTO DIM_CHUONG_TRINH_DAO_TAO (MaCTDT, TenCTDT) VALUES ('CTDT_CHINHQUY', N'Chính quy')
         """)
         conn.commit()
+        print("  ✅ DIM_CTDT: ensured")
+        
         count = load_dimension(cursor, 'DIM_CHUYEN_NGANH', dims['chuyen_nganh'], ['MaChuyenNganh', 'TenChuyenNganh', 'MaKhoa', 'MaCTDT'], 'MaChuyenNganh')
         print(f"  ✅ DIM_CHUYEN_NGANH: {count} new")
+        
         count = load_dimension(cursor, 'DIM_LOP_SINH_VIEN', dims['lop_sv'], ['MaLop', 'Lop', 'MaChuyenNganh', 'IsCTS'], 'MaLop')
         print(f"  ✅ DIM_LOP_SINH_VIEN: {count} new")
+        
         count = load_dimension(cursor, 'DIM_GIANG_VIEN', dims['giang_vien'], ['MaGV', 'HoDemGV', 'TenGV'], 'MaGV')
         print(f"  ✅ DIM_GIANG_VIEN: {count} new")
+        
         count = load_dimension(cursor, 'DIM_HOC_PHAN', dims['hoc_phan'], ['MaHP', 'TenHP', 'MaKhoa'], 'MaHP')
         print(f"  ✅ DIM_HOC_PHAN: {count} new")
+        
         count = load_dimension(cursor, 'DIM_SINH_VIEN', dims['sinh_vien'], ['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop', 'IsCTS'], 'MaSV')
         print(f"  ✅ DIM_SINH_VIEN: {count} new")
+        
         count = load_dimension(cursor, 'DIM_LOP_HOC_PHAN', dims['lop_hp'], ['MaLopHP', 'LopHP', 'MaHP', 'MaGV', 'MaHocKy'], 'MaLopHP')
         print(f"  ✅ DIM_LOP_HOC_PHAN: {count} new")
+        
+        print("\n  --- FACT ---")
         count = load_fact_all(cursor, fact_df)
         print(f"  ✅ FACT: {count:,} dòng")
-        print(f"  ✅ Load: {time.time()-start:.2f}s")
+        
+        print(f"\n  ✅ Load hoàn tất: {time.time()-start:.2f}s")
+        
     except Exception as e:
-        print(f"  ❌ Lỗi: {e}")
+        print(f"\n  ❌ Lỗi trong Load: {e}")
+        import traceback
+        traceback.print_exc()
         raise
     finally:
         conn.close()
 
 # ========== MAIN ==========
 def main():
-    import time
     total_start = time.time()
     print("=" * 60)
-    print("🚀 SURVEY ETL - GIỮ NGUYÊN CODE GỐC + LOAD DB")
+    print("🚀 SURVEY ETL - DEBUG VERSION (NEW PATHS)")
     print("=" * 60)
     print(f"Semester: {SEMESTER}")
     print(f"File: {SURVEY_FILE}")
+    print(f"Batch size: {BATCH_SIZE}")
+    print(f"Container: {CONTAINER_NAME}")
     print("=" * 60)
     
     try:
@@ -558,16 +608,22 @@ def main():
     print("\n📥 1. EXTRACT")
     start = time.time()
     
-    # Đọc survey file
-    blob_client = blob_service.get_container_client("rawdata").get_blob_client(f"{SEMESTER}/{SURVEY_FILE}")
+    # Đường dẫn mới: {CONTAINER_NAME}/rawdata/{SURVEY_FILE}
+    survey_path = f"{RAWDATA_PATH}/{SURVEY_FILE}"
+    print(f"  -> Downloading survey: {CONTAINER_NAME}/{survey_path}")
+    blob_client = blob_service.get_container_client(CONTAINER_NAME).get_blob_client(survey_path)
     content = blob_client.download_blob().readall().decode('utf-8-sig')
+    print(f"  -> Survey file size: {len(content):,} bytes")
     
-    # Đọc master data
     hp_df = pd.DataFrame()
     cn_df = pd.DataFrame()
+    
+    # Đường dẫn mới: {CONTAINER_NAME}/tailieu/HP-Khoa.csv
+    hp_path = f"{TAILIEU_PATH}/HP-Khoa.csv"
     try:
-        client = blob_service.get_container_client("tailieu").get_blob_client(f"{SEMESTER}/HP-Khoa.csv")
+        client = blob_service.get_container_client(CONTAINER_NAME).get_blob_client(hp_path)
         if client.exists():
+            print(f"  -> Downloading: {CONTAINER_NAME}/{hp_path}")
             hp_df = pd.read_csv(io.StringIO(client.download_blob().readall().decode('utf-8')))
             if len(hp_df.columns) >= 4:
                 hp_df = hp_df.iloc[:, 1:4]
@@ -577,9 +633,12 @@ def main():
     except Exception as e:
         print(f"  -> Lỗi HP-Khoa: {e}")
     
+    # Đường dẫn mới: {CONTAINER_NAME}/tailieu/TenChuyenNganh-Khoa.csv
+    cn_path = f"{TAILIEU_PATH}/TenChuyenNganh-Khoa.csv"
     try:
-        client = blob_service.get_container_client("tailieu").get_blob_client(f"{SEMESTER}/TenChuyenNganh-Khoa.csv")
+        client = blob_service.get_container_client(CONTAINER_NAME).get_blob_client(cn_path)
         if client.exists():
+            print(f"  -> Downloading: {CONTAINER_NAME}/{cn_path}")
             cn_df = pd.read_csv(io.StringIO(client.download_blob().readall().decode('utf-8')))
             if len(cn_df.columns) >= 4:
                 cn_df = cn_df.iloc[:, 1:4]
@@ -595,11 +654,14 @@ def main():
     print("\n📝 2. PARSE")
     start = time.time()
     rows = read_csv_manual(content)
+    print(f"  -> Total raw rows: {len(rows):,}")
     processed_rows = []
     for idx, row in enumerate(rows, 1):
         result, error, _ = process_row(row, idx)
         if result:
             processed_rows.append(result)
+        if idx % 50000 == 0:
+            print(f"  -> Processed {idx:,} rows...")
     df = pd.DataFrame(processed_rows)
     print(f"  -> Đã parse {len(df):,} dòng hợp lệ")
     print(f"  ✅ Parse: {time.time()-start:.2f}s")
@@ -617,12 +679,10 @@ def main():
     hoc_ky = int(ma_hoc_ky[2]) if ma_hoc_ky[2].isdigit() else 2
     print(f"  -> MaHocKy: {ma_hoc_ky}")
     
-    # Chuẩn hóa Lop
     norm = df['Lop'].apply(normalize_lop)
     df['LopChuanHoa'] = norm.apply(lambda x: x[0])
     df['IsCTS'] = norm.apply(lambda x: x[1])
     
-    # Merge HP-Khoa
     if not hp_df.empty:
         df = df.merge(hp_df[['MaHP', 'TenHP', 'MaKhoa', 'TenKhoa']], on='MaHP', how='left')
         df['TenHP'] = df['TenHP_y'].fillna(df['TenHP_x'])
@@ -633,7 +693,6 @@ def main():
         df['MaKhoa'] = 'TĐHKT'
         df['TenKhoa'] = 'Trường ĐHKT'
     
-    # Chuyên ngành
     def get_th1(lop):
         if not isinstance(lop, str):
             return None
@@ -642,14 +701,23 @@ def main():
     
     df['MaCN_TH1'] = df['LopChuanHoa'].apply(get_th1)
     df['MaChuyenNganh'] = df['MaCN_TH1'].fillna(df['MaKhoa'])
-    df['TenChuyenNganh'] = 'Chuyên ngành ' + df['MaChuyenNganh']
+    
+    # TenChuyenNganh từ cn_master
+    if not cn_df.empty:
+        cn_mapping = cn_df[['MaChuyenNganh', 'TenChuyenNganh']].drop_duplicates(subset=['MaChuyenNganh'])
+        cn_mapping = cn_mapping.set_index('MaChuyenNganh')['TenChuyenNganh'].to_dict()
+        df['TenChuyenNganh'] = df['MaChuyenNganh'].map(cn_mapping)
+        df['TenChuyenNganh'] = df['TenChuyenNganh'].fillna('Chuyên ngành ' + df['MaChuyenNganh'])
+    else:
+        df['TenChuyenNganh'] = 'Chuyên ngành ' + df['MaChuyenNganh']
+    
     df.drop(columns=['MaCN_TH1'], inplace=True)
     
-    # Tính điểm
+    print("  -> Calculating scores...")
     for col in COLUMN_ORDER:
         df[f'{col}_Score'] = df[col].apply(lambda x: calculate_weighted_score(x, col))
     
-    # Tạo Dimensions
+    print("  -> Creating dimensions...")
     dims = {
         'hoc_ky': pd.DataFrame([{'MaHocKy': ma_hoc_ky, 'NamHoc': nam_hoc, 'HocKy': hoc_ky}]),
         'khoa': df[['MaKhoa', 'TenKhoa']].drop_duplicates(subset=['MaKhoa']),
@@ -665,7 +733,7 @@ def main():
     dims['lop_hp']['MaHocKy'] = ma_hoc_ky
     dims['sinh_vien']['NgaySinh'] = pd.to_datetime(dims['sinh_vien']['NgaySinh'], format='%d/%m/%Y', errors='coerce')
     
-    # Tạo Fact
+    print("  -> Creating fact table...")
     df['SubmissionID'] = df['MaSV'] + '*' + df['LopHP'] + '*' + df['MaGV'] + '_' + FILE_NAME
     df['MaLopHP'] = df['LopHP'] + '_' + df['MaHP']
     fact_rows = []

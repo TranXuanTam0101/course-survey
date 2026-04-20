@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SURVEY ETL - FIXED HOC KY + DUPLICATE KEY
+SURVEY ETL - FIXED FOREIGN KEY CONSTRAINT
 """
 import os
 import sys
@@ -117,12 +117,8 @@ def derive_ma_hoc_ky() -> str:
     """Lấy học kỳ từ ký tự cuối cùng trước .csv"""
     years = SEMESTER.split('-')
     year_part = years[0][2:] + years[1][2:]  # "2024-2025" -> "2425"
-    
-    # Lấy ký tự cuối cùng trước .csv
-    # khaosat_261.csv -> '1', khaosat_262.csv -> '2'
     base_name = SURVEY_FILE.replace('.csv', '')
     hoc_ky = base_name[-1] if base_name[-1] in ['1', '2'] else '2'
-    
     return f"HK{hoc_ky}_{year_part}"
 
 def calculate_score(text, weights_dict):
@@ -288,9 +284,9 @@ def transform_data_fast(df: pd.DataFrame, hp_master: pd.DataFrame):
     print(f"  -> Fact: {len(fact_df):,} dòng")
     return dims, fact_df, ma_hoc_ky
 
-# ================= LOAD (ĐÃ FIX) =================
+# ================= LOAD (ĐÃ FIX FK) =================
 def get_existing_ids(cursor, table: str, id_col: str) -> set:
-    """Lấy danh sách ID đã tồn tại - tránh duplicate key"""
+    """Lấy danh sách ID đã tồn tại"""
     cursor.execute(f"SELECT {id_col} FROM {table}")
     return {row[0] for row in cursor.fetchall()}
 
@@ -313,44 +309,55 @@ def load_fast(dims: Dict, fact_df: pd.DataFrame, ma_hoc_ky: str):
         else:
             print("  ⏭️ DIM_HOC_KY: already exists")
         
-        # DIM_KHOA - FIX DUPLICATE
+        # DIM_KHOA
+        existing_khoa = set()
         if not dims['khoa'].empty:
-            existing = get_existing_ids(cursor, 'DIM_KHOA', 'MaKhoa')
-            new_data = dims['khoa'][~dims['khoa']['MaKhoa'].isin(existing)]
-            if not new_data.empty:
-                data = [(to_str(r['MaKhoa']), to_str(r['TenKhoa'])) for _, r in new_data.iterrows()]
+            existing_khoa = get_existing_ids(cursor, 'DIM_KHOA', 'MaKhoa')
+            new_khoa = dims['khoa'][~dims['khoa']['MaKhoa'].isin(existing_khoa)]
+            if not new_khoa.empty:
+                data = [(to_str(r['MaKhoa']), to_str(r['TenKhoa'])) for _, r in new_khoa.iterrows()]
                 cursor.executemany("INSERT INTO DIM_KHOA (MaKhoa, TenKhoa) VALUES (?, ?)", data)
                 conn.commit()
-            print(f"  ✅ DIM_KHOA: {len(new_data)} new / {len(dims['khoa'])} total")
+                # Cập nhật lại existing_khoa sau khi insert
+                existing_khoa.update(new_khoa['MaKhoa'].tolist())
+            print(f"  ✅ DIM_KHOA: {len(new_khoa)} new / {len(dims['khoa'])} total")
         
         # DIM_GIANG_VIEN
         if not dims['giang_vien'].empty:
-            existing = get_existing_ids(cursor, 'DIM_GIANG_VIEN', 'MaGV')
-            new_data = dims['giang_vien'][~dims['giang_vien']['MaGV'].isin(existing)]
-            if not new_data.empty:
-                data = [(to_str(r['MaGV']), to_str(r['HoDemGV']), to_str(r['TenGV'])) for _, r in new_data.iterrows()]
+            existing_gv = get_existing_ids(cursor, 'DIM_GIANG_VIEN', 'MaGV')
+            new_gv = dims['giang_vien'][~dims['giang_vien']['MaGV'].isin(existing_gv)]
+            if not new_gv.empty:
+                data = [(to_str(r['MaGV']), to_str(r['HoDemGV']), to_str(r['TenGV'])) for _, r in new_gv.iterrows()]
                 cursor.executemany("INSERT INTO DIM_GIANG_VIEN (MaGV, HoDemGV, TenGV) VALUES (?, ?, ?)", data)
                 conn.commit()
-            print(f"  ✅ DIM_GIANG_VIEN: {len(new_data)} new / {len(dims['giang_vien'])} total")
+            print(f"  ✅ DIM_GIANG_VIEN: {len(new_gv)} new / {len(dims['giang_vien'])} total")
         
-        # DIM_HOC_PHAN
+        # DIM_HOC_PHAN - FIX: CHỈ INSERT MaKhoa TỒN TẠI TRONG DIM_KHOA
         if not dims['hoc_phan'].empty:
-            existing = get_existing_ids(cursor, 'DIM_HOC_PHAN', 'MaHP')
-            new_data = dims['hoc_phan'][~dims['hoc_phan']['MaHP'].isin(existing)]
-            if not new_data.empty:
-                data = [(to_str(r['MaHP']), to_str(r['TenHP']), to_str(r['MaKhoa'])) for _, r in new_data.iterrows()]
+            existing_hp = get_existing_ids(cursor, 'DIM_HOC_PHAN', 'MaHP')
+            
+            # Lọc chỉ giữ các dòng có MaKhoa tồn tại trong DIM_KHOA
+            valid_hp = dims['hoc_phan'][dims['hoc_phan']['MaKhoa'].isin(existing_khoa)]
+            invalid_hp = dims['hoc_phan'][~dims['hoc_phan']['MaKhoa'].isin(existing_khoa)]
+            
+            if len(invalid_hp) > 0:
+                print(f"  ⚠️ Bỏ {len(invalid_hp)} học phần có MaKhoa không tồn tại: {invalid_hp['MaKhoa'].unique()[:5].tolist()}")
+            
+            new_hp = valid_hp[~valid_hp['MaHP'].isin(existing_hp)]
+            if not new_hp.empty:
+                data = [(to_str(r['MaHP']), to_str(r['TenHP']), to_str(r['MaKhoa'])) for _, r in new_hp.iterrows()]
                 cursor.executemany("INSERT INTO DIM_HOC_PHAN (MaHP, TenHP, MaKhoa) VALUES (?, ?, ?)", data)
                 conn.commit()
-            print(f"  ✅ DIM_HOC_PHAN: {len(new_data)} new / {len(dims['hoc_phan'])} total")
+            print(f"  ✅ DIM_HOC_PHAN: {len(new_hp)} new / {len(valid_hp)} valid / {len(dims['hoc_phan'])} total")
         
         # DIM_SINH_VIEN
         if not dims['sinh_vien'].empty:
-            existing = get_existing_ids(cursor, 'DIM_SINH_VIEN', 'MaSV')
-            new_data = dims['sinh_vien'][~dims['sinh_vien']['MaSV'].isin(existing)].copy()
-            if not new_data.empty:
-                new_data['NgaySinh'] = pd.to_datetime(new_data['NgaySinh'], format='%d/%m/%Y', errors='coerce').dt.strftime('%Y-%m-%d')
+            existing_sv = get_existing_ids(cursor, 'DIM_SINH_VIEN', 'MaSV')
+            new_sv = dims['sinh_vien'][~dims['sinh_vien']['MaSV'].isin(existing_sv)].copy()
+            if not new_sv.empty:
+                new_sv['NgaySinh'] = pd.to_datetime(new_sv['NgaySinh'], format='%d/%m/%Y', errors='coerce').dt.strftime('%Y-%m-%d')
                 data = []
-                for _, r in new_data.iterrows():
+                for _, r in new_sv.iterrows():
                     data.append((
                         to_str(r['MaSV']), to_str(r['HoDem']), to_str(r['Ten']),
                         to_str(r['NgaySinh']) if pd.notna(r['NgaySinh']) else None,
@@ -358,22 +365,22 @@ def load_fast(dims: Dict, fact_df: pd.DataFrame, ma_hoc_ky: str):
                     ))
                 cursor.executemany("INSERT INTO DIM_SINH_VIEN (MaSV, HoDem, Ten, NgaySinh, MaLop, IsCTS) VALUES (?, ?, ?, ?, ?, ?)", data)
                 conn.commit()
-            print(f"  ✅ DIM_SINH_VIEN: {len(new_data)} new / {len(dims['sinh_vien'])} total")
+            print(f"  ✅ DIM_SINH_VIEN: {len(new_sv)} new / {len(dims['sinh_vien'])} total")
         
         # DIM_LOP_HOC_PHAN
         if not dims['lop_hp'].empty:
-            existing = get_existing_ids(cursor, 'DIM_LOP_HOC_PHAN', 'MaLopHP')
-            new_data = dims['lop_hp'][~dims['lop_hp']['MaLopHP'].isin(existing)]
-            if not new_data.empty:
+            existing_lhp = get_existing_ids(cursor, 'DIM_LOP_HOC_PHAN', 'MaLopHP')
+            new_lhp = dims['lop_hp'][~dims['lop_hp']['MaLopHP'].isin(existing_lhp)]
+            if not new_lhp.empty:
                 data = []
-                for _, r in new_data.iterrows():
+                for _, r in new_lhp.iterrows():
                     data.append((
                         to_str(r['MaLopHP']), to_str(r['LopHP']), to_str(r['MaHP']),
                         to_str(r['MaGV']), to_str(r['MaHocKy'])
                     ))
                 cursor.executemany("INSERT INTO DIM_LOP_HOC_PHAN (MaLopHP, LopHP, MaHP, MaGV, MaHocKy) VALUES (?, ?, ?, ?, ?)", data)
                 conn.commit()
-            print(f"  ✅ DIM_LOP_HOC_PHAN: {len(new_data)} new / {len(dims['lop_hp'])} total")
+            print(f"  ✅ DIM_LOP_HOC_PHAN: {len(new_lhp)} new / {len(dims['lop_hp'])} total")
         
         # FACT
         print(f"  -> Insert FACT: {len(fact_df):,} dòng...")
@@ -422,7 +429,7 @@ def load_fast(dims: Dict, fact_df: pd.DataFrame, ma_hoc_ky: str):
 def main():
     total_start = time.time()
     print("=" * 50)
-    print("🚀 ULTRA FAST ETL (FIXED)")
+    print("🚀 ULTRA FAST ETL (FIXED FK)")
     print("=" * 50)
     
     blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)

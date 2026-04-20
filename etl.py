@@ -690,9 +690,54 @@ def load_dimension(cursor, table: str, df: pd.DataFrame, columns: list, id_col: 
 def load_fact(cursor, fact_df: pd.DataFrame) -> int:
     if fact_df.empty:
         return 0
+    
     print(f"  -> Insert FACT: {len(fact_df):,} dòng...")
     start = time.time()
+    
+    # Debug: kiểm tra FK
+    cursor.execute("SELECT COUNT(*) FROM DIM_SINH_VIEN")
+    sv_count = cursor.fetchone()[0]
+    print(f"  -> DIM_SINH_VIEN: {sv_count} records")
+    
+    cursor.execute("SELECT COUNT(*) FROM DIM_LOP_HOC_PHAN")
+    lhp_count = cursor.fetchone()[0]
+    print(f"  -> DIM_LOP_HOC_PHAN: {lhp_count} records")
+    
+    # Lấy danh sách FK hợp lệ
+    valid_sv = set()
+    cursor.execute("SELECT MaSV FROM DIM_SINH_VIEN")
+    for row in cursor.fetchall():
+        valid_sv.add(row[0])
+    
+    valid_lhp = set()
+    cursor.execute("SELECT MaLopHP FROM DIM_LOP_HOC_PHAN")
+    for row in cursor.fetchall():
+        valid_lhp.add(row[0])
+    
+    # Lọc dòng hợp lệ
+    fact_df_valid = fact_df[
+        fact_df['MaSV'].isin(valid_sv) & 
+        fact_df['MaLopHP'].isin(valid_lhp)
+    ]
+    
+    skipped = len(fact_df) - len(fact_df_valid)
+    if skipped > 0:
+        print(f"  ⚠️ Bỏ {skipped:,} dòng do FK không hợp lệ")
+        # In mẫu các dòng bị lỗi
+        fact_df_invalid = fact_df[
+            ~(fact_df['MaSV'].isin(valid_sv) & fact_df['MaLopHP'].isin(valid_lhp))
+        ]
+        if len(fact_df_invalid) > 0:
+            sample = fact_df_invalid[['MaSV', 'MaLopHP']].head(5)
+            print(f"  -> Mẫu dòng lỗi: {sample.to_dict()}")
+    
+    if fact_df_valid.empty:
+        print("  ❌ KHÔNG CÓ DÒNG NÀO HỢP LỆ!")
+        return 0
+    
+    fact_df = fact_df_valid
     fact_df = fact_df.fillna('')
+    
     data = list(zip(
         fact_df['SubmissionID'].astype(str).str[:100],
         fact_df['MaCauHoi'].astype(int),
@@ -701,8 +746,10 @@ def load_fact(cursor, fact_df: pd.DataFrame) -> int:
         fact_df['TraLoiSo'].fillna(0).astype(float),
         fact_df['TraLoiText'].astype(str)
     ))
+    
     cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT NOCHECK CONSTRAINT ALL")
     cursor.connection.commit()
+    
     total = 0
     for i in range(0, len(data), BATCH_SIZE):
         batch = data[i:i+BATCH_SIZE]
@@ -715,8 +762,10 @@ def load_fact(cursor, fact_df: pd.DataFrame) -> int:
         total += len(batch)
         if (i // BATCH_SIZE + 1) % 10 == 0:
             print(f"    -> Đã insert {total:,}/{len(data):,} dòng")
+    
     cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT CHECK CONSTRAINT ALL")
     cursor.connection.commit()
+    
     print(f"  ✅ FACT done: {total:,} dòng ({time.time()-start:.2f}s)")
     return total
 

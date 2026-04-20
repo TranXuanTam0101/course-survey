@@ -43,7 +43,7 @@ jobs:
           {
             echo "[2/2] Installing Python deps..."
             python -m pip install --upgrade pip -q
-            pip install -q pandas numpy pyodbc azure-storage-blob
+            pip install -q pandas numpy pyodbc azure-storage-blob pol
             echo "✅ Python deps done"
           } &
           

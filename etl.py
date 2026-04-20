@@ -130,7 +130,12 @@ def get_phrase_bonus(segment_parts):
             bonus += weight
     return bonus
 
+# ========== CÁC HÀM XỬ LÝ CÂU TRẢ LỜI ==========
+
 def split_by_condition_1(text):
+    """
+    Điều kiện 1: Tách bởi dấu phẩy KHÔNG khoảng trắng trước và KHÔNG khoảng trắng sau
+    """
     parts, current = [], []
     i, n = 0, len(text)
     while i < n:
@@ -150,14 +155,21 @@ def split_by_condition_1(text):
         parts.append(''.join(current).strip())
     return [p for p in parts if p]
 
+
 def split_by_condition_2(text):
+    """
+    Điều kiện 2: Tách bởi sau dấu phẩy KHÔNG khoảng trắng
+    (Không quan tâm có khoảng trắng trước hay không)
+    """
     parts, current = [], []
     i, n = 0, len(text)
     while i < n:
         if text[i] == ',':
             if i + 1 < n and text[i+1] == ' ':
+                # CÓ khoảng trắng sau -> KHÔNG tách, giữ nguyên dấu phẩy
                 current.append(',')
             else:
+                # KHÔNG khoảng trắng sau -> TÁCH
                 if current:
                     parts.append(''.join(current).strip())
                     current = []
@@ -168,13 +180,18 @@ def split_by_condition_2(text):
         parts.append(''.join(current).strip())
     return [p for p in parts if p]
 
+
 def split_by_condition_3(text):
+    """
+    Điều kiện 3: Tách bởi sau dấu phẩy KHÔNG khoảng trắng VÀ ngay phía sau có chữ hoa
+    """
     parts, current = [], []
     i, n = 0, len(text)
     while i < n:
         if text[i] == ',':
             if i + 1 < n:
                 next_char = text[i + 1]
+                # KHÔNG khoảng trắng sau VÀ ký tự sau là chữ hoa
                 if next_char != ' ' and next_char.isupper():
                     if current:
                         parts.append(''.join(current).strip())
@@ -190,7 +207,9 @@ def split_by_condition_3(text):
         parts.append(''.join(current).strip())
     return [p for p in parts if p]
 
+
 def try_create_4th_column(parts):
+    """Dùng cho cả 3 level: nếu có 3 phần, thử tách phần cuối để tạo phần thứ 4"""
     if len(parts) == 3:
         last_col = parts[-1]
         if ',' in last_col:
@@ -202,7 +221,9 @@ def try_create_4th_column(parts):
                 return True, parts
     return False, parts
 
+
 def sequential_scoring_classification(parts):
+    """DP: Xử lý cho các dữ liệu còn lại sau 3 level"""
     if not parts:
         return []
     n = len(parts)
@@ -247,7 +268,9 @@ def sequential_scoring_classification(parts):
         i, j = prev_i, prev_j
     return assignments
 
+
 def fallback_even_split(parts):
+    """Phương án dự phòng: chia đều các phần"""
     n = len(parts)
     num_columns = 4
     sizes = [1] * num_columns
@@ -263,11 +286,21 @@ def fallback_even_split(parts):
         start = end
     return assignments
 
+
 def split_after_null_by_scoring(after_null_list):
+    """
+    Quy trình tách 4 câu theo thứ tự ưu tiên:
+    - Level 1: split_by_condition_1() -> nếu đạt 4 phần (hoặc 3->4) thì DỪNG
+    - Level 2: split_by_condition_2() -> dùng kết quả không đạt từ Level 1
+    - Level 3: split_by_condition_3() -> dùng kết quả không đạt từ Level 2
+    - DP: xử lý dữ liệu còn lại không đạt từ Level 3
+    """
     if not after_null_list:
         return ['', '', '', '']
+    
     original_text = ','.join(after_null_list)
     
+    # ========== LEVEL 1: split_by_condition_1 ==========
     parts_level1 = split_by_condition_1(original_text)
     if len(parts_level1) == 4:
         return parts_level1[:4]
@@ -276,6 +309,7 @@ def split_after_null_by_scoring(after_null_list):
         if success and len(new_parts) == 4:
             return new_parts[:4]
     
+    # ========== LEVEL 2: split_by_condition_2 (dùng kết quả không đạt từ Level 1) ==========
     parts_level2 = split_by_condition_2(original_text)
     if len(parts_level2) == 4:
         return parts_level2[:4]
@@ -284,6 +318,7 @@ def split_after_null_by_scoring(after_null_list):
         if success and len(new_parts) == 4:
             return new_parts[:4]
     
+    # ========== LEVEL 3: split_by_condition_3 (dùng kết quả không đạt từ Level 2) ==========
     parts_level3 = split_by_condition_3(original_text)
     if len(parts_level3) == 4:
         return parts_level3[:4]
@@ -292,6 +327,8 @@ def split_after_null_by_scoring(after_null_list):
         if success and len(new_parts) == 4:
             return new_parts[:4]
     
+    # ========== LEVEL 4: DP (xử lý dữ liệu còn lại không đạt từ Level 3) ==========
+    # Chọn cách tách cho nhiều phần nhất
     best_parts = parts_level3 if len(parts_level3) >= len(parts_level2) else parts_level2
     best_parts = best_parts if len(best_parts) >= len(parts_level1) else parts_level1
     
@@ -307,6 +344,7 @@ def split_after_null_by_scoring(after_null_list):
             result[col] = f"{result[col]}, {text}"
         else:
             result[col] = text
+    
     return [result['Cau13'], result['Cau14'], result['Cau15'], result['Cau16']]
 
 def is_date_format(value):

@@ -20,7 +20,7 @@ env:
 jobs:
   etl:
     runs-on: ubuntu-latest
-    timeout-minutes: 5  # Timeout sau 5 phút
+    timeout-minutes: 5
     
     steps:
     - name: 📥 Checkout code
@@ -58,6 +58,10 @@ jobs:
         SURVEY_FILE: ${{ github.event.inputs.survey_file }}
       run: |
         echo "=== STARTING ETL PIPELINE ==="
+        echo "Semester: $SEMESTER"
+        echo "Survey file: $SURVEY_FILE"
+        echo "Connection string exists: ${{ secrets.CONNECTION_STRING != '' }}"
+        echo "DB password exists: ${{ secrets.DB_PASSWORD != '' }}"
         python main.py "$SEMESTER" "$SURVEY_FILE"
         echo "=== ETL PIPELINE COMPLETED ==="
     

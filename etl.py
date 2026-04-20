@@ -1,7 +1,6 @@
 import os
 import sys
 import re
-import csv
 from datetime import datetime
 import pandas as pd
 from azure.storage.blob import BlobServiceClient
@@ -64,6 +63,10 @@ ALL_WEIGHTS = {
 
 COLUMN_ORDER = ['Cau13', 'Cau14', 'Cau15', 'Cau16']
 
+# Cache cho các hàm tính toán thường xuyên
+_date_pattern = re.compile(r'^\d{2}/\d{2}/\d{4}$')
+_ma_gv_pattern = re.compile(r'^(\d{7}|TG\d{5}|gvDacThu_TKTH)$')
+
 
 def download_from_blob(blob_service):
     try:
@@ -71,7 +74,6 @@ def download_from_blob(blob_service):
         data = blob_client.download_blob().readall()
         with open(SURVEY_FILE, "wb") as f:
             f.write(data)
-        print(f"Đã tải file {SURVEY_FILE} từ blob")
         return True
     except Exception as e:
         print(f"Lỗi tải file từ blob: {e}")
@@ -85,7 +87,6 @@ def upload_to_blob(blob_service, df, output_path):
         if not processed_container.exists():
             processed_container.create_container()
         processed_container.get_blob_client(output_path).upload_blob(output, overwrite=True)
-        print(f"Đã upload file {output_path} lên blob")
         return True
     except Exception as e:
         print(f"Lỗi upload file lên blob: {e}")
@@ -93,26 +94,16 @@ def upload_to_blob(blob_service, df, output_path):
 
 
 def is_date_format(value):
-    if not isinstance(value, str):
-        return False
-    return bool(re.match(r'^\d{2}/\d{2}/\d{4}$', value.strip()))
+    return isinstance(value, str) and bool(_date_pattern.match(value.strip()))
 
 
 def is_ma_gv_format(value):
     if not isinstance(value, str):
         return False
-    value = value.strip()
-    if len(value) == 7 and value.isdigit():
-        return True
-    if len(value) == 7 and value.startswith("TG"):
-        return True
-    if value == "gvDacThu_TKTH":
-        return True
-    return False
+    return bool(_ma_gv_pattern.match(value.strip()))
 
 
 def calculate_weighted_score(text, column_name):
-    """Tính điểm có trọng số cho một text đối với một cột cụ thể"""
     if not text or not isinstance(text, str):
         return 0.0
     
@@ -125,51 +116,44 @@ def calculate_weighted_score(text, column_name):
             count = text_lower.count(keyword)
             total_score += weight * (1 + 0.1 * (count - 1))
     
-    # Điểm thưởng độ dài
-    length_score = min(len(text) * 0.03, 1.0)
-    total_score += length_score
-    
+    total_score += min(len(text) * 0.03, 1.0)
     return total_score
 
 
 def get_phrase_bonus(segment_parts):
-    """Phát hiện cụm từ có nghĩa khi gộp các phần tử"""
     if len(segment_parts) < 2:
         return 0.0
     
     merged_text = ' '.join(segment_parts).lower()
     bonus = 0.0
     
-    # Các cụm từ có nghĩa
-    meaningful_phrases = [
-        ('nội dung', 'đầy đủ', 1.0),
-        ('nội dung', 'chi tiết', 1.0),
-        ('đầu ra', 'chuẩn', 1.0),
-        ('đánh giá', 'cụ thể', 1.5),
-        ('kiểm tra', 'cụ thể', 1.5),
-        ('giảng viên', 'nhiệt tình', 1.0),
-        ('bài giảng', 'dễ hiểu', 1.0),
-        ('đánh giá', 'công bằng', 1.0),
-        ('kiểm tra', 'công bằng', 1.0)
-    ]
-    
-    for kw1, kw2, weight in meaningful_phrases:
-        if kw1 in merged_text and kw2 in merged_text:
-            bonus += weight
+    if 'nội dung' in merged_text:
+        if 'đầy đủ' in merged_text or 'chi tiết' in merged_text:
+            bonus += 1.0
+    if 'đầu ra' in merged_text and 'chuẩn' in merged_text:
+        bonus += 1.0
+    if ('đánh giá' in merged_text or 'kiểm tra' in merged_text) and 'cụ thể' in merged_text:
+        bonus += 1.5
+    if ('đánh giá' in merged_text or 'kiểm tra' in merged_text) and 'công bằng' in merged_text:
+        bonus += 1.0
+    if ('giảng viên' in merged_text or 'bài giảng' in merged_text) and 'nhiệt tình' in merged_text:
+        bonus += 1.0
+    if 'bài giảng' in merged_text and 'dễ hiểu' in merged_text:
+        bonus += 1.0
     
     return bonus
 
 
 def split_by_condition_1(text):
-    """Cấp 1: Tách với điều kiện trước và sau dấu phẩy đều không có khoảng trắng"""
     parts = []
     current = []
     i = 0
+    n = len(text)
     
-    while i < len(text):
+    while i < n:
         if text[i] == ',':
             has_space_before = (i > 0 and text[i-1] == ' ')
-            has_space_after = (i + 1 < len(text) and text[i+1] == ' ')
+            has_space_after = (i + 1 < n and text[i+1] == ' ')
             
             if not has_space_before and not has_space_after:
                 if current:
@@ -188,14 +172,14 @@ def split_by_condition_1(text):
 
 
 def split_by_condition_2(text):
-    """Cấp 2: Tách với điều kiện sau dấu phẩy không có khoảng trắng"""
     parts = []
     current = []
     i = 0
+    n = len(text)
     
-    while i < len(text):
+    while i < n:
         if text[i] == ',':
-            if i + 1 < len(text) and text[i+1] == ' ':
+            if i + 1 < n and text[i+1] == ' ':
                 current.append(',')
             else:
                 if current:
@@ -212,14 +196,14 @@ def split_by_condition_2(text):
 
 
 def split_by_condition_3(text):
-    """Cấp 3: Tách với điều kiện sau dấu phẩy không có khoảng trắng VÀ chữ in hoa đầu tiên"""
     parts = []
     current = []
     i = 0
+    n = len(text)
     
-    while i < len(text):
+    while i < n:
         if text[i] == ',':
-            if i + 1 < len(text):
+            if i + 1 < n:
                 next_char = text[i + 1]
                 if next_char != ' ' and next_char.isupper():
                     if current:
@@ -240,7 +224,6 @@ def split_by_condition_3(text):
 
 
 def try_create_4th_column(parts):
-    """Thử lấy phần tử cuối cùng sau dấu phẩy của cột cuối để tạo cột thứ 4"""
     if len(parts) == 3:
         last_col = parts[-1]
         if ',' in last_col:
@@ -254,28 +237,20 @@ def try_create_4th_column(parts):
 
 
 def sequential_scoring_classification(parts):
-    """
-    Phân loại các phần tử bằng trọng số, đảm bảo:
-    - Sử dụng HẾT tất cả các phần tử
-    - Giữ nguyên thứ tự
-    - Mỗi cột có ít nhất 1 phần tử
-    """
     if not parts:
         return []
     
     n = len(parts)
     num_columns = 4
     
-    # DP table
-    dp = [[-float('inf')] * num_columns for _ in range(n + 1)]
+    dp = [[-1e9] * num_columns for _ in range(n + 1)]
     choice = [[None] * num_columns for _ in range(n + 1)]
     
     dp[0][0] = 0
     
-    # Điền DP
     for i in range(n):
         for j in range(num_columns):
-            if dp[i][j] < 0:
+            if dp[i][j] < -1e8:
                 continue
             
             remaining_columns = num_columns - j
@@ -286,10 +261,8 @@ def sequential_scoring_classification(parts):
                 segment_parts = parts[i:i+k]
                 merged_text = ', '.join(segment_parts)
                 
-                # Tính điểm cho đoạn
                 base_score = calculate_weighted_score(merged_text, COLUMN_ORDER[j])
-                phrase_bonus = get_phrase_bonus(segment_parts)
-                score = base_score + phrase_bonus
+                score = base_score + get_phrase_bonus(segment_parts)
                 
                 if j + 1 < num_columns:
                     new_score = dp[i][j] + score
@@ -303,19 +276,14 @@ def sequential_scoring_classification(parts):
                             dp[i + k][j] = new_score
                             choice[i + k][j] = (i, j, k, merged_text)
     
-    # Tìm kết quả tốt nhất
-    best_score = dp[n][num_columns - 1]
-    
-    if best_score < 0:
+    if dp[n][num_columns - 1] < -1e8:
         return fallback_even_split(parts)
     
-    # Truy vết
     assignments = []
     i, j = n, num_columns - 1
     while i > 0 and j >= 0:
         if choice[i][j] is None:
             break
-        
         prev_i, prev_j, k, text = choice[i][j]
         assignments.insert(0, {
             'column': COLUMN_ORDER[prev_j],
@@ -328,7 +296,6 @@ def sequential_scoring_classification(parts):
 
 
 def fallback_even_split(parts):
-    """Fallback: chia đều các phần tử, đảm bảo dùng hết"""
     n = len(parts)
     num_columns = 4
     
@@ -342,10 +309,9 @@ def fallback_even_split(parts):
     start = 0
     for col_idx, size in enumerate(sizes):
         end = start + size
-        merged_text = ', '.join(parts[start:end])
         assignments.append({
             'column': COLUMN_ORDER[col_idx],
-            'text': merged_text,
+            'text': ', '.join(parts[start:end]),
             'num_parts': size
         })
         start = end
@@ -354,17 +320,11 @@ def fallback_even_split(parts):
 
 
 def split_after_null_by_scoring(after_null_list, row_number=None):
-    """
-    Xử lý các cột sau cột NULL:
-    1. Dùng 3 cấp rule-based để tách
-    2. Dùng trọng số để phân loại có thứ tự
-    """
     if not after_null_list:
         return ['', '', '', ''], None
     
     original_text = ','.join(after_null_list)
     
-    # CẤP 1
     parts_level1 = split_by_condition_1(original_text)
     if len(parts_level1) == 4:
         return parts_level1[:4], None
@@ -373,7 +333,6 @@ def split_after_null_by_scoring(after_null_list, row_number=None):
         if success and len(new_parts) == 4:
             return new_parts[:4], None
     
-    # CẤP 2
     parts_level2 = split_by_condition_2(original_text)
     if len(parts_level2) == 4:
         return parts_level2[:4], None
@@ -382,7 +341,6 @@ def split_after_null_by_scoring(after_null_list, row_number=None):
         if success and len(new_parts) == 4:
             return new_parts[:4], None
     
-    # CẤP 3
     parts_level3 = split_by_condition_3(original_text)
     if len(parts_level3) == 4:
         return parts_level3[:4], None
@@ -391,11 +349,9 @@ def split_after_null_by_scoring(after_null_list, row_number=None):
         if success and len(new_parts) == 4:
             return new_parts[:4], None
     
-    # Chọn bộ parts có số lượng phần tử lớn nhất
     best_parts = parts_level3 if len(parts_level3) >= len(parts_level2) else parts_level2
     best_parts = best_parts if len(best_parts) >= len(parts_level1) else parts_level1
     
-    # Đảm bảo có ít nhất 4 phần tử
     if len(best_parts) < 4:
         error_info = {
             'row_number': row_number,
@@ -404,10 +360,8 @@ def split_after_null_by_scoring(after_null_list, row_number=None):
         }
         return [original_text, '', '', ''], error_info
     
-    # Dùng scoring để phân loại
     assignments = sequential_scoring_classification(best_parts)
     
-    # Xây dựng kết quả
     result = {col: '' for col in COLUMN_ORDER}
     for assign in assignments:
         col = assign['column']
@@ -421,13 +375,10 @@ def split_after_null_by_scoring(after_null_list, row_number=None):
 
 
 def process_row(row, row_number=None):
-    """Xử lý một dòng CSV theo logic"""
     if not row or len(row) < 2:
         return None, None, []
     
     try:
-        # ========== PHẦN 1: XỬ LÝ CÁC CỘT TRƯỚC CỘT NULL ==========
-        
         lop = row[0].strip() if len(row) > 0 else ''
         ma_sv = row[1].strip() if len(row) > 1 else ''
         
@@ -498,7 +449,6 @@ def process_row(row, row_number=None):
                 null_index = gia_tri_index + 1
                 null_value = potential_null if potential_null else 'NULL'
         
-        # ========== PHẦN 2: XỬ LÝ CÁC CỘT SAU CỘT NULL ==========
         cau13 = cau14 = cau15 = cau16 = ''
         split_errors = []
         
@@ -515,7 +465,7 @@ def process_row(row, row_number=None):
             if error:
                 split_errors.append(error)
         
-        result = {
+        return {
             'Lop': lop,
             'MaSV': ma_sv,
             'HoDem': ho_dem,
@@ -534,31 +484,22 @@ def process_row(row, row_number=None):
             'Cau14': cau14,
             'Cau15': cau15,
             'Cau16': cau16
-        }
-        
-        return result, None, split_errors
+        }, None, split_errors
         
     except Exception as e:
-        print(f"Lỗi xử lý dòng {row_number}: {e}")
         return None, str(e), []
 
 
 def read_csv_manual(filename):
     rows = []
-    error_rows = []
     try:
         with open(filename, 'r', encoding='utf-8-sig') as f:
-            for line_num, line in enumerate(f, 1):
+            for line in f:
                 line = line.strip()
                 if not line:
                     continue
-                row = line.split(',')
-                row = [col.strip() for col in row]
-                rows.append(row)
-                if line_num % 1000 == 0:
-                    print(f"Đã đọc {line_num} dòng...")
-        print(f"Đã đọc xong file: {len(rows)} dòng")
-        return rows, error_rows
+                rows.append([col.strip() for col in line.split(',')])
+        return rows, []
     except Exception as e:
         print(f"Lỗi đọc file: {e}")
         return [], []
@@ -567,21 +508,17 @@ def read_csv_manual(filename):
 def main():
     try:
         blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
-        print("Kết nối blob storage thành công")
     except Exception as e:
         print(f"Lỗi kết nối blob: {e}")
         sys.exit(1)
     
     download_from_blob(blob_service)
     
-    print("Đang đọc file CSV...")
-    rows, read_errors = read_csv_manual(SURVEY_FILE)
+    rows, _ = read_csv_manual(SURVEY_FILE)
     
     if not rows:
         print("Không có dữ liệu để xử lý")
         sys.exit(1)
-    
-    print(f"Bắt đầu xử lý {len(rows)} dòng...")
     
     processed_rows = []
     process_errors = []
@@ -592,53 +529,24 @@ def main():
         
         if result:
             processed_rows.append(result)
-        
         if error:
-            process_errors.append({
-                'line_number': idx,
-                'error': error,
-                'row_length': len(row)
-            })
-        
+            process_errors.append({'line_number': idx, 'error': error, 'row_length': len(row)})
         if split_errs:
             split_errors.extend(split_errs)
-        
-        if idx % 1000 == 0:
-            print(f"Đã xử lý {idx}/{len(rows)} dòng...")
     
     result_df = pd.DataFrame(processed_rows)
     
-    print(f"\n{'='*60}")
-    print("BÁO CÁO XỬ LÝ")
-    print(f"{'='*60}")
-    print(f"Tổng số dòng đọc được: {len(rows)}")
-    print(f"Số dòng xử lý thành công: {len(processed_rows)}")
-    print(f"Số dòng xử lý lỗi: {len(process_errors)}")
-    
     if split_errors:
-        print(f"\n{'='*60}")
-        print(f"CÁC DÒNG LỖI PHÂN LOẠI ({len(split_errors)} dòng)")
-        print(f"{'='*60}")
-        for err in split_errors[:10]:
-            print(f"\nDòng {err.get('row_number', '?')}:")
-            print(f"  Chuỗi sau NULL: {err.get('original_after_null', '')[:200]}")
-        
         split_error_df = pd.DataFrame(split_errors)
         split_error_filename = f"{FILE_NAME}_split_errors_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         split_error_df.to_csv(split_error_filename, index=False, encoding='utf-8-sig')
-        print(f"\nĐã lưu {len(split_errors)} dòng lỗi vào file: {split_error_filename}")
     
     if len(processed_rows) > 0:
         output_filename = f"{FILE_NAME}_processed_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         output_path = f"{SEMESTER}/{output_filename}"
         
         if upload_to_blob(blob_service, result_df, output_path):
-            print(f"\n{'='*60}")
-            print("THÀNH CÔNG!")
-            print(f"{'='*60}")
-            print(f"File kết quả: {output_path}")
-            print(f"Số dòng đã xử lý: {len(processed_rows)}")
-            print(f"{'='*60}")
+            print(f"Thành công! File kết quả: {output_path}")
         else:
             print("Upload file thất bại!")
             sys.exit(1)

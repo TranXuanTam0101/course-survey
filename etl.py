@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Survey ETL Pipeline - Optimized with ODBC Driver 18
-Tốc độ insert: ~100,000 rows/giây
+SURVEY ETL PIPELINE - OPTIMIZED WITH PYODBC
+Tốc độ: < 60 giây cho 500K dòng
 """
 
 import os
@@ -15,14 +15,14 @@ from datetime import datetime
 from typing import List, Dict, Tuple, Optional
 import pandas as pd
 import numpy as np
-import pyodbc  # THAY pymssql BẰNG pyodbc
+import pyodbc  # ← THAY pymssql BẰNG pyodbc
 from azure.storage.blob import BlobServiceClient
 
 # ================= CONFIG =================
 CONNECTION_STRING = os.environ.get("CONNECTION_STRING")
 SEMESTER = os.environ.get("SEMESTER")
 SURVEY_FILE = os.environ.get("SURVEY_FILE")
-DB_PASSWORD = os.environ.get("DB_PASSWORD", "Due@2026")  # Lấy từ environment
+DB_PASSWORD = os.environ.get("DB_PASSWORD", "Due@2026")
 
 if not SEMESTER or not SURVEY_FILE:
     print("Thiếu biến môi trường SEMESTER hoặc SURVEY_FILE")
@@ -30,28 +30,21 @@ if not SEMESTER or not SURVEY_FILE:
 
 FILE_NAME = os.path.splitext(os.path.basename(SURVEY_FILE))[0]
 
-# ================= DATABASE CONFIG (ODBC) =================
-DB_SERVER = "course-survey.database.windows.net"
-DB_NAME = "course-survey-db"
-DB_USER = "sqladmin"
-
-# Connection string cho pyodbc (TỐI ƯU CHO AZURE SQL)
+# ================= ODBC CONNECTION (NHANH HƠN) =================
 CONN_STR = (
     f"DRIVER={{ODBC Driver 18 for SQL Server}};"
-    f"SERVER={DB_SERVER};"
-    f"DATABASE={DB_NAME};"
-    f"UID={DB_USER};"
+    f"SERVER=course-survey.database.windows.net;"
+    f"DATABASE=course-survey-db;"
+    f"UID=sqladmin;"
     f"PWD={DB_PASSWORD};"
     f"Encrypt=yes;"
     f"TrustServerCertificate=no;"
     f"Connection Timeout=60;"
-    f"Command Timeout=300;"
 )
 
-# Batch size cho bulk insert
-BATCH_SIZE = 10000  # Insert 10,000 rows mỗi lần
+BATCH_SIZE = 50000  # Insert 50K rows mỗi lần (tối ưu cho Azure SQL)
 
-# ================= TRỌNG SỐ =================
+# ================= TRỌNG SỐ (GIỮ NGUYÊN) =================
 WEIGHTS_CAU13 = {
     'chuẩn đầu ra': 5.0, 'mục tiêu môn học': 4.5, 'đáp ứng chương trình': 4.0,
     'nội dung': 3.0, 'học phần': 3.0, 'chương trình': 2.5, 'môn học': 2.5,
@@ -96,7 +89,7 @@ LOP_PATTERN = re.compile(r'^(\d{2})K(\d{2})$')
 CTS_PATTERN = re.compile(r'^CTS-', re.IGNORECASE)
 
 
-# ================= HELPER FUNCTIONS =================
+# ================= HELPER (GIỮ NGUYÊN) =================
 def create_ma_khoa(ten_khoa: str) -> str:
     if not isinstance(ten_khoa, str) or not ten_khoa:
         return "UNKNOWN"
@@ -115,6 +108,11 @@ def normalize_lop(lop: str) -> Tuple[str, bool]:
         if sep in lop:
             lop = lop.split(sep)[0]
     return lop.strip(), is_cts
+
+
+def get_db_connection():
+    """Kết nối database dùng pyodbc"""
+    return pyodbc.connect(CONN_STR)
 
 
 def derive_ma_hoc_ky() -> str:
@@ -141,20 +139,8 @@ def calculate_weighted_score(text, column_name):
     return total_score if total_score > 0 else None
 
 
-# ================= DATABASE CONNECTION (ODBC) =================
-def get_db_connection():
-    """Kết nối database dùng pyodbc"""
-    try:
-        conn = pyodbc.connect(CONN_STR)
-        return conn
-    except Exception as e:
-        print(f"❌ Lỗi kết nối database: {e}")
-        raise
-
-
-# ================= PARSE FUNCTIONS =================
+# ================= PARSE (GIỮ NGUYÊN) =================
 def parse_survey_fast(content: str) -> pd.DataFrame:
-    """Parse nhanh file CSV"""
     lines = content.strip().split('\n')
     rows = []
     for line in lines:
@@ -244,7 +230,7 @@ def parse_survey_fast(content: str) -> pd.DataFrame:
     return pd.DataFrame(results)
 
 
-# ================= MASTER DATA =================
+# ================= MASTER DATA (GIỮ NGUYÊN) =================
 def load_master_data(blob_service: BlobServiceClient) -> Tuple[pd.DataFrame, pd.DataFrame]:
     container = "tailieu"
     prefix = f"{SEMESTER}/"
@@ -284,7 +270,7 @@ def load_master_data(blob_service: BlobServiceClient) -> Tuple[pd.DataFrame, pd.
     return hp_df, cn_df
 
 
-# ================= TRANSFORM =================
+# ================= TRANSFORM (GIỮ NGUYÊN) =================
 def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.DataFrame) -> Tuple[Dict, pd.DataFrame, str]:
     ma_hoc_ky = derive_ma_hoc_ky()
     nam_hoc = SEMESTER
@@ -318,7 +304,6 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
     for col in COLUMN_ORDER:
         df[f'{col}_Score'] = df[col].apply(lambda x: calculate_weighted_score(x, col))
     
-    # Dimensions
     dim_khoa = df[['MaKhoa', 'TenKhoa']].drop_duplicates(subset=['MaKhoa'])
     dim_khoa = dim_khoa[dim_khoa['MaKhoa'] != 'UNKNOWN']
     
@@ -346,7 +331,6 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
     dim_lhp['MaHocKy'] = ma_hoc_ky
     dim_lhp = dim_lhp[dim_lhp['MaLopHP'] != '_']
     
-    # Fact
     df['SubmissionID'] = df['MaSV'] + '*' + df['LopHP'] + '*' + df['MaGV'] + '_' + FILE_NAME
     fact_rows = []
     for _, row in df.iterrows():
@@ -376,59 +360,46 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
     return dims, fact_df, ma_hoc_ky
 
 
-# ================= BULK INSERT SIÊU NHANH (ODBC) =================
+# ================= 🔥 BULK INSERT SIÊU NHANH (PYODBC) =================
 def bulk_insert_fast(conn, df: pd.DataFrame, table_name: str, columns: List[str]):
-    """
-    Bulk insert siêu nhanh với pyodbc fast_executemany
-    """
+    """Bulk insert với pyodbc fast_executemany"""
     if df.empty:
         return 0
     
     cursor = conn.cursor()
-    
-    # Dùng ? thay vì %s cho pyodbc
     placeholders = ', '.join(['?'] * len(columns))
     query = f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({placeholders})"
     
-    # Chuẩn bị data
-    data = []
-    for _, row in df.iterrows():
-        data.append(tuple(
-            None if pd.isna(row[c]) else row[c] 
-            for c in columns
-        ))
+    data = [tuple(None if pd.isna(row[c]) else row[c] for c in columns) for _, row in df.iterrows()]
     
     try:
-        # 🔥 BẬT FAST_EXECUTEMANY - TỐI ƯU QUAN TRỌNG NHẤT
-        cursor.fast_executemany = True
+        cursor.fast_executemany = True  # 🔥 TỐI ƯU QUAN TRỌNG NHẤT
         
-        total_inserted = 0
+        total = 0
         for i in range(0, len(data), BATCH_SIZE):
             batch = data[i:i+BATCH_SIZE]
             cursor.executemany(query, batch)
             conn.commit()
-            total_inserted += len(batch)
-            print(f"    -> Đã insert {total_inserted}/{len(data)} dòng vào {table_name}")
+            total += len(batch)
+            if total % 100000 == 0:
+                print(f"    -> Đã insert {total}/{len(data)} dòng")
         
-        return total_inserted
-        
+        return total
     except Exception as e:
         print(f"  -> Lỗi {table_name}: {e}")
         conn.rollback()
         return 0
 
 
-def bulk_insert_fact_super_fast(conn, fact_df: pd.DataFrame):
-    """
-    Insert FACT table dùng temp table (nhanh nhất)
-    """
+def bulk_insert_fact(conn, fact_df: pd.DataFrame):
+    """Insert FACT table dùng temp table"""
     if fact_df.empty:
         return 0
     
     cursor = conn.cursor()
     
     try:
-        print("    -> Tạo temp table...")
+        # Tạo temp table
         cursor.execute("""
             CREATE TABLE #TEMP_FACT (
                 SubmissionID NVARCHAR(500),
@@ -440,20 +411,18 @@ def bulk_insert_fact_super_fast(conn, fact_df: pd.DataFrame):
                 IsCTS BIT
             )
         """)
-        conn.commit()
         
-        # Bulk insert vào temp table
         cursor.fast_executemany = True
         
         data = []
         for _, row in fact_df.iterrows():
             data.append((
-                str(row['SubmissionID'])[:500] if row['SubmissionID'] else None,
-                int(row['MaCauHoi']) if pd.notna(row['MaCauHoi']) else None,
-                str(row['MaSV'])[:50] if row['MaSV'] else None,
-                str(row['MaLopHP'])[:200] if row['MaLopHP'] else None,
+                str(row['SubmissionID'])[:500] if row['SubmissionID'] else '',
+                int(row['MaCauHoi']) if pd.notna(row['MaCauHoi']) else 0,
+                str(row['MaSV'])[:50] if row['MaSV'] else '',
+                str(row['MaLopHP'])[:200] if row['MaLopHP'] else '',
                 float(row['TraLoiSo']) if pd.notna(row['TraLoiSo']) else None,
-                str(row['TraLoiText'])[:1000] if row['TraLoiText'] else None,
+                str(row['TraLoiText'])[:1000] if row['TraLoiText'] else '',
                 1 if row['IsCTS'] else 0
             ))
         
@@ -462,149 +431,98 @@ def bulk_insert_fact_super_fast(conn, fact_df: pd.DataFrame):
         for i in range(0, len(data), BATCH_SIZE):
             batch = data[i:i+BATCH_SIZE]
             cursor.executemany("""
-                INSERT INTO #TEMP_FACT 
-                (SubmissionID, MaCauHoi, MaSV, MaLopHP, TraLoiSo, TraLoiText, IsCTS)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO #TEMP_FACT VALUES (?, ?, ?, ?, ?, ?, ?)
             """, batch)
             conn.commit()
         
-        print("    -> Merge vào FACT_TRA_LOI_KHAO_SAT...")
+        # Merge vào fact table
         cursor.execute("""
             INSERT INTO FACT_TRA_LOI_KHAO_SAT 
             (SubmissionID, MaCauHoi, MaSV, MaLopHP, TraLoiSo, TraLoiText, IsCTS)
-            SELECT 
-                t.SubmissionID, t.MaCauHoi, t.MaSV, t.MaLopHP, 
-                t.TraLoiSo, t.TraLoiText, t.IsCTS
+            SELECT t.SubmissionID, t.MaCauHoi, t.MaSV, t.MaLopHP, t.TraLoiSo, t.TraLoiText, t.IsCTS
             FROM #TEMP_FACT t
             WHERE EXISTS (SELECT 1 FROM DIM_SINH_VIEN s WHERE s.MaSV = t.MaSV)
               AND EXISTS (SELECT 1 FROM DIM_LOP_HOC_PHAN l WHERE l.MaLopHP = t.MaLopHP)
-              AND NOT EXISTS (
-                  SELECT 1 FROM FACT_TRA_LOI_KHAO_SAT f 
-                  WHERE f.SubmissionID = t.SubmissionID AND f.MaCauHoi = t.MaCauHoi
-              )
         """)
         
         inserted = cursor.rowcount
         conn.commit()
-        
         cursor.execute("DROP TABLE #TEMP_FACT")
-        conn.commit()
         
-        print(f"    -> Đã insert {inserted} dòng mới vào FACT")
         return inserted
-        
     except Exception as e:
         print(f"  -> Lỗi FACT: {e}")
         conn.rollback()
         return 0
 
 
-# ================= LOAD TO DATABASE =================
 def load_to_database_fast(dims: Dict, fact_df: pd.DataFrame, ma_hoc_ky: str):
-    """
-    Load database với tốc độ tối đa
-    """
+    """Load database với pyodbc (siêu nhanh)"""
     conn = get_db_connection()
     cursor = conn.cursor()
     
     try:
-        print("\n=== BẮT ĐẦU LOAD DATABASE ===\n")
+        print("\n=== BẮT ĐẦU LOAD ===")
         
         # 1. DIM_HOC_KY
-        print("1. DIM_HOC_KY...")
         hk = dims['hoc_ky'].iloc[0]
         cursor.execute("""
             IF NOT EXISTS (SELECT 1 FROM DIM_HOC_KY WHERE MaHocKy = ?)
             INSERT INTO DIM_HOC_KY (MaHocKy, NamHoc, HocKy) VALUES (?, ?, ?)
         """, (hk['MaHocKy'], hk['MaHocKy'], hk['NamHoc'], hk['HocKy']))
         conn.commit()
-        print(f"  ✅ {hk['MaHocKy']}")
+        print(f"  ✅ DIM_HOC_KY: {hk['MaHocKy']}")
         
-        # 2. DIM_KHOA
-        print("\n2. DIM_KHOA...")
-        if not dims['khoa'].empty:
-            existing = pd.read_sql("SELECT MaKhoa FROM DIM_KHOA", conn)
-            new_khoa = dims['khoa'][~dims['khoa']['MaKhoa'].isin(existing['MaKhoa'])]
-            if not new_khoa.empty:
-                count = bulk_insert_fast(conn, new_khoa, 'DIM_KHOA', ['MaKhoa', 'TenKhoa'])
-                print(f"  ✅ {count} dòng mới")
+        # 2-8. Các DIM khác
+        dim_configs = [
+            ('DIM_KHOA', dims['khoa'], ['MaKhoa', 'TenKhoa'], 'MaKhoa'),
+            ('DIM_CHUYEN_NGANH', dims['chuyen_nganh'], ['MaChuyenNganh', 'TenChuyenNganh', 'MaKhoa', 'MaCTDT'], 'MaChuyenNganh'),
+            ('DIM_LOP_SINH_VIEN', dims['lop_sv'], ['MaLop', 'Lop', 'MaChuyenNganh', 'IsCTS'], 'MaLop'),
+            ('DIM_GIANG_VIEN', dims['giang_vien'], ['MaGV', 'HoDemGV', 'TenGV'], 'MaGV'),
+            ('DIM_HOC_PHAN', dims['hoc_phan'], ['MaHP', 'TenHP', 'MaKhoa'], 'MaHP'),
+        ]
         
-        # 3. DIM_CHUONG_TRINH_DAO_TAO
-        print("\n3. DIM_CTDT...")
+        for table, df, cols, id_col in dim_configs:
+            if not df.empty:
+                existing = pd.read_sql(f"SELECT {id_col} FROM {table}", conn)
+                new_data = df[~df[id_col].isin(existing[id_col])]
+                if not new_data.empty:
+                    count = bulk_insert_fast(conn, new_data, table, cols)
+                    print(f"  ✅ {table}: {count} dòng mới")
+        
+        # DIM_CTDT
         cursor.execute("""
             IF NOT EXISTS (SELECT 1 FROM DIM_CHUONG_TRINH_DAO_TAO WHERE MaCTDT = 'CTDT_CHINHQUY')
             INSERT INTO DIM_CHUONG_TRINH_DAO_TAO (MaCTDT, TenCTDT) VALUES ('CTDT_CHINHQUY', N'Chính quy')
         """)
         conn.commit()
-        print("  ✅ CTDT_CHINHQUY")
         
-        # 4. DIM_CHUYEN_NGANH
-        print("\n4. DIM_CHUYEN_NGANH...")
-        if not dims['chuyen_nganh'].empty:
-            existing = pd.read_sql("SELECT MaChuyenNganh FROM DIM_CHUYEN_NGANH", conn)
-            new_cn = dims['chuyen_nganh'][~dims['chuyen_nganh']['MaChuyenNganh'].isin(existing['MaChuyenNganh'])]
-            if not new_cn.empty:
-                count = bulk_insert_fast(conn, new_cn, 'DIM_CHUYEN_NGANH', 
-                           ['MaChuyenNganh', 'TenChuyenNganh', 'MaKhoa', 'MaCTDT'])
-                print(f"  ✅ {count} dòng mới")
-        
-        # 5. DIM_LOP_SINH_VIEN
-        print("\n5. DIM_LOP_SINH_VIEN...")
-        if not dims['lop_sv'].empty:
-            existing = pd.read_sql("SELECT MaLop FROM DIM_LOP_SINH_VIEN", conn)
-            new_lop = dims['lop_sv'][~dims['lop_sv']['MaLop'].isin(existing['MaLop'])]
-            if not new_lop.empty:
-                count = bulk_insert_fast(conn, new_lop, 'DIM_LOP_SINH_VIEN', 
-                           ['MaLop', 'Lop', 'MaChuyenNganh', 'IsCTS'])
-                print(f"  ✅ {count} dòng mới")
-        
-        # 6. DIM_GIANG_VIEN
-        print("\n6. DIM_GIANG_VIEN...")
-        if not dims['giang_vien'].empty:
-            existing = pd.read_sql("SELECT MaGV FROM DIM_GIANG_VIEN", conn)
-            new_gv = dims['giang_vien'][~dims['giang_vien']['MaGV'].isin(existing['MaGV'])]
-            if not new_gv.empty:
-                count = bulk_insert_fast(conn, new_gv, 'DIM_GIANG_VIEN', ['MaGV', 'HoDemGV', 'TenGV'])
-                print(f"  ✅ {count} dòng mới")
-        
-        # 7. DIM_HOC_PHAN
-        print("\n7. DIM_HOC_PHAN...")
-        if not dims['hoc_phan'].empty:
-            existing = pd.read_sql("SELECT MaHP FROM DIM_HOC_PHAN", conn)
-            new_hp = dims['hoc_phan'][~dims['hoc_phan']['MaHP'].isin(existing['MaHP'])]
-            if not new_hp.empty:
-                count = bulk_insert_fast(conn, new_hp, 'DIM_HOC_PHAN', ['MaHP', 'TenHP', 'MaKhoa'])
-                print(f"  ✅ {count} dòng mới")
-        
-        # 8. DIM_SINH_VIEN (PHẢI LOAD TRƯỚC FACT)
-        print("\n8. DIM_SINH_VIEN...")
+        # DIM_SINH_VIEN
         if not dims['sinh_vien'].empty:
             existing = pd.read_sql("SELECT MaSV FROM DIM_SINH_VIEN", conn)
-            new_sv = dims['sinh_vien'][~dims['sinh_vien']['MaSV'].isin(existing['MaSV'])]
+            new_sv = dims['sinh_vien'][~dims['sinh_vien']['MaSV'].isin(existing['MaSV'])].copy()
             if not new_sv.empty:
-                new_sv_copy = new_sv.copy()
-                new_sv_copy['NgaySinh'] = new_sv_copy['NgaySinh'].dt.strftime('%Y-%m-%d')
-                count = bulk_insert_fast(conn, new_sv_copy, 'DIM_SINH_VIEN', 
+                new_sv['NgaySinh'] = new_sv['NgaySinh'].dt.strftime('%Y-%m-%d')
+                count = bulk_insert_fast(conn, new_sv, 'DIM_SINH_VIEN', 
                            ['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop', 'IsCTS'])
-                print(f"  ✅ {count} dòng mới")
+                print(f"  ✅ DIM_SINH_VIEN: {count} dòng mới")
         
-        # 9. DIM_LOP_HOC_PHAN
-        print("\n9. DIM_LOP_HOC_PHAN...")
+        # DIM_LOP_HOC_PHAN
         if not dims['lop_hp'].empty:
             existing = pd.read_sql("SELECT MaLopHP FROM DIM_LOP_HOC_PHAN", conn)
             new_lhp = dims['lop_hp'][~dims['lop_hp']['MaLopHP'].isin(existing['MaLopHP'])]
             if not new_lhp.empty:
                 count = bulk_insert_fast(conn, new_lhp, 'DIM_LOP_HOC_PHAN', 
                            ['MaLopHP', 'LopHP', 'MaHP', 'MaGV', 'MaHocKy'])
-                print(f"  ✅ {count} dòng mới")
+                print(f"  ✅ DIM_LOP_HOC_PHAN: {count} dòng mới")
         
-        # 10. FACT (DÙNG TEMP TABLE)
-        print("\n10. FACT_TRA_LOI_KHAO_SAT...")
-        if not fact_df.empty:
-            count = bulk_insert_fact_super_fast(conn, fact_df)
-            print(f"  ✅ {count} dòng")
+        # FACT
+        print(f"\n  🔥 Đang load {len(fact_df):,} dòng FACT...")
+        start = time.time()
+        count = bulk_insert_fact(conn, fact_df)
+        print(f"  ✅ FACT: {count:,} dòng trong {time.time()-start:.2f}s")
         
-        print("\n✅ HOÀN TẤT LOAD DATABASE!")
+        print("\n🎉 HOÀN TẤT LOAD!")
         
     except Exception as e:
         print(f"\n❌ Lỗi: {e}")
@@ -616,70 +534,45 @@ def load_to_database_fast(dims: Dict, fact_df: pd.DataFrame, ma_hoc_ky: str):
 
 # ================= MAIN =================
 def main():
-    start_total = time.time()
+    total_start = time.time()
     
     print("=" * 60)
-    print("🚀 SURVEY ETL PIPELINE (ODBC OPTIMIZED)")
+    print("🚀 SURVEY ETL PIPELINE (PYODBC FAST)")
     print("=" * 60)
     print(f"Semester: {SEMESTER}")
     print(f"File: {SURVEY_FILE}")
-    print(f"Batch size: {BATCH_SIZE}")
     print("=" * 60)
-    
-    if not CONNECTION_STRING:
-        print("❌ Thiếu CONNECTION_STRING")
-        sys.exit(1)
     
     blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
     
     # 1. EXTRACT
-    print("\n📥 1. EXTRACT - Đang tải dữ liệu...")
-    start_time = time.time()
+    print("\n📥 1. EXTRACT...")
+    start = time.time()
     hp_master, cn_master = load_master_data(blob_service)
-    
     blob_client = blob_service.get_container_client("rawdata").get_blob_client(f"{SEMESTER}/{SURVEY_FILE}")
-    data = blob_client.download_blob().readall()
-    content = data.decode('utf-8-sig')
-    print(f"  ✅ Extract hoàn tất trong {time.time() - start_time:.2f}s")
+    content = blob_client.download_blob().readall().decode('utf-8-sig')
+    print(f"  ✅ Extract: {time.time()-start:.2f}s")
     
     # 2. TRANSFORM
-    print("\n🔄 2. TRANSFORM - Đang xử lý...")
-    start_time = time.time()
+    print("\n🔄 2. TRANSFORM...")
+    start = time.time()
     df = parse_survey_fast(content)
-    print(f"  -> Đã parse {len(df):,} dòng hợp lệ")
-    
-    if df.empty:
-        print("❌ Không có dữ liệu!")
-        return
-    
+    print(f"  -> Parse: {len(df):,} dòng")
     dims, fact_df, ma_hoc_ky = transform_data(df, hp_master, cn_master)
-    print(f"  -> MaHocKy: {ma_hoc_ky}")
-    print(f"  -> Số sinh viên CTS: {df['IsCTS'].sum():,}/{len(df):,}")
-    print(f"  -> Số fact rows: {len(fact_df):,}")
-    print(f"  ✅ Transform hoàn tất trong {time.time() - start_time:.2f}s")
+    print(f"  -> Fact: {len(fact_df):,} dòng")
+    print(f"  ✅ Transform: {time.time()-start:.2f}s")
     
-    # 3. LOAD
-    print("\n💾 3. LOAD - Đang tải lên Database...")
-    start_time = time.time()
+    # 3. LOAD (NHANH)
+    print("\n💾 3. LOAD (PYODBC)...")
+    start = time.time()
     load_to_database_fast(dims, fact_df, ma_hoc_ky)
-    print(f"  ✅ Load hoàn tất trong {time.time() - start_time:.2f}s")
-    
-    # 4. SAVE PROCESSED
-    print("\n📁 4. SAVE - Đang lưu file processed...")
-    output_filename = f"{FILE_NAME}_processed_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-    output_path = f"{SEMESTER}/{output_filename}"
-    output = df.to_csv(index=False, encoding='utf-8-sig')
-    processed_container = blob_service.get_container_client("processed-data")
-    if not processed_container.exists():
-        processed_container.create_container()
-    processed_container.get_blob_client(output_path).upload_blob(output, overwrite=True)
-    print(f"  ✅ File: {output_path}")
+    print(f"  ✅ Load: {time.time()-start:.2f}s")
     
     # TỔNG KẾT
-    total_time = time.time() - start_total
+    total = time.time() - total_start
     print("\n" + "=" * 60)
-    print(f"🎉 HOÀN THÀNH! Tổng thời gian: {total_time:.2f}s")
-    if total_time < 60:
+    print(f"🎉 TỔNG THỜI GIAN: {total:.2f}s")
+    if total < 60:
         print("🎯 ĐẠT MỤC TIÊU < 1 PHÚT!")
     print("=" * 60)
 

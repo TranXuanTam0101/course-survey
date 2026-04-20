@@ -59,7 +59,7 @@ jobs:
           CONNECTION_STRING: ${{ secrets.AZURE_CONNECTION_STRING }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
         run: |
-          python etl_optimized.py
+          python etl.py
       
       - name: Summary
         if: always()

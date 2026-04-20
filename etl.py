@@ -45,7 +45,7 @@ CONTAINER_NAME = SEMESTER
 RAWDATA_PATH = "rawdata"
 TAILIEU_PATH = "tailieu"
 
-# ========== TRỌNG SỐ ==========
+# ========== TRỌNG SỐ (GIỮ NGUYÊN) ==========
 WEIGHTS_CAU13 = {
     'chuẩn đầu ra': 5.0, 'mục tiêu môn học': 4.5, 'đáp ứng chương trình': 4.0,
     'nội dung': 3.0, 'học phần': 3.0, 'chương trình': 2.5, 'môn học': 2.5,
@@ -98,7 +98,7 @@ _date_pattern = re.compile(r'^\d{2}/\d{2}/\d{4}$')
 _ma_gv_pattern = re.compile(r'^(\d{7}|TG\d{5}|gvDacThu_TKTH)$')
 _lop_pattern = re.compile(r'^\d{2}K\d{2}$')
 
-# ========== CÁC HÀM XỬ LÝ CÂU TRẢ LỜI ==========
+# ========== CÁC HÀM XỬ LÝ CÂU TRẢ LỜI (GIỮ NGUYÊN) ==========
 def calculate_weighted_score(text, column_name):
     if not text or not isinstance(text, str):
         return 0.0
@@ -319,7 +319,7 @@ def is_ma_gv_format(value):
         return False
     return bool(_ma_gv_pattern.match(value.strip()))
 
-# ========== PROCESS ROW ==========
+# ========== PROCESS ROW (ĐÃ BỔ SUNG CauHoi, GiaTri) ==========
 def parse_single_line(line: str) -> dict:
     if not line or not line.strip():
         return None
@@ -367,6 +367,8 @@ def parse_single_line(line: str) -> dict:
         ho_dem_gv = row[ma_gv_index + 1] if ma_gv_index + 1 < len(row) else ''
         ten_gv = row[ma_gv_index + 2] if ma_gv_index + 2 < len(row) else ''
         lop_hp = row[ma_gv_index + 3] if ma_gv_index + 3 < len(row) else ''
+        cau_hoi = row[ma_gv_index + 4] if ma_gv_index + 4 < len(row) else ''
+        gia_tri = row[ma_gv_index + 5] if ma_gv_index + 5 < len(row) else ''
         
         null_index = -1
         gia_tri_index = ma_gv_index + 5 if ma_gv_index >= 0 else -1
@@ -390,6 +392,7 @@ def parse_single_line(line: str) -> dict:
             'Lop': lop, 'MaSV': ma_sv, 'HoDem': ho_dem, 'Ten': ten,
             'NgaySinh': ngay_sinh, 'MaHP': ma_hp, 'TenHP': ten_hp,
             'MaGV': ma_gv, 'HoDemGV': ho_dem_gv, 'TenGV': ten_gv, 'LopHP': lop_hp,
+            'CauHoi': cau_hoi, 'GiaTri': gia_tri,
             'Cau13': cau13, 'Cau14': cau14, 'Cau15': cau15, 'Cau16': cau16
         }
     except:
@@ -546,8 +549,7 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
     df['MaKhoa_MacDinh'] = chuyen_nganh_info.apply(lambda x: x[2])
     df['IsCTS'] = chuyen_nganh_info.apply(lambda x: x[3])
     
-    # ========== FIX 2: MaLop = Lop (giữ nguyên) ==========
-    df['MaLop'] = df['Lop']  # ← SỬA Ở ĐÂY
+    df['MaLop'] = df['Lop']
     
     if not hp_master.empty:
         df = df.merge(hp_master[['MaHP', 'TenHP', 'MaKhoa', 'TenKhoa']], on='MaHP', how='left')
@@ -581,12 +583,12 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
     
     df['TenChuyenNganh'] = df['TenChuyenNganh'].fillna(df['MaChuyenNganh'].apply(get_default_ten_cn))
     
+    # Tính điểm cho câu tự luận (giữ nguyên)
     print("  -> Tính điểm...")
     for col in COLUMN_ORDER:
         df[f'{col}_Score'] = df[col].apply(lambda x: calculate_weighted_score(x, col))
     
-    # ========== FIX 1: MaLopHP = LopHP (không ghép) ==========
-    df['MaLopHP'] = df['LopHP']  # ← SỬA Ở ĐÂY
+    df['MaLopHP'] = df['LopHP']
     
     print("  -> Tạo Dimensions...")
     
@@ -610,31 +612,66 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
     dim_giang_vien = df[['MaGV', 'HoDemGV', 'TenGV']].drop_duplicates(subset=['MaGV'])
     dim_giang_vien = dim_giang_vien[dim_giang_vien['MaGV'] != '']
     
-    # ========== DIM_LOP_HOC_PHAN với MaLopHP = LopHP ==========
     dim_lop_hp = df[['MaLopHP', 'LopHP', 'MaHP', 'MaGV']].drop_duplicates(subset=['MaLopHP'])
     dim_lop_hp = dim_lop_hp[dim_lop_hp['MaLopHP'] != '']
     dim_lop_hp['MaHocKy'] = ma_hoc_ky
     
-    # ========== DIM_LOP_SINH_VIEN với MaLop = Lop ==========
     dim_lop_sv = df[['MaLop', 'Lop', 'MaChuyenNganh']].drop_duplicates(subset=['MaLop'])
     dim_lop_sv = dim_lop_sv[dim_lop_sv['MaLop'] != '']
     
     dim_sinh_vien = df[['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop']].drop_duplicates(subset=['MaSV'])
     
+    # ========== TẠO FACT MỚI (ĐÃ SỬA HOÀN TOÀN) ==========
     print("  -> Tạo FACT...")
-    df['SubmissionID'] = df['MaSV'] + df['LopHP'] + df['MaGV'] + '_' + FILE_NAME
+    
+    # Tạo SubmissionID đúng format
+    df['SubmissionID'] = df['MaSV'].astype(str) + "_" + df['LopHP'].astype(str) + "_" + df['MaGV'].astype(str) + "_" + FILE_NAME
+    
+    # Lấy dòng duy nhất cho mỗi SubmissionID (để lấy câu tự luận)
+    df_unique = df.drop_duplicates(subset=['SubmissionID'])
     
     fact_rows = []
-    for col, mc in [('Cau13', 13), ('Cau14', 14), ('Cau15', 15), ('Cau16', 16)]:
-        temp = df[['SubmissionID', 'MaSV', 'MaLopHP', col, f'{col}_Score']].copy()
-        temp.columns = ['SubmissionID', 'MaSV', 'MaLopHP', 'TraLoiText', 'TraLoiSo']
-        temp['MaCauHoi'] = mc
-        fact_rows.append(temp)
     
-    fact_df = pd.concat(fact_rows, ignore_index=True)
-    fact_df['TraLoiText'] = fact_df['TraLoiText'].fillna('').astype(str)
+    # 1. Câu trắc nghiệm (1-12): Lấy từ tất cả các dòng
+    for _, row in df.iterrows():
+        cau_hoi = row.get('CauHoi')
+        gia_tri = row.get('GiaTri')
+        
+        if pd.notna(cau_hoi) and pd.notna(gia_tri):
+            try:
+                ma_cau = int(cau_hoi)
+                if 1 <= ma_cau <= 12:
+                    fact_rows.append({
+                        'SubmissionID': row['SubmissionID'],
+                        'MaCauHoi': ma_cau,
+                        'MaSV': row['MaSV'],
+                        'MaLopHP': row['MaLopHP'],
+                        'TraLoiSo': int(float(gia_tri)),
+                        'TraLoiText': None
+                    })
+            except:
+                pass
     
-    print(f"  -> Fact: {len(fact_df):,} dòng")
+    # 2. Câu tự luận (13-16): Lấy từ df_unique
+    for _, row in df_unique.iterrows():
+        for col, mc in [('Cau13', 13), ('Cau14', 14), ('Cau15', 15), ('Cau16', 16)]:
+            text_val = row.get(col, '')
+            if pd.notna(text_val) and str(text_val).strip():
+                fact_rows.append({
+                    'SubmissionID': row['SubmissionID'],
+                    'MaCauHoi': mc,
+                    'MaSV': row['MaSV'],
+                    'MaLopHP': row['MaLopHP'],
+                    'TraLoiSo': None,
+                    'TraLoiText': str(text_val).strip()
+                })
+    
+    fact_df = pd.DataFrame(fact_rows)
+    
+    if fact_df.empty:
+        fact_df = pd.DataFrame(columns=['SubmissionID', 'MaCauHoi', 'MaSV', 'MaLopHP', 'TraLoiSo', 'TraLoiText'])
+    
+    print(f"  -> Fact: {len(fact_df):,} dòng (trắc nghiệm + tự luận)")
     print(f"  ✅ Transform: {time.time()-start:.2f}s")
     
     return {
@@ -649,7 +686,7 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
         'FACT': fact_df
     }
 
-# ================= LOAD =================
+# ================= LOAD (GIỮ NGUYÊN) =================
 def get_existing_ids(cursor, table: str, id_col: str) -> set:
     cursor.execute(f"SELECT {id_col} FROM {table}")
     return {row[0] for row in cursor.fetchall()}
@@ -694,7 +731,6 @@ def load_fact(cursor, fact_df: pd.DataFrame) -> int:
     print(f"  -> Insert FACT: {len(fact_df):,} dòng...")
     start = time.time()
     
-    # Debug: kiểm tra FK
     cursor.execute("SELECT COUNT(*) FROM DIM_SINH_VIEN")
     sv_count = cursor.fetchone()[0]
     print(f"  -> DIM_SINH_VIEN: {sv_count} records")
@@ -703,7 +739,6 @@ def load_fact(cursor, fact_df: pd.DataFrame) -> int:
     lhp_count = cursor.fetchone()[0]
     print(f"  -> DIM_LOP_HOC_PHAN: {lhp_count} records")
     
-    # Lấy danh sách FK hợp lệ
     valid_sv = set()
     cursor.execute("SELECT MaSV FROM DIM_SINH_VIEN")
     for row in cursor.fetchall():
@@ -714,7 +749,6 @@ def load_fact(cursor, fact_df: pd.DataFrame) -> int:
     for row in cursor.fetchall():
         valid_lhp.add(row[0])
     
-    # Lọc dòng hợp lệ
     fact_df_valid = fact_df[
         fact_df['MaSV'].isin(valid_sv) & 
         fact_df['MaLopHP'].isin(valid_lhp)
@@ -723,13 +757,6 @@ def load_fact(cursor, fact_df: pd.DataFrame) -> int:
     skipped = len(fact_df) - len(fact_df_valid)
     if skipped > 0:
         print(f"  ⚠️ Bỏ {skipped:,} dòng do FK không hợp lệ")
-        # In mẫu các dòng bị lỗi
-        fact_df_invalid = fact_df[
-            ~(fact_df['MaSV'].isin(valid_sv) & fact_df['MaLopHP'].isin(valid_lhp))
-        ]
-        if len(fact_df_invalid) > 0:
-            sample = fact_df_invalid[['MaSV', 'MaLopHP']].head(5)
-            print(f"  -> Mẫu dòng lỗi: {sample.to_dict()}")
     
     if fact_df_valid.empty:
         print("  ❌ KHÔNG CÓ DÒNG NÀO HỢP LỆ!")
@@ -739,12 +766,12 @@ def load_fact(cursor, fact_df: pd.DataFrame) -> int:
     fact_df = fact_df.fillna('')
     
     data = list(zip(
-        fact_df['SubmissionID'].astype(str).str[:100],
+        fact_df['SubmissionID'].astype(str).str[:150],
         fact_df['MaCauHoi'].astype(int),
         fact_df['MaSV'].astype(str).str[:20],
         fact_df['MaLopHP'].astype(str).str[:50],
-        fact_df['TraLoiSo'].fillna(0).astype(float),
-        fact_df['TraLoiText'].astype(str)
+        fact_df['TraLoiSo'].fillna(0).astype(float) if 'TraLoiSo' in fact_df.columns else [None] * len(fact_df),
+        fact_df['TraLoiText'].astype(str) if 'TraLoiText' in fact_df.columns else [None] * len(fact_df)
     ))
     
     cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT NOCHECK CONSTRAINT ALL")
@@ -833,7 +860,7 @@ def load_to_database(dims: dict):
 def main():
     total_start = time.time()
     print("=" * 60)
-    print("🚀 SURVEY ETL - MULTIPROCESSING + FIXED")
+    print("🚀 SURVEY ETL - MULTIPROCESSING + FACT FIXED")
     print("=" * 60)
     print(f"Semester: {SEMESTER}")
     print(f"File: {SURVEY_FILE}")

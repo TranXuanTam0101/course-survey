@@ -319,7 +319,7 @@ def is_ma_gv_format(value):
         return False
     return bool(_ma_gv_pattern.match(value.strip()))
 
-# ========== PROCESS ROW (ĐÃ BỔ SUNG CauHoi, GiaTri) ==========
+# ========== PROCESS ROW ==========
 def parse_single_line(line: str) -> dict:
     if not line or not line.strip():
         return None
@@ -407,20 +407,10 @@ def parse_lines_batch(lines_batch):
     return results
 
 # ========== HELPER FUNCTIONS ==========
-def to_int(val):
-    if pd.isna(val):
-        return None
-    return int(val)
-
-def to_float(val):
-    if pd.isna(val):
-        return None
-    return float(val)
-
 def create_ma_khoa(ten_khoa: str) -> str:
     """Lấy chữ cái đầu tiên của TẤT CẢ các từ"""
     if not isinstance(ten_khoa, str) or not ten_khoa:
-        return "TĐHKT"
+        return "UNKNOWN"
     words = re.split(r'[\s\-]+', ten_khoa)
     initials = []
     for w in words:
@@ -428,7 +418,7 @@ def create_ma_khoa(ten_khoa: str) -> str:
             first_char = w[0].upper() if w[0].isalpha() else ''
             if first_char:
                 initials.append(first_char)
-    return ''.join(initials) if initials else "TĐHKT"
+    return ''.join(initials) if initials else "UNKNOWN"
 
 def normalize_lop(lop: str) -> str:
     if not isinstance(lop, str):
@@ -483,29 +473,41 @@ def download_blob_to_string(blob_service: BlobServiceClient, blob_path: str) -> 
         return ""
 
 def load_hp_master(blob_service: BlobServiceClient) -> pd.DataFrame:
+    """Đọc file HP-Khoa.csv - SỬA LOGIC ĐỌC CỘT"""
     path = f"{TAILIEU_PATH}/HP-Khoa.csv"
     print(f"  -> Đọc HP-Khoa: {CONTAINER_NAME}/{path}")
     content = download_blob_to_string(blob_service, path)
     if not content:
         return pd.DataFrame()
+    
     df = pd.read_csv(io.StringIO(content))
+    # File có cấu trúc: STT (0), Mã học phần (1), Khoa (2), Tên học phần (3)
+    # Bỏ cột STT (index 0), lấy index 1,2,3
     if len(df.columns) >= 4:
-        df = df.iloc[:, 1:4]
+        df = df.iloc[:, 1:4]  # Bỏ cột STT
         df.columns = ['MaHP', 'TenKhoa', 'TenHP']
+    
+    # Tạo MaKhoa từ TenKhoa (index 1 sau khi bỏ STT)
     df['MaKhoa'] = df['TenKhoa'].apply(create_ma_khoa)
     print(f"  -> HP-Khoa: {len(df)} dòng")
     return df
 
 def load_cn_master(blob_service: BlobServiceClient) -> pd.DataFrame:
+    """Đọc file TenChuyenNganh-Khoa.csv - SỬA LOGIC ĐỌC CỘT"""
     path = f"{TAILIEU_PATH}/TenChuyenNganh-Khoa.csv"
     print(f"  -> Đọc TenChuyenNganh-Khoa: {CONTAINER_NAME}/{path}")
     content = download_blob_to_string(blob_service, path)
     if not content:
         return pd.DataFrame()
+    
     df = pd.read_csv(io.StringIO(content))
+    # File có cấu trúc: STT (0), Khoa (1), TenChuyenNganh (2), MaChuyenNganh (3)
+    # Bỏ cột STT (index 0), lấy index 1,2,3
     if len(df.columns) >= 4:
-        df = df.iloc[:, 1:4]
+        df = df.iloc[:, 1:4]  # Bỏ cột STT
         df.columns = ['TenKhoa', 'TenChuyenNganh', 'MaChuyenNganh']
+    
+    # Tạo MaKhoa từ TenKhoa (index 0 sau khi bỏ STT = index 1 gốc)
     df['MaKhoa'] = df['TenKhoa'].apply(create_ma_khoa)
     print(f"  -> TenChuyenNganh-Khoa: {len(df)} dòng")
     return df
@@ -583,7 +585,7 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
     
     df['TenChuyenNganh'] = df['TenChuyenNganh'].fillna(df['MaChuyenNganh'].apply(get_default_ten_cn))
     
-    # Tính điểm cho câu tự luận (giữ nguyên)
+    # Tính điểm cho câu tự luận
     print("  -> Tính điểm...")
     for col in COLUMN_ORDER:
         df[f'{col}_Score'] = df[col].apply(lambda x: calculate_weighted_score(x, col))
@@ -621,18 +623,15 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
     
     dim_sinh_vien = df[['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop']].drop_duplicates(subset=['MaSV'])
     
-    # ========== TẠO FACT MỚI (ĐÃ SỬA HOÀN TOÀN) ==========
+    # ========== TẠO FACT ==========
     print("  -> Tạo FACT...")
     
-    # Tạo SubmissionID đúng format
     df['SubmissionID'] = df['MaSV'].astype(str) + "_" + df['LopHP'].astype(str) + "_" + df['MaGV'].astype(str) + "_" + FILE_NAME
-    
-    # Lấy dòng duy nhất cho mỗi SubmissionID (để lấy câu tự luận)
     df_unique = df.drop_duplicates(subset=['SubmissionID'])
     
     fact_rows = []
     
-    # 1. Câu trắc nghiệm (1-12): Lấy từ tất cả các dòng
+    # 1. Câu trắc nghiệm (1-12): TraLoiSo là số, TraLoiText = None
     for _, row in df.iterrows():
         cau_hoi = row.get('CauHoi')
         gia_tri = row.get('GiaTri')
@@ -640,19 +639,20 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
         if pd.notna(cau_hoi) and pd.notna(gia_tri):
             try:
                 ma_cau = int(cau_hoi)
-                if 1 <= ma_cau <= 12:
+                diem = int(float(gia_tri))
+                if 1 <= ma_cau <= 12 and 1 <= diem <= 5:
                     fact_rows.append({
                         'SubmissionID': row['SubmissionID'],
                         'MaCauHoi': ma_cau,
                         'MaSV': row['MaSV'],
                         'MaLopHP': row['MaLopHP'],
-                        'TraLoiSo': int(float(gia_tri)),
+                        'TraLoiSo': diem,
                         'TraLoiText': None
                     })
             except:
                 pass
     
-    # 2. Câu tự luận (13-16): Lấy từ df_unique
+    # 2. Câu tự luận (13-16): TraLoiSo = None, TraLoiText có text
     for _, row in df_unique.iterrows():
         for col, mc in [('Cau13', 13), ('Cau14', 14), ('Cau15', 15), ('Cau16', 16)]:
             text_val = row.get(col, '')
@@ -686,7 +686,7 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
         'FACT': fact_df
     }
 
-# ================= LOAD (GIỮ NGUYÊN) =================
+# ================= LOAD =================
 def get_existing_ids(cursor, table: str, id_col: str) -> set:
     cursor.execute(f"SELECT {id_col} FROM {table}")
     return {row[0] for row in cursor.fetchall()}
@@ -762,17 +762,42 @@ def load_fact(cursor, fact_df: pd.DataFrame) -> int:
         print("  ❌ KHÔNG CÓ DÒNG NÀO HỢP LỆ!")
         return 0
     
-    fact_df = fact_df_valid
-    fact_df = fact_df.fillna('')
-    
-    data = list(zip(
-        fact_df['SubmissionID'].astype(str).str[:150],
-        fact_df['MaCauHoi'].astype(int),
-        fact_df['MaSV'].astype(str).str[:20],
-        fact_df['MaLopHP'].astype(str).str[:50],
-        fact_df['TraLoiSo'].fillna(0).astype(float) if 'TraLoiSo' in fact_df.columns else [None] * len(fact_df),
-        fact_df['TraLoiText'].astype(str) if 'TraLoiText' in fact_df.columns else [None] * len(fact_df)
-    ))
+    # ========== XỬ LÝ DỮ LIỆU AN TOÀN ==========
+    data = []
+    for _, row in fact_df_valid.iterrows():
+        # SubmissionID
+        sub_id = str(row['SubmissionID'])[:150] if pd.notna(row['SubmissionID']) else ''
+        
+        # MaCauHoi
+        try:
+            ma_cau = int(row['MaCauHoi'])
+        except:
+            ma_cau = 0
+        
+        # MaSV
+        ma_sv = str(row['MaSV'])[:20] if pd.notna(row['MaSV']) else ''
+        
+        # MaLopHP
+        ma_lop = str(row['MaLopHP'])[:50] if pd.notna(row['MaLopHP']) else ''
+        
+        # TraLoiSo - CHỈ LẤY SỐ HỢP LỆ, CÒN LẠI LÀ NULL
+        tra_loi_so = None
+        val = row.get('TraLoiSo')
+        if pd.notna(val) and val != '' and val is not None:
+            try:
+                num = float(val)
+                if num > 0:
+                    tra_loi_so = num
+            except (ValueError, TypeError):
+                pass  # Giữ None
+        
+        # TraLoiText
+        tra_loi_text = None
+        val = row.get('TraLoiText')
+        if pd.notna(val) and val != '' and val is not None:
+            tra_loi_text = str(val)
+        
+        data.append((sub_id, ma_cau, ma_sv, ma_lop, tra_loi_so, tra_loi_text))
     
     cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT NOCHECK CONSTRAINT ALL")
     cursor.connection.commit()
@@ -860,7 +885,7 @@ def load_to_database(dims: dict):
 def main():
     total_start = time.time()
     print("=" * 60)
-    print("🚀 SURVEY ETL - MULTIPROCESSING + FACT FIXED")
+    print("🚀 SURVEY ETL - MULTIPROCESSING + FIXED")
     print("=" * 60)
     print(f"Semester: {SEMESTER}")
     print(f"File: {SURVEY_FILE}")

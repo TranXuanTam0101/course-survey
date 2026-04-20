@@ -420,7 +420,7 @@ def transform_data_fast(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd
     df['IsCTS'] = cn_info.apply(lambda x: x[3])
     df['MaLop'] = df['Lop']
     
-    # Merge master - SỬA LỖI TRÙNG MaHP
+    # Merge master
     if not hp_master.empty:
         hp_unique = hp_master.drop_duplicates(subset=['MaHP'])
         hp_dict = hp_unique.set_index('MaHP')[['TenHP', 'MaKhoa', 'TenKhoa']].to_dict('index')
@@ -476,41 +476,47 @@ def transform_data_fast(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd
     ])
     dims['DIM_KHOA'] = pd.concat([dims['DIM_KHOA'], default_khoas]).drop_duplicates('MaKhoa').reset_index(drop=True)
     
-    # Tạo FACT
-    print("  -> Tạo FACT...")
+    # ========== TẠO FACT TỐI ƯU (MELT) ==========
+    print("  -> Tạo FACT (melt)...")
     fact_start = time.time()
     
-    trac_nghiem = [
-        {
-            'SubmissionID': row['SubmissionID'],
-            'MaCauHoi': int(row['CauHoi']),
-            'MaSV': row['MaSV'],
-            'MaLopHP': row['MaLopHP'],
-            'TraLoiSo': int(float(row['GiaTri'])),
-            'TraLoiText': None
-        }
-        for _, row in df.iterrows()
-        if pd.notna(row.get('CauHoi')) and pd.notna(row.get('GiaTri'))
-        and 1 <= int(row['CauHoi']) <= 12 and 1 <= int(float(row['GiaTri'])) <= 5
+    # 1. Câu trắc nghiệm (1-12): Lọc trực tiếp
+    trac_nghiem_df = df[['SubmissionID', 'MaSV', 'MaLopHP', 'CauHoi', 'GiaTri']].copy()
+    trac_nghiem_df = trac_nghiem_df[
+        trac_nghiem_df['CauHoi'].notna() & trac_nghiem_df['GiaTri'].notna()
     ]
+    trac_nghiem_df['MaCauHoi'] = trac_nghiem_df['CauHoi'].astype(int)
+    trac_nghiem_df['TraLoiSo'] = trac_nghiem_df['GiaTri'].astype(float).astype(int)
+    trac_nghiem_df['TraLoiText'] = None
     
-    df_unique = df.drop_duplicates('SubmissionID')
-    tu_luan = []
-    for _, row in df_unique.iterrows():
-        for col, mc in [('Cau13', 13), ('Cau14', 14), ('Cau15', 15), ('Cau16', 16)]:
-            if pd.notna(row[col]) and str(row[col]).strip():
-                tu_luan.append({
-                    'SubmissionID': row['SubmissionID'],
-                    'MaCauHoi': mc,
-                    'MaSV': row['MaSV'],
-                    'MaLopHP': row['MaLopHP'],
-                    'TraLoiSo': None,
-                    'TraLoiText': str(row[col]).strip()
-                })
+    trac_nghiem_df = trac_nghiem_df[
+        (trac_nghiem_df['MaCauHoi'] >= 1) & (trac_nghiem_df['MaCauHoi'] <= 12) &
+        (trac_nghiem_df['TraLoiSo'] >= 1) & (trac_nghiem_df['TraLoiSo'] <= 5)
+    ]
+    trac_nghiem_df = trac_nghiem_df[['SubmissionID', 'MaCauHoi', 'MaSV', 'MaLopHP', 'TraLoiSo', 'TraLoiText']]
     
-    fact_df = pd.DataFrame(trac_nghiem + tu_luan)
+    # 2. Câu tự luận (13-16): Lấy dòng đầu tiên mỗi SubmissionID, melt thành 4 dòng
+    df_unique = df.drop_duplicates('SubmissionID')[['SubmissionID', 'MaSV', 'MaLopHP', 'Cau13', 'Cau14', 'Cau15', 'Cau16']].copy()
+    
+    tu_luan_df = df_unique.melt(
+        id_vars=['SubmissionID', 'MaSV', 'MaLopHP'],
+        value_vars=['Cau13', 'Cau14', 'Cau15', 'Cau16'],
+        var_name='CauHoi_str',
+        value_name='TraLoiText'
+    )
+    
+    cau_map = {'Cau13': 13, 'Cau14': 14, 'Cau15': 15, 'Cau16': 16}
+    tu_luan_df['MaCauHoi'] = tu_luan_df['CauHoi_str'].map(cau_map)
+    tu_luan_df['TraLoiSo'] = None
+    
+    tu_luan_df = tu_luan_df[tu_luan_df['TraLoiText'].notna() & (tu_luan_df['TraLoiText'] != '')]
+    tu_luan_df = tu_luan_df[['SubmissionID', 'MaCauHoi', 'MaSV', 'MaLopHP', 'TraLoiSo', 'TraLoiText']]
+    
+    # 3. Gộp lại
+    fact_df = pd.concat([trac_nghiem_df, tu_luan_df], ignore_index=True)
+    
     print(f"      -> Tạo FACT: {time.time()-fact_start:.2f}s")
-    print(f"  -> Fact: {len(fact_df):,} dòng")
+    print(f"  -> Fact: {len(fact_df):,} dòng (TN: {len(trac_nghiem_df):,}, TL: {len(tu_luan_df):,})")
     print(f"  ✅ Transform: {time.time()-start:.2f}s")
     
     dims['FACT'] = fact_df
@@ -633,7 +639,7 @@ def load_to_database(dims: dict):
                                ['MaKhoa', 'TenKhoa'], 'MaKhoa')
         print(f"  ✅ DIM_KHOA: {count} new")
         
-        # 3. Đảm bảo DIM_CHUONG_TRINH_DAO_TAO có 'CTDT_CHINHQUY' TRƯỚC KHI INSERT DIM_CHUYEN_NGANH
+        # 3. Đảm bảo DIM_CTDT
         cursor.execute("""
             IF NOT EXISTS (SELECT 1 FROM DIM_CHUONG_TRINH_DAO_TAO WHERE MaCTDT = 'CTDT_CHINHQUY')
             INSERT INTO DIM_CHUONG_TRINH_DAO_TAO (MaCTDT, TenCTDT) VALUES ('CTDT_CHINHQUY', N'Chính quy')
@@ -687,7 +693,7 @@ def load_to_database(dims: dict):
 def main():
     total_start = time.time()
     print("=" * 60)
-    print("🚀 SURVEY ETL - FAST + SPECIAL MaKhoa")
+    print("🚀 SURVEY ETL - FAST + MELT OPTIMIZED")
     print("=" * 60)
     print(f"Semester: {SEMESTER}")
     print(f"File: {SURVEY_FILE}")

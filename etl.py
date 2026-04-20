@@ -1,13 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-SURVEY ETL - MULTIPROCESSING PARSE + FIXED ALL ERRORS
-- Parse song song với multiprocessing
-- MaKhoa: lấy chữ cái đầu TẤT CẢ các từ (BMNNCN, KDQT, NVTT...)
-- Logic CTS/QT: MaChuyenNganh = CTS/QT, MaKhoa = TĐHKT/PĐT
-- Thứ tự LOAD đúng FK constraints
-"""
-
 import os
 import sys
 import re
@@ -556,7 +546,8 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
     df['MaKhoa_MacDinh'] = chuyen_nganh_info.apply(lambda x: x[2])
     df['IsCTS'] = chuyen_nganh_info.apply(lambda x: x[3])
     
-    df['MaLop'] = df['Lop'].apply(normalize_lop)
+    # ========== FIX 2: MaLop = Lop (giữ nguyên) ==========
+    df['MaLop'] = df['Lop']  # ← SỬA Ở ĐÂY
     
     if not hp_master.empty:
         df = df.merge(hp_master[['MaHP', 'TenHP', 'MaKhoa', 'TenKhoa']], on='MaHP', how='left')
@@ -594,7 +585,8 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
     for col in COLUMN_ORDER:
         df[f'{col}_Score'] = df[col].apply(lambda x: calculate_weighted_score(x, col))
     
-    df['MaLopHP'] = df['LopHP'] + '_' + df['MaHP']
+    # ========== FIX 1: MaLopHP = LopHP (không ghép) ==========
+    df['MaLopHP'] = df['LopHP']  # ← SỬA Ở ĐÂY
     
     print("  -> Tạo Dimensions...")
     
@@ -618,10 +610,12 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
     dim_giang_vien = df[['MaGV', 'HoDemGV', 'TenGV']].drop_duplicates(subset=['MaGV'])
     dim_giang_vien = dim_giang_vien[dim_giang_vien['MaGV'] != '']
     
+    # ========== DIM_LOP_HOC_PHAN với MaLopHP = LopHP ==========
     dim_lop_hp = df[['MaLopHP', 'LopHP', 'MaHP', 'MaGV']].drop_duplicates(subset=['MaLopHP'])
-    dim_lop_hp = dim_lop_hp[dim_lop_hp['MaLopHP'] != '_']
+    dim_lop_hp = dim_lop_hp[dim_lop_hp['MaLopHP'] != '']
     dim_lop_hp['MaHocKy'] = ma_hoc_ky
     
+    # ========== DIM_LOP_SINH_VIEN với MaLop = Lop ==========
     dim_lop_sv = df[['MaLop', 'Lop', 'MaChuyenNganh']].drop_duplicates(subset=['MaLop'])
     dim_lop_sv = dim_lop_sv[dim_lop_sv['MaLop'] != '']
     

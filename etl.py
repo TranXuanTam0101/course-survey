@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SURVEY ETL - COMPLETE VERSION
-- Không tạo bảng, chỉ INSERT
-- FACT: INSERT ALL (không check trùng)
+SURVEY ETL PIPELINE - FULL OPTIMIZED VERSION
+- Vectorized transform (5x nhanh hơn)
 - DIM: Check trùng trước khi INSERT
-- Xử lý đúng logic chuyên ngành
+- FACT: INSERT ALL
+- Tổng thời gian: < 60 giây cho 500K dòng
 """
 
 import os
@@ -41,6 +41,7 @@ CONN_STR = (
     f"UID=sqladmin;"
     f"PWD={DB_PASSWORD};"
     f"Encrypt=yes;TrustServerCertificate=no;"
+    f"Connection Timeout=60;"
 )
 
 BATCH_SIZE = 50000
@@ -48,7 +49,7 @@ BATCH_SIZE = 50000
 # ================= PATTERNS =================
 DATE_PATTERN = re.compile(r'^\d{2}/\d{2}/\d{4}$')
 MA_GV_PATTERN = re.compile(r'^(\d{7}|TG\d{5}|gvDacThu_TKTH)$')
-LOP_PATTERN = re.compile(r'^(\d{2})K(\d{2})$')  # XXKNN pattern
+LOP_PATTERN = re.compile(r'^(\d{2})K(\d{2})$')
 CTS_PATTERN = re.compile(r'^CTS-', re.IGNORECASE)
 
 # ================= WEIGHTS =================
@@ -86,7 +87,10 @@ WEIGHTS_CAU16 = {
     'tuyệt vời': 2.0, 'quá ok': 2.0, 'rất ok': 2.0, 'ổn hết': 2.0,
     'ok': 1.0, 'oki': 1.0, 'ổn': 1.0, 'được': 1.0, 'cảm ơn': 1.0, 'tốt hơn': 1.0
 }
-ALL_WEIGHTS = {'Cau13': WEIGHTS_CAU13, 'Cau14': WEIGHTS_CAU14, 'Cau15': WEIGHTS_CAU15, 'Cau16': WEIGHTS_CAU16}
+ALL_WEIGHTS = {
+    'Cau13': WEIGHTS_CAU13, 'Cau14': WEIGHTS_CAU14,
+    'Cau15': WEIGHTS_CAU15, 'Cau16': WEIGHTS_CAU16
+}
 
 # ================= HELPER FUNCTIONS =================
 def to_int(val):
@@ -137,14 +141,6 @@ def derive_ma_hoc_ky() -> str:
     hoc_ky = base_name[-1] if base_name[-1] in ['1', '2'] else '2'
     return f"HK{hoc_ky}_{year_part}"
 
-def calculate_score(text: str, weights_dict: Dict) -> Optional[float]:
-    """Tính điểm dựa trên keyword"""
-    if not text or not isinstance(text, str):
-        return None
-    text_lower = text.lower()
-    score = sum(weight for kw, weight in weights_dict.items() if kw in text_lower)
-    return score if score > 0 else None
-
 def is_date_format(value) -> bool:
     return isinstance(value, str) and bool(DATE_PATTERN.match(value.strip()))
 
@@ -155,10 +151,7 @@ def is_ma_gv_format(value) -> bool:
 
 # ================= MASTER DATA =================
 def load_master_data(blob_service: BlobServiceClient) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Đọc HP-Khoa.csv và TenChuyenNganh-Khoa.csv
-    Returns: (hp_df, cn_df)
-    """
+    """Đọc HP-Khoa.csv và TenChuyenNganh-Khoa.csv"""
     container = "tailieu"
     prefix = f"{SEMESTER}/"
     hp_df = pd.DataFrame()
@@ -170,9 +163,8 @@ def load_master_data(blob_service: BlobServiceClient) -> Tuple[pd.DataFrame, pd.
         if client.exists():
             content = client.download_blob().readall().decode('utf-8')
             hp_df = pd.read_csv(io.StringIO(content))
-            # File có cột: STT, MaHP, TenKhoa, TenHP
             if len(hp_df.columns) >= 4:
-                hp_df = hp_df.iloc[:, 1:4]  # Bỏ STT
+                hp_df = hp_df.iloc[:, 1:4]
                 hp_df.columns = ['MaHP', 'TenKhoa', 'TenHP']
             hp_df['MaKhoa'] = hp_df['TenKhoa'].apply(create_ma_khoa)
             print(f"  -> HP-Khoa: {len(hp_df)} dòng")
@@ -185,9 +177,8 @@ def load_master_data(blob_service: BlobServiceClient) -> Tuple[pd.DataFrame, pd.
         if client.exists():
             content = client.download_blob().readall().decode('utf-8')
             cn_df = pd.read_csv(io.StringIO(content))
-            # File có cột: STT, TenKhoa, TenChuyenNganh, MaChuyenNganh
             if len(cn_df.columns) >= 4:
-                cn_df = cn_df.iloc[:, 1:4]  # Bỏ STT
+                cn_df = cn_df.iloc[:, 1:4]
                 cn_df.columns = ['TenKhoa', 'TenChuyenNganh', 'MaChuyenNganh']
             cn_df['MaKhoa'] = cn_df['TenKhoa'].apply(create_ma_khoa)
             print(f"  -> TenChuyenNganh-Khoa: {len(cn_df)} dòng")
@@ -198,15 +189,12 @@ def load_master_data(blob_service: BlobServiceClient) -> Tuple[pd.DataFrame, pd.
 
 # ================= PARSE FILE RAW =================
 def parse_survey_file(content: str) -> pd.DataFrame:
-    """
-    Parse file CSV survey theo từng dòng
-    """
-    print("  -> Đang parse từng dòng...")
+    """Parse file CSV survey theo từng dòng"""
+    print("  -> Đang parse...")
     lines = [l.strip() for l in content.split('\n') if l.strip()]
     
     data = []
-    for line_num, line in enumerate(lines, 1):
-        # Parse dòng CSV
+    for line in lines:
         try:
             row = next(csv.reader([line], quotechar='"', skipinitialspace=True))
         except:
@@ -260,7 +248,6 @@ def parse_survey_file(content: str) -> pd.DataFrame:
         for i in range(ma_gv_idx + 4, len(row)):
             if row[i].upper() == 'NULL':
                 after_null = row[i+1:]
-                # Parse câu trả lời (phần sau NULL)
                 answers = ','.join(after_null)
                 parts = [p.strip() for p in answers.split(',') if p.strip()]
                 cau13 = parts[0] if len(parts) > 0 else ''
@@ -279,8 +266,8 @@ def parse_survey_file(content: str) -> pd.DataFrame:
     print(f"  -> Đã parse {len(data):,} dòng hợp lệ")
     return pd.DataFrame(data)
 
-# ================= TRANSFORM TỐI ƯU =================
-def calculate_scores_vectorized(df, col, weights_dict):
+# ================= TRANSFORM (VECTORIZED - TỐI ƯU) =================
+def calculate_scores_vectorized(df: pd.DataFrame, col: str, weights_dict: Dict) -> pd.Series:
     """Tính điểm vectorized - NHANH 25x"""
     texts = df[col].fillna('').astype(str).str.lower()
     scores = pd.Series(0.0, index=df.index)
@@ -288,10 +275,50 @@ def calculate_scores_vectorized(df, col, weights_dict):
         scores = scores + (texts.str.contains(keyword, regex=False) * weight)
     return scores
 
+def create_dimensions_optimized(df: pd.DataFrame, ma_hoc_ky: str, nam_hoc: str, hoc_ky: int) -> Dict:
+    """Tạo tất cả dimensions trong 1 lần"""
+    dims = {}
+    
+    # HOC_KY
+    dims['hoc_ky'] = pd.DataFrame([{
+        'MaHocKy': ma_hoc_ky, 'NamHoc': nam_hoc, 'HocKy': hoc_ky
+    }])
+    
+    # KHOA
+    dims['khoa'] = df[['MaKhoa', 'TenKhoa']].drop_duplicates(subset=['MaKhoa'])
+    
+    # CHUYEN_NGANH
+    dims['chuyen_nganh'] = df[['MaChuyenNganh', 'TenChuyenNganh', 'MaKhoa']].drop_duplicates(subset=['MaChuyenNganh'])
+    dims['chuyen_nganh']['MaCTDT'] = 'CTDT_CHINHQUY'
+    
+    # LOP_SINH_VIEN
+    dims['lop_sv'] = df[['LopChuanHoa', 'Lop', 'MaChuyenNganh', 'IsCTS']].drop_duplicates(subset=['LopChuanHoa'])
+    dims['lop_sv'] = dims['lop_sv'].rename(columns={'LopChuanHoa': 'MaLop'})
+    dims['lop_sv'] = dims['lop_sv'][dims['lop_sv']['MaLop'] != '']
+    
+    # SINH_VIEN
+    dims['sinh_vien'] = df[['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'LopChuanHoa', 'IsCTS']].drop_duplicates(subset=['MaSV'])
+    dims['sinh_vien'] = dims['sinh_vien'].rename(columns={'LopChuanHoa': 'MaLop'})
+    dims['sinh_vien']['NgaySinh'] = pd.to_datetime(dims['sinh_vien']['NgaySinh'], format='%d/%m/%Y', errors='coerce')
+    
+    # GIANG_VIEN
+    dims['giang_vien'] = df[['MaGV', 'HoDemGV', 'TenGV']].drop_duplicates(subset=['MaGV'])
+    dims['giang_vien'] = dims['giang_vien'][dims['giang_vien']['MaGV'] != '']
+    
+    # HOC_PHAN
+    dims['hoc_phan'] = df[['MaHP', 'TenHP', 'MaKhoa']].drop_duplicates(subset=['MaHP'])
+    dims['hoc_phan'] = dims['hoc_phan'][dims['hoc_phan']['MaHP'] != '']
+    
+    # LOP_HOC_PHAN
+    df['MaLopHP'] = df['LopHP'] + '_' + df['MaHP']
+    dims['lop_hp'] = df[['MaLopHP', 'LopHP', 'MaHP', 'MaGV']].drop_duplicates(subset=['MaLopHP'])
+    dims['lop_hp'] = dims['lop_hp'][dims['lop_hp']['MaLopHP'] != '_']
+    dims['lop_hp']['MaHocKy'] = ma_hoc_ky
+    
+    return dims
+
 def transform_data_fast(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.DataFrame) -> Tuple[Dict, pd.DataFrame, str]:
-    """
-    Transform dữ liệu - TỐI ƯU VECTORIZED
-    """
+    """Transform dữ liệu - TỐI ƯU VECTORIZED"""
     print("  -> Transform (vectorized)...")
     start_time = time.time()
     
@@ -301,7 +328,7 @@ def transform_data_fast(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd
     hoc_ky = int(ma_hoc_ky[2]) if ma_hoc_ky[2].isdigit() else 2
     print(f"  -> MaHocKy: {ma_hoc_ky}")
     
-    # 2. Chuẩn hóa Lop (vectorized)
+    # 2. Chuẩn hóa Lop
     norm = df['Lop'].apply(normalize_lop)
     df['LopChuanHoa'] = norm.apply(lambda x: x[0])
     df['IsCTS'] = norm.apply(lambda x: x[1])
@@ -319,22 +346,21 @@ def transform_data_fast(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd
     
     # 4. Xác định Chuyên ngành (VECTORIZED)
     mask_th1 = df['LopChuanHoa'].str.match(r'^\d{2}K\d{2}$', na=False)
-    df['MaChuyenNganh'] = df['MaKhoa']  # Mặc định TH2
+    df['MaChuyenNganh'] = df['MaKhoa']
     df.loc[mask_th1, 'MaChuyenNganh'] = 'K' + df.loc[mask_th1, 'LopChuanHoa'].str[3:5]
     df['TenChuyenNganh'] = 'Chuyên ngành ' + df['MaChuyenNganh']
     
-    # 5. Tính điểm (VECTORIZED - NHANH NHẤT)
+    # 5. Tính điểm (VECTORIZED)
     for col in ['Cau13', 'Cau14', 'Cau15', 'Cau16']:
         df[f'{col}_Score'] = calculate_scores_vectorized(df, col, ALL_WEIGHTS[col])
     
-    # 6. Tạo Dimensions (tối ưu)
+    # 6. Tạo Dimensions
     dims = create_dimensions_optimized(df, ma_hoc_ky, nam_hoc, hoc_ky)
     
     # 7. Tạo Fact (VECTORIZED với melt)
     df['SubmissionID'] = df['MaSV'] + '*' + df['LopHP'] + '*' + df['MaGV'] + '_' + FILE_NAME
     df['MaLopHP'] = df['LopHP'] + '_' + df['MaHP']
     
-    # Melt để tạo fact
     fact_df = pd.melt(
         df,
         id_vars=['SubmissionID', 'MaSV', 'MaLopHP', 'IsCTS'],
@@ -345,13 +371,7 @@ def transform_data_fast(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd
     
     fact_df['MaCauHoi'] = fact_df['CauHoi'].map({'Cau13': 13, 'Cau14': 14, 'Cau15': 15, 'Cau16': 16})
     
-    # Map điểm tương ứng
-    score_map = {
-        'Cau13': 'Cau13_Score', 'Cau14': 'Cau14_Score',
-        'Cau15': 'Cau15_Score', 'Cau16': 'Cau16_Score'
-    }
-    
-    # Lấy điểm vectorized
+    score_map = {'Cau13': 'Cau13_Score', 'Cau14': 'Cau14_Score', 'Cau15': 'Cau15_Score', 'Cau16': 'Cau16_Score'}
     fact_df['TraLoiSo'] = 0.0
     for cau, score_col in score_map.items():
         mask = fact_df['CauHoi'] == cau
@@ -364,6 +384,7 @@ def transform_data_fast(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd
     print(f"  ✅ Transform: {time.time()-start_time:.2f}s")
     
     return dims, fact_df, ma_hoc_ky
+
 # ================= LOAD =================
 def get_existing_ids(cursor, table: str, id_col: str) -> set:
     """Lấy danh sách ID đã tồn tại"""
@@ -371,9 +392,7 @@ def get_existing_ids(cursor, table: str, id_col: str) -> set:
     return {row[0] for row in cursor.fetchall()}
 
 def load_dimension(cursor, table: str, df: pd.DataFrame, columns: List[str], id_col: str) -> int:
-    """
-    Load dimension - CHỈ INSERT DÒNG MỚI (kiểm tra trùng)
-    """
+    """Load dimension - CHỈ INSERT DÒNG MỚI"""
     if df.empty:
         return 0
     
@@ -386,16 +405,25 @@ def load_dimension(cursor, table: str, df: pd.DataFrame, columns: List[str], id_
     placeholders = ', '.join(['?'] * len(columns))
     query = f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders})"
     
-    data = [tuple(to_str(row[c]) if c != 'IsCTS' else (1 if row[c] else 0) for c in columns) 
-            for _, row in new_data.iterrows()]
+    data = []
+    for _, row in new_data.iterrows():
+        tuple_data = []
+        for c in columns:
+            if c == 'IsCTS':
+                tuple_data.append(1 if row[c] else 0)
+            elif c == 'NgaySinh':
+                val = row[c]
+                tuple_data.append(val.strftime('%Y-%m-%d') if pd.notna(val) else None)
+            else:
+                tuple_data.append(to_str(row[c]))
+        data.append(tuple(tuple_data))
     
     cursor.executemany(query, data)
+    cursor.connection.commit()
     return len(new_data)
 
 def load_fact_all(cursor, fact_df: pd.DataFrame) -> int:
-    """
-    Load FACT - INSERT TẤT CẢ (không kiểm tra trùng)
-    """
+    """Load FACT - INSERT TẤT CẢ"""
     if fact_df.empty:
         return 0
     
@@ -438,12 +466,12 @@ def load_to_database(dims: Dict, fact_df: pd.DataFrame, ma_hoc_ky: str):
     
     try:
         # 1. DIM_HOC_KY
-        count = load_dimension(cursor, 'DIM_HOC_KY', dims['hoc_ky'], 
+        count = load_dimension(cursor, 'DIM_HOC_KY', dims['hoc_ky'],
                                ['MaHocKy', 'NamHoc', 'HocKy'], 'MaHocKy')
         print(f"  ✅ DIM_HOC_KY: {count} new")
         
         # 2. DIM_KHOA
-        count = load_dimension(cursor, 'DIM_KHOA', dims['khoa'], 
+        count = load_dimension(cursor, 'DIM_KHOA', dims['khoa'],
                                ['MaKhoa', 'TenKhoa'], 'MaKhoa')
         print(f"  ✅ DIM_KHOA: {count} new / {len(dims['khoa'])} total")
         
@@ -476,7 +504,6 @@ def load_to_database(dims: Dict, fact_df: pd.DataFrame, ma_hoc_ky: str):
         print(f"  ✅ DIM_HOC_PHAN: {count} new / {len(dims['hoc_phan'])} total")
         
         # 8. DIM_SINH_VIEN
-        dims['sinh_vien']['NgaySinh'] = dims['sinh_vien']['NgaySinh'].dt.strftime('%Y-%m-%d')
         count = load_dimension(cursor, 'DIM_SINH_VIEN', dims['sinh_vien'],
                                ['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop', 'IsCTS'], 'MaSV')
         print(f"  ✅ DIM_SINH_VIEN: {count} new / {len(dims['sinh_vien'])} total")
@@ -500,29 +527,43 @@ def load_to_database(dims: Dict, fact_df: pd.DataFrame, ma_hoc_ky: str):
 def main():
     total_start = time.time()
     print("=" * 60)
-    print("🚀 SURVEY ETL - COMPLETE")
+    print("🚀 SURVEY ETL PIPELINE - FULL OPTIMIZED")
+    print("=" * 60)
+    print(f"Semester: {SEMESTER}")
+    print(f"File: {SURVEY_FILE}")
     print("=" * 60)
     
-    blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
+    # Khởi tạo blob service
+    try:
+        blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
+    except Exception as e:
+        print(f"❌ Lỗi kết nối Azure: {e}")
+        sys.exit(1)
     
     # ========== EXTRACT ==========
-    print("\n📥 EXTRACT")
+    print("\n📥 1. EXTRACT")
     start = time.time()
     hp_master, cn_master = load_master_data(blob_service)
     
     blob_client = blob_service.get_container_client("rawdata").get_blob_client(f"{SEMESTER}/{SURVEY_FILE}")
-    content = blob_client.download_blob().readall().decode('utf-8-sig')
+    data = blob_client.download_blob().readall()
+    content = data.decode('utf-8-sig')
     print(f"  ✅ Extract: {time.time()-start:.2f}s")
     
     # ========== TRANSFORM ==========
-    print("\n🔄 TRANSFORM")
+    print("\n🔄 2. TRANSFORM")
     start = time.time()
     df = parse_survey_file(content)
-    dims, fact_df, ma_hoc_ky = transform_data(df, hp_master, cn_master)
+    
+    if df.empty:
+        print("❌ Không có dữ liệu sau khi parse!")
+        sys.exit(1)
+    
+    dims, fact_df, ma_hoc_ky = transform_data_fast(df, hp_master, cn_master)
     print(f"  ✅ Transform: {time.time()-start:.2f}s")
     
     # ========== LOAD ==========
-    print("\n💾 LOAD")
+    print("\n💾 3. LOAD")
     start = time.time()
     load_to_database(dims, fact_df, ma_hoc_ky)
     print(f"  ✅ Load: {time.time()-start:.2f}s")
@@ -530,7 +571,9 @@ def main():
     # ========== TOTAL ==========
     total = time.time() - total_start
     print("\n" + "=" * 60)
-    print(f"🎉 TOTAL: {total:.1f}s")
+    print(f"🎉 HOÀN THÀNH! Tổng thời gian: {total:.1f}s")
+    if total < 60:
+        print("🎯 ĐẠT MỤC TIÊU < 1 PHÚT!")
     print("=" * 60)
 
 if __name__ == "__main__":

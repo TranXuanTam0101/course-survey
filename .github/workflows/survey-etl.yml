@@ -1,4 +1,4 @@
-name: Survey ETL Pipeline
+name: Survey ETL Pipeline (ODBC Optimized)
 
 on:
   workflow_dispatch:
@@ -28,22 +28,46 @@ jobs:
         with:
           python-version: '3.10'
       
-      - name: Install dependencies
+      # ========== CÀI ĐẶT ODBC DRIVER 18 ==========
+      - name: Install Microsoft ODBC Driver 18
+        run: |
+          echo "=== Cài đặt ODBC Driver 18 ==="
+          
+          # Thêm Microsoft repository
+          curl https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
+          curl https://packages.microsoft.com/config/ubuntu/22.04/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list
+          
+          # Update và cài đặt
+          sudo apt-get update
+          sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18
+          sudo ACCEPT_EULA=Y apt-get install -y mssql-tools18
+          
+          # Thêm vào PATH
+          echo 'export PATH="$PATH:/opt/mssql-tools18/bin"' >> ~/.bashrc
+          
+      
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas numpy pymssql azure-storage-blob
+          pip install pandas numpy pyodbc azure-storage-blob
+          echo "=== Dependencies installed ==="
       
       - name: Run ETL Pipeline
-        run: python etl.py
         env:
           SEMESTER: ${{ github.event.inputs.semester }}
           SURVEY_FILE: ${{ github.event.inputs.survey_file }}
           CONNECTION_STRING: ${{ secrets.AZURE_CONNECTION_STRING }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        run: |
+          python etl_optimized.py
       
-      - name: Upload logs
+      - name: Summary
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: etl-logs-${{ github.run_id }}
-          path: logs/
-          retention-days: 30
+        run: |
+          echo "## ETL Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Parameter | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Semester | ${{ github.event.inputs.semester }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Survey File | ${{ github.event.inputs.survey_file }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | ${{ job.status }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Run ID | ${{ github.run_id }} |" >> $GITHUB_STEP_SUMMARY

@@ -1,11 +1,15 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+SURVEY ETL - GIỮ NGUYÊN CODE GỐC + LOAD DATABASE
+"""
 
-import time
 import os
 import sys
 import re
-import io 
+import io      # ← THÊM
+import time    # ← THÊM
 from datetime import datetime
-from typing import Dict, List, Tuple, Optional
 import pandas as pd
 import numpy as np
 import pyodbc
@@ -543,7 +547,6 @@ def load_to_database(dims, fact_df):
 
 # ========== MAIN ==========
 def main():
-    import time
     total_start = time.time()
     print("=" * 60)
     print("🚀 SURVEY ETL - GIỮ NGUYÊN CODE GỐC + LOAD DB")

@@ -1,13 +1,13 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-SURVEY ETL - GIỮ NGUYÊN CODE GỐC + LOAD DATABASE
-"""
+
 
 import os
 import sys
 import re
+import io  # ← THÊM
+import time  # ← THÊM
 from datetime import datetime
+from typing import Dict, List, Tuple, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed  # ← THÊM
 import pandas as pd
 import numpy as np
 import pyodbc

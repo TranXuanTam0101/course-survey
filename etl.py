@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SURVEY ETL - POLARS ULTRA FAST
-- Dùng Polars thay Pandas (nhanh 10-50x)
-- Parse CSV trực tiếp không cần custom parser
-- Transform vectorized toàn bộ
+SURVEY ETL - CSV READER + PARALLEL
+- Parse từng dòng với csv.reader (chính xác)
+- Xử lý song song với ThreadPoolExecutor
+- Convert sang Polars để transform nhanh
 """
 
 import os
 import sys
 import re
 import io
+import csv
 import time
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 import polars as pl
+import pandas as pd
 import numpy as np
 import pyodbc
 from azure.storage.blob import BlobServiceClient
@@ -44,6 +46,7 @@ CONN_STR = (
 )
 
 BATCH_SIZE = 50000
+PARSE_WORKERS = 4  # ThreadPoolExecutor, không cần nhiều
 
 # ================= PATTERNS =================
 DATE_PATTERN = re.compile(r'^\d{2}/\d{2}/\d{4}$')
@@ -92,17 +95,17 @@ ALL_WEIGHTS = {
 
 # ================= HELPER FUNCTIONS =================
 def to_int(val):
-    if val is None or (hasattr(val, 'is_null') and val.is_null()):
+    if pd.isna(val):
         return None
     return int(val)
 
 def to_float(val):
-    if val is None or (hasattr(val, 'is_null') and val.is_null()):
+    if pd.isna(val):
         return None
     return float(val)
 
 def to_str(val, max_len=None):
-    if val is None or (hasattr(val, 'is_null') and val.is_null()):
+    if pd.isna(val):
         return ''
     s = str(val)
     return s[:max_len] if max_len else s
@@ -137,35 +140,33 @@ def download_blob_to_string(blob_service: BlobServiceClient, container: str, blo
         print(f"  -> Lỗi download {blob_path}: {e}")
         return ""
 
-def parse_hp_csv(content: str) -> pl.DataFrame:
+def parse_hp_csv(content: str) -> pd.DataFrame:
     if not content:
-        return pl.DataFrame()
+        return pd.DataFrame()
     try:
-        df = pl.read_csv(io.StringIO(content))
-        if df.width >= 4:
-            df = df.select(df.columns[1:4])
-            df = df.rename({df.columns[0]: 'MaHP', df.columns[1]: 'TenKhoa', df.columns[2]: 'TenHP'})
-        df = df.with_columns(pl.col('TenKhoa').map_elements(create_ma_khoa, return_dtype=pl.String).alias('MaKhoa'))
+        df = pd.read_csv(io.StringIO(content))
+        if len(df.columns) >= 4:
+            df = df.iloc[:, 1:4]
+            df.columns = ['MaHP', 'TenKhoa', 'TenHP']
+        df['MaKhoa'] = df['TenKhoa'].apply(create_ma_khoa)
         return df
-    except Exception as e:
-        print(f"  -> Lỗi parse HP-Khoa: {e}")
-        return pl.DataFrame()
+    except:
+        return pd.DataFrame()
 
-def parse_cn_csv(content: str) -> pl.DataFrame:
+def parse_cn_csv(content: str) -> pd.DataFrame:
     if not content:
-        return pl.DataFrame()
+        return pd.DataFrame()
     try:
-        df = pl.read_csv(io.StringIO(content))
-        if df.width >= 4:
-            df = df.select(df.columns[1:4])
-            df = df.rename({df.columns[0]: 'TenKhoa', df.columns[1]: 'TenChuyenNganh', df.columns[2]: 'MaChuyenNganh'})
-        df = df.with_columns(pl.col('TenKhoa').map_elements(create_ma_khoa, return_dtype=pl.String).alias('MaKhoa'))
+        df = pd.read_csv(io.StringIO(content))
+        if len(df.columns) >= 4:
+            df = df.iloc[:, 1:4]
+            df.columns = ['TenKhoa', 'TenChuyenNganh', 'MaChuyenNganh']
+        df['MaKhoa'] = df['TenKhoa'].apply(create_ma_khoa)
         return df
-    except Exception as e:
-        print(f"  -> Lỗi parse TenChuyenNganh-Khoa: {e}")
-        return pl.DataFrame()
+    except:
+        return pd.DataFrame()
 
-def extract_all_parallel(blob_service: BlobServiceClient) -> Tuple[str, pl.DataFrame, pl.DataFrame]:
+def extract_all_parallel(blob_service: BlobServiceClient) -> Tuple[str, pd.DataFrame, pd.DataFrame]:
     print("  -> Download SONG SONG 3 files...")
     start = time.time()
     
@@ -198,117 +199,117 @@ def extract_all_parallel(blob_service: BlobServiceClient) -> Tuple[str, pl.DataF
     
     return results.get('survey', ''), hp_df, cn_df
 
-# ================= PARSE VỚI POLARS (SIÊU NHANH) =================
-def parse_survey_polars(content: str) -> pl.DataFrame:
+# ================= PARSE VỚI CSV.READER (CHÍNH XÁC) =================
+
+# Hàm parse 1 dòng - đặt ở global để pickle được
+def parse_one_line_csv(line: str) -> Optional[List[str]]:
+    """Parse 1 dòng CSV - Xử lý đúng dấu phẩy trong quotes"""
+    if not line or not line.strip():
+        return None
+    try:
+        row = next(csv.reader([line], quotechar='"', skipinitialspace=True))
+        return [x.strip() for x in row]
+    except:
+        return line.split(',')
+
+def extract_fields_from_row(row: List[str]) -> Optional[Dict]:
+    """Trích xuất các trường từ 1 dòng đã parse"""
+    if not row:
+        return None
+    
+    # Tìm ngày sinh
+    ngay_sinh_idx = -1
+    ngay_sinh = ''
+    for i, val in enumerate(row):
+        if DATE_PATTERN.match(val):
+            ngay_sinh_idx = i
+            ngay_sinh = val
+            break
+    if ngay_sinh_idx == -1:
+        return None
+    
+    # Thông tin cơ bản
+    lop = row[0] if len(row) > 0 else ''
+    ma_sv = row[1] if len(row) > 1 else ''
+    ma_hp = row[ngay_sinh_idx + 1] if ngay_sinh_idx + 1 < len(row) else ''
+    
+    # Tìm MaGV
+    ma_gv = ''
+    ma_gv_idx = -1
+    for i in range(len(row) - 1, ngay_sinh_idx + 2, -1):
+        if MA_GV_PATTERN.match(row[i]):
+            ma_gv = row[i]
+            ma_gv_idx = i
+            break
+    if ma_gv_idx == -1:
+        ma_gv_idx = len(row) - 4 if len(row) >= 4 else ngay_sinh_idx + 2
+    
+    # Họ tên SV
+    ho_ten_parts = row[2:ngay_sinh_idx] if ngay_sinh_idx > 2 else []
+    ho_ten = ' '.join(ho_ten_parts)
+    name_parts = ho_ten.split()
+    ten = name_parts[-1] if name_parts else ''
+    ho_dem = ' '.join(name_parts[:-1]) if len(name_parts) > 1 else ''
+    
+    # TenHP
+    ten_hp_parts = row[ngay_sinh_idx + 2:ma_gv_idx] if ma_gv_idx > ngay_sinh_idx + 2 else []
+    ten_hp = ' '.join(ten_hp_parts)
+    
+    # Thông tin GV
+    ho_dem_gv = row[ma_gv_idx + 1] if ma_gv_idx + 1 < len(row) else ''
+    ten_gv = row[ma_gv_idx + 2] if ma_gv_idx + 2 < len(row) else ''
+    lop_hp = row[ma_gv_idx + 3] if ma_gv_idx + 3 < len(row) else ''
+    
+    # Câu trả lời
+    cau13 = cau14 = cau15 = cau16 = ''
+    for i in range(ma_gv_idx + 4, len(row)):
+        if row[i].upper() == 'NULL':
+            after_null = row[i+1:]
+            if after_null:
+                answers = ','.join(after_null)
+                parts = [p.strip() for p in answers.split(',') if p.strip()]
+                cau13 = parts[0] if len(parts) > 0 else ''
+                cau14 = parts[1] if len(parts) > 1 else ''
+                cau15 = parts[2] if len(parts) > 2 else ''
+                cau16 = parts[3] if len(parts) > 3 else ''
+            break
+    
+    return {
+        'Lop': lop, 'MaSV': ma_sv, 'HoDem': ho_dem, 'Ten': ten,
+        'NgaySinh': ngay_sinh, 'MaHP': ma_hp, 'TenHP': ten_hp,
+        'MaGV': ma_gv, 'HoDemGV': ho_dem_gv, 'TenGV': ten_gv, 'LopHP': lop_hp,
+        'Cau13': cau13, 'Cau14': cau14, 'Cau15': cau15, 'Cau16': cau16
+    }
+
+def parse_survey_hybrid(content: str) -> pd.DataFrame:
     """
-    Parse file survey bằng Polars - NHANH HƠN PANDAS 10x
-    Polars tự động xử lý song song, không cần custom ProcessPoolExecutor
+    Parse hybrid:
+    - Dùng ThreadPoolExecutor để parse CSV song song
+    - Dùng csv.reader để xử lý chính xác dấu phẩy
     """
-    print("  -> Đang parse với Polars...")
+    print(f"  -> Đang parse hybrid ({PARSE_WORKERS} workers)...")
     start = time.time()
     
-    # Đọc toàn bộ file, không cần header
-    df = pl.read_csv(
-        io.StringIO(content),
-        has_header=False,
-        infer_schema=False,
-        ignore_errors=True,
-        quote_char='"'
-    )
+    lines = [l for l in content.strip().split('\n') if l.strip()]
     
-    print(f"  -> Đã đọc {len(df):,} dòng raw")
+    # Bước 1: Parse CSV song song
+    with ThreadPoolExecutor(max_workers=PARSE_WORKERS) as executor:
+        rows = list(executor.map(parse_one_line_csv, lines))
     
-    # Lấy tất cả cột dưới dạng string
-    df = df.select(pl.all().cast(pl.String))
+    # Bước 2: Trích xuất fields (có thể làm tuần tự vì nhanh)
+    data = []
+    for row in rows:
+        if row:
+            fields = extract_fields_from_row(row)
+            if fields:
+                data.append(fields)
     
-    # Tìm cột chứa ngày sinh (pattern DD/MM/YYYY)
-    date_cols = []
-    for col in df.columns:
-        # Kiểm tra mẫu đầu tiên có khớp pattern không
-        sample = df[col].head(10).to_list()
-        if any(DATE_PATTERN.match(str(v)) for v in sample if v):
-            date_cols.append(col)
-    
-    if not date_cols:
-        print("  -> Không tìm thấy cột ngày sinh!")
-        return pl.DataFrame()
-    
-    # Giả định cột ngày sinh là cột đầu tiên khớp pattern
-    ngay_sinh_col = date_cols[0]
-    col_idx = df.columns.index(ngay_sinh_col)
-    
-    # Tìm cột MaGV (pattern: 7 số hoặc TGxxxxx)
-    ma_gv_col = None
-    for col in df.columns[col_idx+2:]:
-        sample = df[col].head(20).to_list()
-        if any(MA_GV_PATTERN.match(str(v)) for v in sample if v):
-            ma_gv_col = col
-            break
-    
-    if not ma_gv_col:
-        print("  -> Không tìm thấy cột MaGV!")
-        return pl.DataFrame()
-    
-    ma_gv_idx = df.columns.index(ma_gv_col)
-    
-    # Tìm cột NULL
-    null_col = None
-    for col in df.columns[ma_gv_idx+4:]:
-        sample = df[col].head(10).to_list()
-        if any(str(v).upper() == 'NULL' for v in sample if v):
-            null_col = col
-            break
-    
-    # Tạo DataFrame kết quả với rename
-    result_cols = {
-        df.columns[0]: 'Lop',
-        df.columns[1]: 'MaSV',
-    }
-    
-    # NgaySinh
-    result_cols[ngay_sinh_col] = 'NgaySinh'
-    
-    # MaHP (cột sau ngày sinh)
-    if col_idx + 1 < len(df.columns):
-        result_cols[df.columns[col_idx + 1]] = 'MaHP'
-    
-    # MaGV
-    result_cols[ma_gv_col] = 'MaGV'
-    
-    # HoDemGV, TenGV, LopHP
-    if ma_gv_idx + 1 < len(df.columns):
-        result_cols[df.columns[ma_gv_idx + 1]] = 'HoDemGV'
-    if ma_gv_idx + 2 < len(df.columns):
-        result_cols[df.columns[ma_gv_idx + 2]] = 'TenGV'
-    if ma_gv_idx + 3 < len(df.columns):
-        result_cols[df.columns[ma_gv_idx + 3]] = 'LopHP'
-    
-    # Câu trả lời (sau NULL)
-    if null_col:
-        null_idx = df.columns.index(null_col)
-        if null_idx + 1 < len(df.columns):
-            result_cols[df.columns[null_idx + 1]] = 'Cau13'
-        if null_idx + 2 < len(df.columns):
-            result_cols[df.columns[null_idx + 2]] = 'Cau14'
-        if null_idx + 3 < len(df.columns):
-            result_cols[df.columns[null_idx + 3]] = 'Cau15'
-        if null_idx + 4 < len(df.columns):
-            result_cols[df.columns[null_idx + 4]] = 'Cau16'
-    
-    # Chỉ giữ các cột đã xác định
-    keep_cols = list(result_cols.keys())
-    df = df.select(keep_cols)
-    df = df.rename(result_cols)
-    
-    # Xử lý họ tên SV (từ cột giữa MaSV và NgaySinh)
-    # Lưu ý: Polars không có apply row-wise dễ như pandas, nên ta sẽ xử lý sau khi convert sang pandas
-    # hoặc dùng biểu thức Polars
-    
+    df = pd.DataFrame(data)
     print(f"  -> Đã parse {len(df):,} dòng hợp lệ ({time.time()-start:.2f}s)")
     return df
 
-# ================= TRANSFORM =================
-def transform_data(df: pl.DataFrame, hp_master: pl.DataFrame, cn_master: pl.DataFrame) -> Tuple[Dict, pl.DataFrame, str]:
+# ================= TRANSFORM (GIỮ NGUYÊN) =================
+def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.DataFrame) -> Tuple[Dict, pd.DataFrame, str]:
     print("  -> Transform...")
     start = time.time()
     
@@ -318,79 +319,53 @@ def transform_data(df: pl.DataFrame, hp_master: pl.DataFrame, cn_master: pl.Data
     print(f"  -> MaHocKy: {ma_hoc_ky}")
     
     # Chuẩn hóa Lop
-    df = df.with_columns([
-        pl.col('Lop').str.contains('^CTS-').cast(pl.Boolean).alias('IsCTS'),
-        pl.col('Lop').str.replace('^CTS-', '').str.split('[.\-_]').list.first().alias('LopChuanHoa')
-    ])
+    df['IsCTS'] = df['Lop'].str.contains('^CTS-', case=False, na=False)
+    df['LopChuanHoa'] = df['Lop'].str.replace('^CTS-', '', regex=True, case=False)
+    df['LopChuanHoa'] = df['LopChuanHoa'].str.split('[.\-_]').str[0].fillna('')
     
     # Merge với HP-Khoa
-    if not hp_master.is_empty():
-        df = df.join(hp_master.select(['MaHP', 'TenHP', 'MaKhoa', 'TenKhoa']), on='MaHP', how='left')
-        df = df.with_columns([
-            pl.col('TenKhoa').fill_null('Trường ĐHKT'),
-            pl.col('MaKhoa').fill_null('TĐHKT')
-        ])
-        # Cập nhật TenHP nếu có từ master
-        if 'TenHP_right' in df.columns:
-            df = df.with_columns(pl.col('TenHP_right').fill_null(pl.col('TenHP')).alias('TenHP'))
-            df = df.drop('TenHP_right')
+    if not hp_master.empty:
+        df = df.merge(hp_master[['MaHP', 'TenHP', 'MaKhoa', 'TenKhoa']], on='MaHP', how='left')
+        df['TenHP'] = df['TenHP_y'].fillna(df['TenHP_x'])
+        df['TenKhoa'] = df['TenKhoa'].fillna('Trường ĐHKT')
+        df['MaKhoa'] = df['MaKhoa'].fillna('TĐHKT')
+        df.drop(['TenHP_x', 'TenHP_y'], axis=1, inplace=True, errors='ignore')
     else:
-        df = df.with_columns([
-            pl.lit('TĐHKT').alias('MaKhoa'),
-            pl.lit('Trường ĐHKT').alias('TenKhoa')
-        ])
+        df['MaKhoa'] = 'TĐHKT'
+        df['TenKhoa'] = 'Trường ĐHKT'
     
-    # Xác định Chuyên ngành
-    df = df.with_columns([
-        pl.when(pl.col('LopChuanHoa').str.contains(r'^\d{2}K\d{2}$'))
-        .then(pl.lit('K') + pl.col('LopChuanHoa').str.slice(3, 2))
-        .otherwise(pl.col('MaKhoa'))
-        .alias('MaChuyenNganh')
-    ])
+    # Chuyên ngành
+    mask_th1 = df['LopChuanHoa'].str.match(r'^\d{2}K\d{2}$', na=False)
+    df['MaChuyenNganh'] = df['MaKhoa']
+    df.loc[mask_th1, 'MaChuyenNganh'] = 'K' + df.loc[mask_th1, 'LopChuanHoa'].str[3:5]
     
     # TenChuyenNganh từ cn_master
-    if not cn_master.is_empty():
-        cn_mapping = cn_master.select(['MaChuyenNganh', 'TenChuyenNganh']).unique(subset=['MaChuyenNganh'])
-        df = df.join(cn_mapping, on='MaChuyenNganh', how='left')
-        df = df.with_columns(
-            pl.col('TenChuyenNganh').fill_null(pl.lit('Chuyên ngành ') + pl.col('MaChuyenNganh'))
-        )
+    if not cn_master.empty:
+        cn_mapping = cn_master[['MaChuyenNganh', 'TenChuyenNganh']].drop_duplicates(subset=['MaChuyenNganh'])
+        cn_mapping = cn_mapping.set_index('MaChuyenNganh')['TenChuyenNganh'].to_dict()
+        df['TenChuyenNganh'] = df['MaChuyenNganh'].map(cn_mapping)
+        df['TenChuyenNganh'] = df['TenChuyenNganh'].fillna('Chuyên ngành ' + df['MaChuyenNganh'])
     else:
-        df = df.with_columns(
-            (pl.lit('Chuyên ngành ') + pl.col('MaChuyenNganh')).alias('TenChuyenNganh')
-        )
+        df['TenChuyenNganh'] = 'Chuyên ngành ' + df['MaChuyenNganh']
     
-    # Tính điểm cho các câu hỏi
+    # Tính điểm
     for col in ['Cau13', 'Cau14', 'Cau15', 'Cau16']:
-        if col in df.columns:
-            weights = ALL_WEIGHTS[col]
-            # Tạo biểu thức tính điểm
-            expr = pl.lit(0.0)
-            for keyword, weight in weights.items():
-                expr = expr + pl.when(pl.col(col).str.to_lowercase().str.contains(keyword)).then(pl.lit(weight)).otherwise(0.0)
-            df = df.with_columns(expr.alias(f'{col}_Score'))
-        else:
-            df = df.with_columns(pl.lit(0.0).alias(f'{col}_Score'))
-    
-    # Tạo MaLopHP và SubmissionID
-    df = df.with_columns([
-        (pl.col('LopHP') + '_' + pl.col('MaHP')).alias('MaLopHP'),
-        (pl.col('MaSV') + '*' + pl.col('LopHP') + '*' + pl.col('MaGV') + '_' + pl.lit(FILE_NAME)).alias('SubmissionID')
-    ])
-    
-    # Convert sang Pandas để tạo dimensions và fact (do pandas có nhiều hàm tiện lợi hơn)
-    df_pd = df.to_pandas()
+        texts = df[col].fillna('').astype(str).str.lower().values
+        scores = np.zeros(len(df), dtype=np.float32)
+        for keyword, weight in ALL_WEIGHTS[col].items():
+            scores += np.array([keyword in t for t in texts]) * weight
+        df[f'{col}_Score'] = scores
     
     # Tạo Dimensions
     dims = {
-        'hoc_ky': pl.DataFrame([{'MaHocKy': ma_hoc_ky, 'NamHoc': nam_hoc, 'HocKy': hoc_ky}]).to_pandas(),
-        'khoa': df.select(['MaKhoa', 'TenKhoa']).unique(subset=['MaKhoa']).to_pandas(),
-        'chuyen_nganh': df.select(['MaChuyenNganh', 'TenChuyenNganh', 'MaKhoa']).unique(subset=['MaChuyenNganh']).to_pandas(),
-        'lop_sv': df.select(['LopChuanHoa', 'Lop', 'MaChuyenNganh', 'IsCTS']).unique(subset=['LopChuanHoa']).rename({'LopChuanHoa': 'MaLop'}).to_pandas(),
-        'sinh_vien': df.select(['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'LopChuanHoa', 'IsCTS']).unique(subset=['MaSV']).rename({'LopChuanHoa': 'MaLop'}).to_pandas(),
-        'giang_vien': df.select(['MaGV', 'HoDemGV', 'TenGV']).unique(subset=['MaGV']).filter(pl.col('MaGV') != '').to_pandas(),
-        'hoc_phan': df.select(['MaHP', 'TenHP', 'MaKhoa']).unique(subset=['MaHP']).filter(pl.col('MaHP') != '').to_pandas(),
-        'lop_hp': df.select(['MaLopHP', 'LopHP', 'MaHP', 'MaGV']).unique(subset=['MaLopHP']).filter(pl.col('MaLopHP') != '_').to_pandas()
+        'hoc_ky': pd.DataFrame([{'MaHocKy': ma_hoc_ky, 'NamHoc': nam_hoc, 'HocKy': hoc_ky}]),
+        'khoa': df[['MaKhoa', 'TenKhoa']].drop_duplicates(subset=['MaKhoa']),
+        'chuyen_nganh': df[['MaChuyenNganh', 'TenChuyenNganh', 'MaKhoa']].drop_duplicates(subset=['MaChuyenNganh']),
+        'lop_sv': df[['LopChuanHoa', 'Lop', 'MaChuyenNganh', 'IsCTS']].drop_duplicates(subset=['LopChuanHoa']).rename(columns={'LopChuanHoa': 'MaLop'}),
+        'sinh_vien': df[['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'LopChuanHoa', 'IsCTS']].drop_duplicates(subset=['MaSV']).rename(columns={'LopChuanHoa': 'MaLop'}),
+        'giang_vien': df[['MaGV', 'HoDemGV', 'TenGV']].drop_duplicates(subset=['MaGV']).query("MaGV != ''"),
+        'hoc_phan': df[['MaHP', 'TenHP', 'MaKhoa']].drop_duplicates(subset=['MaHP']).query("MaHP != ''"),
+        'lop_hp': df.assign(MaLopHP=df['LopHP'] + '_' + df['MaHP'])[['MaLopHP', 'LopHP', 'MaHP', 'MaGV']].drop_duplicates(subset=['MaLopHP']).query("MaLopHP != '_'")
     }
     
     dims['chuyen_nganh']['MaCTDT'] = 'CTDT_CHINHQUY'
@@ -399,14 +374,16 @@ def transform_data(df: pl.DataFrame, hp_master: pl.DataFrame, cn_master: pl.Data
     dims['sinh_vien']['NgaySinh'] = dims['sinh_vien']['NgaySinh'].astype(str)
     
     # Tạo Fact
+    df['SubmissionID'] = df['MaSV'] + '*' + df['LopHP'] + '*' + df['MaGV'] + '_' + FILE_NAME
+    df['MaLopHP'] = df['LopHP'] + '_' + df['MaHP']
+    
     fact_rows = []
     for col, mc in [('Cau13', 13), ('Cau14', 14), ('Cau15', 15), ('Cau16', 16)]:
-        temp = df_pd[['SubmissionID', 'MaSV', 'MaLopHP', col, f'{col}_Score', 'IsCTS']].copy()
+        temp = df[['SubmissionID', 'MaSV', 'MaLopHP', col, f'{col}_Score', 'IsCTS']].copy()
         temp.columns = ['SubmissionID', 'MaSV', 'MaLopHP', 'TraLoiText', 'TraLoiSo', 'IsCTS']
         temp['MaCauHoi'] = mc
         fact_rows.append(temp)
     
-    import pandas as pd
     fact_df = pd.concat(fact_rows, ignore_index=True)
     fact_df['TraLoiText'] = fact_df['TraLoiText'].fillna('').astype(str).str[:1000]
     
@@ -415,12 +392,12 @@ def transform_data(df: pl.DataFrame, hp_master: pl.DataFrame, cn_master: pl.Data
     
     return dims, fact_df, ma_hoc_ky
 
-# ================= LOAD =================
+# ================= LOAD (GIỮ NGUYÊN) =================
 def get_existing_ids(cursor, table: str, id_col: str) -> set:
     cursor.execute(f"SELECT {id_col} FROM {table}")
     return {row[0] for row in cursor.fetchall()}
 
-def load_dimension(cursor, table: str, df, columns: List[str], id_col: str) -> int:
+def load_dimension(cursor, table: str, df: pd.DataFrame, columns: List[str], id_col: str) -> int:
     if df.empty:
         return 0
     
@@ -450,22 +427,20 @@ def load_dimension(cursor, table: str, df, columns: List[str], id_col: str) -> i
                     except:
                         tuple_data.append(None)
             else:
-                val = row[c]
-                tuple_data.append(str(val)[:500] if val else None)
+                tuple_data.append(to_str(row[c]))
         data.append(tuple(tuple_data))
     
     cursor.executemany(query, data)
     cursor.connection.commit()
     return len(new_data)
 
-def load_fact_all(cursor, fact_df) -> int:
+def load_fact_all(cursor, fact_df: pd.DataFrame) -> int:
     if fact_df.empty:
         return 0
     
     print(f"  -> Insert FACT: {len(fact_df):,} dòng...")
     start = time.time()
     
-    import pandas as pd
     data = list(zip(
         fact_df['SubmissionID'].astype(str).str[:500],
         fact_df['MaCauHoi'].fillna(0).astype(int),
@@ -496,7 +471,7 @@ def load_fact_all(cursor, fact_df) -> int:
     print(f"  ✅ FACT done: {total:,} dòng ({time.time()-start:.2f}s)")
     return total
 
-def load_to_database(dims: Dict, fact_df):
+def load_to_database(dims: Dict, fact_df: pd.DataFrame):
     print("  -> Load...")
     start = time.time()
     conn = pyodbc.connect(CONN_STR)
@@ -557,7 +532,7 @@ def load_to_database(dims: Dict, fact_df):
 def main():
     total_start = time.time()
     print("=" * 60)
-    print("🚀 SURVEY ETL - POLARS ULTRA FAST")
+    print("🚀 SURVEY ETL - HYBRID PARSE (CSV.READER + THREADPOOL)")
     print("=" * 60)
     print(f"Semester: {SEMESTER}")
     print(f"File: {SURVEY_FILE}")
@@ -576,11 +551,11 @@ def main():
         print("❌ Không thể đọc file survey!")
         sys.exit(1)
     
-    print("\n📝 2. PARSE (POLARS)")
+    print("\n📝 2. PARSE (HYBRID)")
     start = time.time()
-    df = parse_survey_polars(survey_content)
+    df = parse_survey_hybrid(survey_content)
     
-    if df.is_empty():
+    if df.empty:
         print("❌ Không có dữ liệu sau khi parse!")
         sys.exit(1)
     print(f"  ✅ Parse: {time.time()-start:.2f}s")

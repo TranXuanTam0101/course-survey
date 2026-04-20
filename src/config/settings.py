@@ -17,29 +17,19 @@ class Settings:
     CONNECTION_STRING = os.getenv("CONNECTION_STRING")
     
     # ========== DATABASE CONFIG ==========
-    # Lấy từng biến riêng để dễ validate
-    DB_SERVER = os.getenv("DB_SERVER", "course-survey.database.windows.net")
-    DB_USER = os.getenv("DB_USER", "sqladmin")
-    DB_PASSWORD = os.getenv("DB_PASSWORD", "Due@2026")  # THÊM DÒNG NÀY
-    DB_NAME = os.getenv("DB_NAME", "course-survey-db")
-    
     DB_CONFIG = {
-        'server': DB_SERVER,
-        'user': DB_USER,
-        'password': DB_PASSWORD,
-        'database': DB_NAME,
-        'timeout': 60,
+        'server': os.getenv("DB_SERVER", "course-survey.database.windows.net"),
+        'user': os.getenv("DB_USER", "sqladmin"),
+        'password': os.getenv("DB_PASSWORD", "Due@2026"),
+        'database': os.getenv("DB_NAME", "course-survey-db"),
+        'timeout': 60,  # Giảm timeout để tăng tốc
         'autocommit': False,
         'as_dict': False
     }
     
-    # ========== PIPELINE CONFIG ==========
-    SEMESTER = os.getenv("SEMESTER")
-    SURVEY_FILE = os.getenv("SURVEY_FILE")
-    
-    # ========== BATCH CONFIG ==========
-    BATCH_SIZE = 5000
-    PARSE_CHUNK_SIZE = 10000
+    # ========== BATCH CONFIG (Tối ưu performance) ==========
+    BATCH_SIZE = 5000  # Bulk insert batch size
+    PARSE_CHUNK_SIZE = 10000  # Parse file theo chunk
     
     # ========== WEIGHTS CONFIG ==========
     WEIGHTS_CAU13 = {
@@ -98,11 +88,7 @@ class Settings:
     @classmethod
     def validate(cls):
         """Validate required environment variables"""
-        required_vars = {
-            'CONNECTION_STRING': cls.CONNECTION_STRING,
-            'DB_PASSWORD': cls.DB_PASSWORD
-        }
-        missing = [var for var, value in required_vars.items() if not value]
+        required = ['CONNECTION_STRING', 'DB_PASSWORD']
+        missing = [var for var in required if not getattr(cls, var)]
         if missing:
             raise ValueError(f"Missing environment variables: {missing}")
-        return True

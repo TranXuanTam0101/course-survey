@@ -64,4 +64,9 @@ class DBConnection:
             
             return total_inserted
     
-    def get_ex
+    def get_existing_ids(self, table_name: str, id_column: str) -> set:
+        """Lấy danh sách ID đã tồn tại"""
+        with self.get_connection() as conn:
+            query = f"SELECT {id_column} FROM {table_name}"
+            df = pd.read_sql(query, conn)
+            return set(df[id_column].tolist())

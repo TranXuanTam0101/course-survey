@@ -1,4 +1,4 @@
-name: Survey ETL Pipeline (ODBC Optimized)
+name: Survey ETL Pipeline
 
 on:
   workflow_dispatch:
@@ -15,9 +15,9 @@ on:
         type: string
 
 jobs:
-  etl:
+  setup:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     
     steps:
       - name: Checkout code
@@ -27,30 +27,26 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+          cache: 'pip'
       
-      # ========== CÀI ĐẶT ODBC DRIVER 18 ==========
-      - name: Install Microsoft ODBC Driver 18
+      - name: Install ODBC Driver 18
         run: |
           echo "=== Cài đặt ODBC Driver 18 ==="
-          
-          # Thêm Microsoft repository
           curl https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
           curl https://packages.microsoft.com/config/ubuntu/22.04/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list
-          
-          # Update và cài đặt
           sudo apt-get update
-          sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18
-          sudo ACCEPT_EULA=Y apt-get install -y mssql-tools18
-          
-          # Thêm vào PATH
+          sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 mssql-tools18
           echo 'export PATH="$PATH:/opt/mssql-tools18/bin"' >> ~/.bashrc
-          
+          echo "✅ ODBC Driver installed"
       
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install pandas numpy pyodbc azure-storage-blob
-          echo "=== Dependencies installed ==="
+          echo "✅ Python dependencies installed"
+      
+      - name: Wait for background jobs
+        run: wait 
       
       - name: Run ETL Pipeline
         env:
@@ -58,8 +54,7 @@ jobs:
           SURVEY_FILE: ${{ github.event.inputs.survey_file }}
           CONNECTION_STRING: ${{ secrets.AZURE_CONNECTION_STRING }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-        run: |
-          python etl.py
+        run: python etl.py
       
       - name: Summary
         if: always()

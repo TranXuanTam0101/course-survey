@@ -107,12 +107,10 @@ def create_ma_khoa(ten_khoa: str) -> str:
     if not isinstance(ten_khoa, str) or not ten_khoa:
         return "UNKNOWN"
     
-    # Kiểm tra trường hợp đặc biệt
     for special_name, special_code in SPECIAL_MA_KHOA.items():
         if special_name.lower() in ten_khoa.lower():
             return special_code
     
-    # Xử lý thông thường
     words = re.split(r'[\s\-]+', ten_khoa)
     initials = []
     for w in words:
@@ -122,7 +120,7 @@ def create_ma_khoa(ten_khoa: str) -> str:
                 initials.append(first_char)
     return ''.join(initials) if initials else "UNKNOWN"
 
-# ========== CÁC HÀM TÁCH CÂU (GIỮ NGUYÊN) ==========
+# ========== CÁC HÀM TÁCH CÂU ==========
 def split_by_condition_1(text):
     parts, current = [], []
     i, n = 0, len(text)
@@ -228,7 +226,6 @@ def split_after_null_by_scoring(after_null_list):
     if len(best_parts) < 4:
         return [original_text, '', '', '']
     
-    # Chia đều
     n = len(best_parts)
     sizes = [1, 1, 1, 1]
     remaining = n - 4
@@ -408,7 +405,7 @@ def parse_survey_parallel(content: str) -> pd.DataFrame:
     print(f"  -> Đã parse {len(df):,} dòng ({time.time()-start:.2f}s)")
     return df
 
-# ================= TRANSFORM (TỐI ƯU) =================
+# ================= TRANSFORM =================
 def transform_data_fast(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.DataFrame) -> dict:
     print("  -> Transform (FAST)...")
     start = time.time()
@@ -426,9 +423,11 @@ def transform_data_fast(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd
     df['IsCTS'] = cn_info.apply(lambda x: x[3])
     df['MaLop'] = df['Lop']
     
-    # Merge master (dùng map nhanh hơn merge)
+    # Merge master - SỬA LỖI TRÙNG MaHP
     if not hp_master.empty:
-        hp_dict = hp_master.set_index('MaHP')[['TenHP', 'MaKhoa', 'TenKhoa']].to_dict('index')
+        # Drop duplicates trước khi tạo dict
+        hp_unique = hp_master.drop_duplicates(subset=['MaHP'])
+        hp_dict = hp_unique.set_index('MaHP')[['TenHP', 'MaKhoa', 'TenKhoa']].to_dict('index')
         df['TenHP_m'] = df['MaHP'].map(lambda x: hp_dict.get(x, {}).get('TenHP'))
         df['MaKhoa_m'] = df['MaHP'].map(lambda x: hp_dict.get(x, {}).get('MaKhoa'))
         df['TenKhoa_m'] = df['MaHP'].map(lambda x: hp_dict.get(x, {}).get('TenKhoa'))
@@ -447,14 +446,15 @@ def transform_data_fast(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd
     
     # TenChuyenNganh
     if not cn_master.empty:
-        cn_map = cn_master.set_index('MaChuyenNganh')['TenChuyenNganh'].to_dict()
+        cn_unique = cn_master.drop_duplicates(subset=['MaChuyenNganh'])
+        cn_map = cn_unique.set_index('MaChuyenNganh')['TenChuyenNganh'].to_dict()
         df['TenChuyenNganh'] = df['MaChuyenNganh'].map(cn_map)
     df['TenChuyenNganh'] = df['TenChuyenNganh'].fillna('Chuyên ngành ' + df['MaChuyenNganh'])
     
     df['MaLopHP'] = df['LopHP']
     df['SubmissionID'] = df['MaSV'].astype(str) + "_" + df['LopHP'].astype(str) + "_" + df['MaGV'].astype(str) + "_" + FILE_NAME
     
-    # Tạo Dimensions (gom drop_duplicates)
+    # Tạo Dimensions
     dims = {
         'DIM_HOC_KY': pd.DataFrame([{'MaHocKy': ma_hoc_ky, 'NamHoc': nam_hoc, 'HocKy': hoc_ky}]),
         'DIM_KHOA': df[['MaKhoa', 'TenKhoa']].drop_duplicates('MaKhoa'),
@@ -480,11 +480,10 @@ def transform_data_fast(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd
     ])
     dims['DIM_KHOA'] = pd.concat([dims['DIM_KHOA'], default_khoas]).drop_duplicates('MaKhoa').reset_index(drop=True)
     
-    # Tạo FACT (dùng list comprehension nhanh hơn)
+    # Tạo FACT
     print("  -> Tạo FACT...")
     fact_start = time.time()
     
-    # Trắc nghiệm
     trac_nghiem = [
         {
             'SubmissionID': row['SubmissionID'],
@@ -499,7 +498,6 @@ def transform_data_fast(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd
         and 1 <= int(row['CauHoi']) <= 12 and 1 <= int(float(row['GiaTri'])) <= 5
     ]
     
-    # Tự luận
     df_unique = df.drop_duplicates('SubmissionID')
     tu_luan = []
     for _, row in df_unique.iterrows():
@@ -522,7 +520,7 @@ def transform_data_fast(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd
     dims['FACT'] = fact_df
     return dims
 
-# ================= LOAD (GIỮ NGUYÊN) =================
+# ================= LOAD =================
 def get_existing_ids(cursor, table: str, id_col: str) -> set:
     cursor.execute(f"SELECT {id_col} FROM {table}")
     return {row[0] for row in cursor.fetchall()}
@@ -613,6 +611,8 @@ def load_fact(cursor, fact_df: pd.DataFrame) -> int:
         """, batch)
         cursor.connection.commit()
         total += len(batch)
+        if (i // BATCH_SIZE + 1) % 10 == 0:
+            print(f"    -> Đã insert {total:,}/{len(data):,} dòng")
     
     cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT CHECK CONSTRAINT ALL")
     cursor.connection.commit()
@@ -659,7 +659,7 @@ def load_to_database(dims: dict):
 def main():
     total_start = time.time()
     print("=" * 60)
-    print("🚀 SURVEY ETL - FAST + SPECIAL MaKhoa")
+    print("🚀 SURVEY ETL - FAST + SPECIAL MaKhoa + EXPORT")
     print("=" * 60)
     print(f"Semester: {SEMESTER}")
     print(f"File: {SURVEY_FILE}")
@@ -698,9 +698,45 @@ def main():
     dims = transform_data_fast(df, hp_master, cn_master)
     print(f"  ✅ Transform: {time.time()-start:.2f}s")
     
-    print("\n💾 4. LOAD")
+    # ========== XUẤT FILE KẾT QUẢ ==========
+    print("\n📄 4. EXPORT FILES")
+    start = time.time()
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    
+    # Lưu file processed survey
+    processed_path = f"{FILE_NAME}_processed_{timestamp}.csv"
+    df.to_csv(processed_path, index=False, encoding='utf-8-sig')
+    print(f"  -> Đã lưu: {processed_path} ({len(df):,} dòng)")
+    
+    # Lưu file FACT
+    fact_path = f"{FILE_NAME}_fact_{timestamp}.csv"
+    dims['FACT'].to_csv(fact_path, index=False, encoding='utf-8-sig')
+    print(f"  -> Đã lưu: {fact_path} ({len(dims['FACT']):,} dòng)")
+    
+    # Upload lên Blob (processed-data)
+    try:
+        processed_container = blob_service.get_container_client("processed-data")
+        if not processed_container.exists():
+            processed_container.create_container()
+        
+        # Upload processed survey
+        with open(processed_path, 'rb') as f:
+            processed_container.get_blob_client(f"{SEMESTER}/{processed_path}").upload_blob(f, overwrite=True)
+        print(f"  -> Uploaded: {SEMESTER}/{processed_path}")
+        
+        # Upload FACT
+        with open(fact_path, 'rb') as f:
+            processed_container.get_blob_client(f"{SEMESTER}/{fact_path}").upload_blob(f, overwrite=True)
+        print(f"  -> Uploaded: {SEMESTER}/{fact_path}")
+    except Exception as e:
+        print(f"  ⚠️ Lỗi upload: {e}")
+    
+    print(f"  ✅ Export: {time.time()-start:.2f}s")
+    
+    print("\n💾 5. LOAD TO DATABASE")
     start = time.time()
     load_to_database(dims)
+    print(f"  ✅ Load: {time.time()-start:.2f}s")
     
     total = time.time() - total_start
     print("\n" + "=" * 60)

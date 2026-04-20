@@ -1,21 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SURVEY ETL PIPELINE - ULTRA OPTIMIZED
-- Xử lý file raw không đồng nhất (parse từng dòng)
-- Download song song 3 files
-- Parse song song với ProcessPoolExecutor
-- Transform vectorized
-- Load với TVP và batch tối ưu
+SURVEY ETL - FIXED TVP FOR SQL SERVER
 """
-
 import os
 import sys
 import re
 import io
 import csv
 import time
-import pickle
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
@@ -48,17 +41,12 @@ CONN_STR = (
     f"Connection Timeout=60;"
 )
 
-BATCH_SIZE = 100000  # Tăng lên 100K để tối ưu
-PARSE_WORKERS = 4     # Số worker cho parse song song
-
-# Cache directory
-CACHE_DIR = Path("/tmp/etl_cache")
-CACHE_DIR.mkdir(exist_ok=True)
+BATCH_SIZE = 50000  # Batch size cho bulk insert
+PARSE_WORKERS = 4
 
 # ================= PATTERNS =================
 DATE_PATTERN = re.compile(r'^\d{2}/\d{2}/\d{4}$')
 MA_GV_PATTERN = re.compile(r'^(\d{7}|TG\d{5}|gvDacThu_TKTH)$')
-LOP_PATTERN = re.compile(r'^(\d{2})K(\d{2})$')
 CTS_PATTERN = re.compile(r'^CTS-', re.IGNORECASE)
 
 # ================= WEIGHTS =================
@@ -119,7 +107,6 @@ def to_str(val, max_len=None):
     return s[:max_len] if max_len else s
 
 def create_ma_khoa(ten_khoa: str) -> str:
-    """Lấy chữ cái đầu của TẤT CẢ các từ"""
     if not isinstance(ten_khoa, str) or not ten_khoa:
         return "TĐHKT"
     words = ten_khoa.split()
@@ -131,7 +118,6 @@ def create_ma_khoa(ten_khoa: str) -> str:
     return ''.join(initials) if initials else "TĐHKT"
 
 def derive_ma_hoc_ky() -> str:
-    """Tạo mã học kỳ: HK2_2425"""
     years = SEMESTER.split('-')
     year_part = years[0][2:] + years[1][2:]
     base_name = SURVEY_FILE.replace('.csv', '')
@@ -150,7 +136,6 @@ def is_ma_gv_format(value) -> bool:
 
 # ================= EXTRACT SONG SONG =================
 def download_blob_to_string(blob_service: BlobServiceClient, container: str, blob_path: str) -> str:
-    """Download 1 blob và trả về string"""
     try:
         blob_client = blob_service.get_container_client(container).get_blob_client(blob_path)
         if not blob_client.exists():
@@ -162,7 +147,6 @@ def download_blob_to_string(blob_service: BlobServiceClient, container: str, blo
         return ""
 
 def parse_hp_csv(content: str) -> pd.DataFrame:
-    """Parse HP-Khoa.csv"""
     if not content:
         return pd.DataFrame()
     try:
@@ -176,7 +160,6 @@ def parse_hp_csv(content: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 def parse_cn_csv(content: str) -> pd.DataFrame:
-    """Parse TenChuyenNganh-Khoa.csv"""
     if not content:
         return pd.DataFrame()
     try:
@@ -190,7 +173,6 @@ def parse_cn_csv(content: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 def extract_all_parallel(blob_service: BlobServiceClient) -> Tuple[str, pd.DataFrame, pd.DataFrame]:
-    """Download 3 files SONG SONG"""
     print("  -> Download SONG SONG 3 files...")
     start = time.time()
     
@@ -210,7 +192,6 @@ def extract_all_parallel(blob_service: BlobServiceClient) -> Tuple[str, pd.DataF
             key = future_to_key[future]
             try:
                 results[key] = future.result()
-                print(f"    -> Downloaded: {key}")
             except Exception as e:
                 print(f"    -> Lỗi {key}: {e}")
                 results[key] = ""
@@ -224,27 +205,18 @@ def extract_all_parallel(blob_service: BlobServiceClient) -> Tuple[str, pd.DataF
     
     return results.get('survey', ''), hp_df, cn_df
 
-# ================= PARSE SONG SONG (XỬ LÝ FILE KHÔNG ĐỒNG NHẤT) =================
-
-# Hàm parse 1 dòng - ĐẶT NGOÀI ĐỂ CÓ THỂ PICKLE CHO ProcessPoolExecutor
+# ================= PARSE SONG SONG =================
 def parse_one_line(line: str) -> Optional[Dict]:
-    """
-    Parse 1 dòng CSV - XỬ LÝ ĐƯỢC FILE KHÔNG ĐỒNG NHẤT
-    Trả về dict hoặc None nếu dòng không hợp lệ
-    """
     if not line or not line.strip():
         return None
     
     line = line.strip()
-    
-    # Parse dòng CSV
     try:
         row = next(csv.reader([line], quotechar='"', skipinitialspace=True))
     except:
         row = line.split(',')
     row = [x.strip() for x in row]
     
-    # Tìm ngày sinh - MỐC QUAN TRỌNG NHẤT
     ngay_sinh_idx = -1
     ngay_sinh = ''
     for i, val in enumerate(row):
@@ -255,12 +227,10 @@ def parse_one_line(line: str) -> Optional[Dict]:
     if ngay_sinh_idx == -1:
         return None
     
-    # Thông tin cơ bản
     lop = row[0] if len(row) > 0 else ''
     ma_sv = row[1] if len(row) > 1 else ''
     ma_hp = row[ngay_sinh_idx + 1] if ngay_sinh_idx + 1 < len(row) else ''
     
-    # Tìm MaGV (từ phải sang trái)
     ma_gv = ''
     ma_gv_idx = -1
     for i in range(len(row) - 1, ngay_sinh_idx + 2, -1):
@@ -271,23 +241,19 @@ def parse_one_line(line: str) -> Optional[Dict]:
     if ma_gv_idx == -1:
         ma_gv_idx = len(row) - 4 if len(row) >= 4 else ngay_sinh_idx + 2
     
-    # Họ tên SV (từ index 2 đến trước ngày sinh)
     ho_ten_parts = row[2:ngay_sinh_idx] if ngay_sinh_idx > 2 else []
     ho_ten = ' '.join(ho_ten_parts)
     name_parts = ho_ten.split()
     ten = name_parts[-1] if name_parts else ''
     ho_dem = ' '.join(name_parts[:-1]) if len(name_parts) > 1 else ''
     
-    # Tên học phần (từ sau ngày sinh đến trước MaGV)
     ten_hp_parts = row[ngay_sinh_idx + 2:ma_gv_idx] if ma_gv_idx > ngay_sinh_idx + 2 else []
     ten_hp = ' '.join(ten_hp_parts)
     
-    # Thông tin giảng viên
     ho_dem_gv = row[ma_gv_idx + 1] if ma_gv_idx + 1 < len(row) else ''
     ten_gv = row[ma_gv_idx + 2] if ma_gv_idx + 2 < len(row) else ''
     lop_hp = row[ma_gv_idx + 3] if ma_gv_idx + 3 < len(row) else ''
     
-    # Tìm NULL và câu trả lời
     cau13 = cau14 = cau15 = cau16 = ''
     for i in range(ma_gv_idx + 4, len(row)):
         if row[i].upper() == 'NULL':
@@ -309,54 +275,45 @@ def parse_one_line(line: str) -> Optional[Dict]:
     }
 
 def parse_survey_parallel(content: str, max_workers: int = PARSE_WORKERS) -> pd.DataFrame:
-    """
-    Parse file survey SONG SONG - XỬ LÝ ĐƯỢC FILE KHÔNG ĐỒNG NHẤT
-    Dùng ProcessPoolExecutor để tận dụng đa nhân CPU
-    """
     print(f"  -> Đang parse song song ({max_workers} workers)...")
     start = time.time()
     
     lines = [l for l in content.strip().split('\n') if l.strip()]
     
-    # Dùng ProcessPoolExecutor cho CPU-bound task
-    # chunksize giúp giảm overhead
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         results = list(executor.map(parse_one_line, lines, chunksize=10000))
     
-    # Lọc bỏ None
     data = [r for r in results if r is not None]
-    
     df = pd.DataFrame(data)
     print(f"  -> Đã parse {len(df):,} dòng hợp lệ ({time.time()-start:.2f}s)")
     return df
 
-# ================= TRANSFORM VECTORIZED =================
-def calculate_scores_vectorized(df: pd.DataFrame, col: str, weights_dict: Dict) -> pd.Series:
-    """Tính điểm vectorized - NHANH 10x"""
-    texts = df[col].fillna('').astype(str).str.lower()
-    scores = pd.Series(0.0, index=df.index)
+# ================= TRANSFORM VECTORIZED (TỐI ƯU THÊM) =================
+def calculate_scores_fast(df: pd.DataFrame, col: str, weights_dict: Dict) -> pd.Series:
+    """Tính điểm - Dùng list comprehension nhanh hơn str.contains"""
+    texts = df[col].fillna('').astype(str).str.lower().values
+    scores = np.zeros(len(df))
     for keyword, weight in weights_dict.items():
-        scores += texts.str.contains(keyword, regex=False).astype(float) * weight
-    return scores
+        # Dùng numpy cho nhanh
+        mask = np.array([keyword in t for t in texts])
+        scores += mask * weight
+    return pd.Series(scores, index=df.index)
 
 def transform_vectorized(df: pd.DataFrame, hp_master: pd.DataFrame) -> Tuple[Dict, pd.DataFrame, str]:
-    """Transform dữ liệu - VECTORIZED TOÀN BỘ"""
     print("  -> Transform (vectorized)...")
     start = time.time()
     
-    # 1. Mã học kỳ
     ma_hoc_ky = derive_ma_hoc_ky()
     nam_hoc = SEMESTER
     hoc_ky = int(ma_hoc_ky[2]) if ma_hoc_ky[2].isdigit() else 2
     print(f"  -> MaHocKy: {ma_hoc_ky}")
     
-    # 2. Chuẩn hóa Lop (VECTORIZED)
+    # Chuẩn hóa Lop
     df['IsCTS'] = df['Lop'].str.contains('^CTS-', case=False, na=False)
     df['LopChuanHoa'] = df['Lop'].str.replace('^CTS-', '', regex=True, case=False)
-    df['LopChuanHoa'] = df['LopChuanHoa'].str.split('[.\-_]').str[0]
-    df['LopChuanHoa'] = df['LopChuanHoa'].fillna('')
+    df['LopChuanHoa'] = df['LopChuanHoa'].str.split('[.\-_]').str[0].fillna('')
     
-    # 3. Merge với HP-Khoa
+    # Merge với HP-Khoa
     if not hp_master.empty:
         df = df.merge(hp_master[['MaHP', 'TenHP', 'MaKhoa', 'TenKhoa']], on='MaHP', how='left')
         df['TenHP'] = df['TenHP_y'].fillna(df['TenHP_x'])
@@ -367,17 +324,21 @@ def transform_vectorized(df: pd.DataFrame, hp_master: pd.DataFrame) -> Tuple[Dic
         df['MaKhoa'] = 'TĐHKT'
         df['TenKhoa'] = 'Trường ĐHKT'
     
-    # 4. Xác định Chuyên ngành (VECTORIZED)
+    # Chuyên ngành
     mask_th1 = df['LopChuanHoa'].str.match(r'^\d{2}K\d{2}$', na=False)
     df['MaChuyenNganh'] = df['MaKhoa']
     df.loc[mask_th1, 'MaChuyenNganh'] = 'K' + df.loc[mask_th1, 'LopChuanHoa'].str[3:5]
     df['TenChuyenNganh'] = 'Chuyên ngành ' + df['MaChuyenNganh']
     
-    # 5. Tính điểm (VECTORIZED)
+    # Tính điểm (dùng numpy cho nhanh)
     for col in ['Cau13', 'Cau14', 'Cau15', 'Cau16']:
-        df[f'{col}_Score'] = calculate_scores_vectorized(df, col, ALL_WEIGHTS[col])
+        texts = df[col].fillna('').astype(str).str.lower().values
+        scores = np.zeros(len(df))
+        for keyword, weight in ALL_WEIGHTS[col].items():
+            scores += np.array([keyword in t for t in texts]) * weight
+        df[f'{col}_Score'] = scores
     
-    # 6. Tạo Dimensions
+    # Tạo Dimensions
     dims = {
         'hoc_ky': pd.DataFrame([{'MaHocKy': ma_hoc_ky, 'NamHoc': nam_hoc, 'HocKy': hoc_ky}]),
         'khoa': df[['MaKhoa', 'TenKhoa']].drop_duplicates(subset=['MaKhoa']),
@@ -394,7 +355,7 @@ def transform_vectorized(df: pd.DataFrame, hp_master: pd.DataFrame) -> Tuple[Dic
     dims['lop_hp']['MaHocKy'] = ma_hoc_ky
     dims['sinh_vien']['NgaySinh'] = pd.to_datetime(dims['sinh_vien']['NgaySinh'], format='%d/%m/%Y', errors='coerce')
     
-    # 7. Tạo Fact
+    # Tạo Fact
     df['SubmissionID'] = df['MaSV'] + '*' + df['LopHP'] + '*' + df['MaGV'] + '_' + FILE_NAME
     df['MaLopHP'] = df['LopHP'] + '_' + df['MaHP']
     
@@ -414,7 +375,7 @@ def transform_vectorized(df: pd.DataFrame, hp_master: pd.DataFrame) -> Tuple[Dic
     
     return dims, fact_df, ma_hoc_ky
 
-# ================= LOAD TỐI ƯU =================
+# ================= LOAD (FIXED - KHÔNG DÙNG to_sql) =================
 def get_existing_ids(cursor, table: str, id_col: str) -> set:
     cursor.execute(f"SELECT {id_col} FROM {table}")
     return {row[0] for row in cursor.fetchall()}
@@ -449,58 +410,54 @@ def load_dimension(cursor, table: str, df: pd.DataFrame, columns: List[str], id_
     cursor.connection.commit()
     return len(new_data)
 
-def load_fact_tvp(conn, fact_df: pd.DataFrame) -> int:
-    """Load FACT dùng TVP - NHANH NHẤT"""
+def load_fact_bulk(cursor, fact_df: pd.DataFrame) -> int:
+    """Load FACT dùng executemany - CHUẨN SQL SERVER"""
     if fact_df.empty:
         return 0
     
     print(f"  -> Insert FACT: {len(fact_df):,} dòng...")
     start = time.time()
     
-    cursor = conn.cursor()
+    # Chuẩn bị data
+    data = []
+    for _, row in fact_df.iterrows():
+        data.append((
+            to_str(row['SubmissionID'], 500),
+            to_int(row['MaCauHoi']),
+            to_str(row['MaSV'], 50),
+            to_str(row['MaLopHP'], 200),
+            to_float(row['TraLoiSo']),
+            to_str(row['TraLoiText'], 1000),
+            1 if row['IsCTS'] else 0
+        ))
     
-    try:
-        # Tắt constraint tạm thời để tăng tốc
-        cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT NOCHECK CONSTRAINT ALL")
-        conn.commit()
-        
-        # Tạo bảng tạm và insert bằng to_sql (nhanh hơn executemany)
-        fact_df.to_sql('#temp_fact', conn, index=False, if_exists='replace', 
-                       method='multi', chunksize=BATCH_SIZE)
-        
-        # Merge từ bảng tạm vào FACT
-        cursor.execute("""
+    # Tắt constraint tạm thời
+    cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT NOCHECK CONSTRAINT ALL")
+    cursor.connection.commit()
+    
+    total = 0
+    for i in range(0, len(data), BATCH_SIZE):
+        batch = data[i:i+BATCH_SIZE]
+        cursor.executemany("""
             INSERT INTO FACT_TRA_LOI_KHAO_SAT 
             (SubmissionID, MaCauHoi, MaSV, MaLopHP, TraLoiSo, TraLoiText, IsCTS)
-            SELECT 
-                t.SubmissionID, t.MaCauHoi, t.MaSV, t.MaLopHP,
-                t.TraLoiSo, t.TraLoiText, t.IsCTS
-            FROM #temp_fact t
-            WHERE EXISTS (SELECT 1 FROM DIM_SINH_VIEN s WHERE s.MaSV = t.MaSV)
-              AND EXISTS (SELECT 1 FROM DIM_LOP_HOC_PHAN l WHERE l.MaLopHP = t.MaLopHP)
-        """)
-        
-        inserted = cursor.rowcount
-        conn.commit()
-        
-        # Bật lại constraint
-        cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT CHECK CONSTRAINT ALL")
-        conn.commit()
-        
-        # Xóa bảng tạm
-        cursor.execute("DROP TABLE #temp_fact")
-        conn.commit()
-        
-        print(f"  ✅ FACT done: {inserted:,} dòng ({time.time()-start:.2f}s)")
-        return inserted
-        
-    except Exception as e:
-        print(f"  -> Lỗi FACT: {e}")
-        conn.rollback()
-        return 0
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, batch)
+        cursor.connection.commit()
+        total += len(batch)
+        if (i // BATCH_SIZE + 1) % 5 == 0:
+            print(f"    -> Đã insert {total:,}/{len(data):,} dòng")
+    
+    # Bật lại constraint
+    cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT CHECK CONSTRAINT ALL")
+    cursor.connection.commit()
+    
+    print(f"  ✅ FACT done: {total:,} dòng ({time.time()-start:.2f}s)")
+    return total
 
 def load_to_database(dims: Dict, fact_df: pd.DataFrame):
     print("  -> Load...")
+    start = time.time()
     conn = pyodbc.connect(CONN_STR)
     cursor = conn.cursor()
     cursor.fast_executemany = True
@@ -519,7 +476,6 @@ def load_to_database(dims: Dict, fact_df: pd.DataFrame):
             INSERT INTO DIM_CHUONG_TRINH_DAO_TAO (MaCTDT, TenCTDT) VALUES ('CTDT_CHINHQUY', N'Chính quy')
         """)
         conn.commit()
-        print("  ✅ DIM_CTDT: ensured")
         
         count = load_dimension(cursor, 'DIM_CHUYEN_NGANH', dims['chuyen_nganh'],
                                ['MaChuyenNganh', 'TenChuyenNganh', 'MaKhoa', 'MaCTDT'], 'MaChuyenNganh')
@@ -546,8 +502,10 @@ def load_to_database(dims: Dict, fact_df: pd.DataFrame):
                                ['MaLopHP', 'LopHP', 'MaHP', 'MaGV', 'MaHocKy'], 'MaLopHP')
         print(f"  ✅ DIM_LOP_HOC_PHAN: {count} new")
         
-        count = load_fact_tvp(conn, fact_df)
+        count = load_fact_bulk(cursor, fact_df)
         print(f"  ✅ FACT: {count:,} dòng")
+        
+        print(f"  ✅ Load: {time.time()-start:.2f}s")
         
     except Exception as e:
         print(f"  ❌ Lỗi: {e}")
@@ -559,7 +517,7 @@ def load_to_database(dims: Dict, fact_df: pd.DataFrame):
 def main():
     total_start = time.time()
     print("=" * 60)
-    print("🚀 SURVEY ETL - ULTRA OPTIMIZED")
+    print("🚀 SURVEY ETL - FIXED LOAD")
     print("=" * 60)
     print(f"Semester: {SEMESTER}")
     print(f"File: {SURVEY_FILE}")
@@ -571,7 +529,6 @@ def main():
         print(f"❌ Lỗi kết nối Azure: {e}")
         sys.exit(1)
     
-    # ========== EXTRACT (SONG SONG) ==========
     print("\n📥 1. EXTRACT (PARALLEL)")
     survey_content, hp_master, cn_master = extract_all_parallel(blob_service)
     
@@ -579,7 +536,6 @@ def main():
         print("❌ Không thể đọc file survey!")
         sys.exit(1)
     
-    # ========== PARSE (SONG SONG) ==========
     print("\n📝 2. PARSE (PARALLEL)")
     start = time.time()
     df = parse_survey_parallel(survey_content)
@@ -589,24 +545,18 @@ def main():
         sys.exit(1)
     print(f"  ✅ Parse: {time.time()-start:.2f}s")
     
-    # ========== TRANSFORM (VECTORIZED) ==========
     print("\n🔄 3. TRANSFORM (VECTORIZED)")
     start = time.time()
     dims, fact_df, ma_hoc_ky = transform_vectorized(df, hp_master)
     print(f"  ✅ Transform: {time.time()-start:.2f}s")
     
-    # ========== LOAD ==========
     print("\n💾 4. LOAD")
     start = time.time()
     load_to_database(dims, fact_df)
-    print(f"  ✅ Load: {time.time()-start:.2f}s")
     
-    # ========== TOTAL ==========
     total = time.time() - total_start
     print("\n" + "=" * 60)
     print(f"🎉 HOÀN THÀNH! Tổng thời gian: {total:.1f}s")
-    if total < 60:
-        print("🎯 ĐẠT MỤC TIÊU < 1 PHÚT!")
     print("=" * 60)
 
 if __name__ == "__main__":

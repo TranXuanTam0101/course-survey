@@ -20,28 +20,18 @@ jobs:
     timeout-minutes: 10
     
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
       
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
       
-      # ========== CÀI ODBC DRIVER 18 ==========
-      - name: Install ODBC Driver 18 for SQL Server
-        run: |
-          curl https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
-          curl https://packages.microsoft.com/config/ubuntu/22.04/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list
-          sudo apt-get update
-          sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18
-          sudo ACCEPT_EULA=Y apt-get install -y mssql-tools18
-          echo 'export PATH="$PATH:/opt/mssql-tools18/bin"' >> ~/.bashrc
-          
-      
-      - name: Install Python dependencies
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas numpy pyodbc sqlalchemy azure-storage-blob
+          pip install pandas numpy pymssql azure-storage-blob
       
       - name: Run ETL Pipeline
         run: python etl.py
@@ -49,7 +39,6 @@ jobs:
           SEMESTER: ${{ github.event.inputs.semester }}
           SURVEY_FILE: ${{ github.event.inputs.survey_file }}
           CONNECTION_STRING: ${{ secrets.AZURE_CONNECTION_STRING }}
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
       
       - name: Upload logs
         if: always()

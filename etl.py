@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SURVEY ETL - CSV READER + PARALLEL
-- Parse từng dòng với csv.reader (chính xác)
-- Xử lý song song với ThreadPoolExecutor
-- Convert sang Polars để transform nhanh
+SURVEY ETL - GIỮ NGUYÊN LOGIC GỐC
+- Parse CSV với csv.reader (chính xác)
+- Xử lý câu trả lời bằng DP + Scoring (giống code gốc)
+- Transform và Load tối ưu
 """
 
 import os
@@ -15,8 +15,7 @@ import csv
 import time
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
-import polars as pl
+from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
 import numpy as np
 import pyodbc
@@ -46,7 +45,7 @@ CONN_STR = (
 )
 
 BATCH_SIZE = 50000
-PARSE_WORKERS = 4  # ThreadPoolExecutor, không cần nhiều
+PARSE_WORKERS = 4
 
 # ================= PATTERNS =================
 DATE_PATTERN = re.compile(r'^\d{2}/\d{2}/\d{4}$')
@@ -92,6 +91,7 @@ ALL_WEIGHTS = {
     'Cau13': WEIGHTS_CAU13, 'Cau14': WEIGHTS_CAU14,
     'Cau15': WEIGHTS_CAU15, 'Cau16': WEIGHTS_CAU16
 }
+COLUMN_ORDER = ['Cau13', 'Cau14', 'Cau15', 'Cau16']
 
 # ================= HELPER FUNCTIONS =================
 def to_int(val):
@@ -199,9 +199,290 @@ def extract_all_parallel(blob_service: BlobServiceClient) -> Tuple[str, pd.DataF
     
     return results.get('survey', ''), hp_df, cn_df
 
-# ================= PARSE VỚI CSV.READER (CHÍNH XÁC) =================
+# ================= XỬ LÝ CÂU TRẢ LỜI (GIỮ NGUYÊN LOGIC GỐC) =================
 
-# Hàm parse 1 dòng - đặt ở global để pickle được
+def calculate_weighted_score(text, column_name):
+    """Tính điểm có trọng số cho một text đối với một cột cụ thể"""
+    if not text or not isinstance(text, str):
+        return 0.0
+    
+    text_lower = text.lower()
+    total_score = 0.0
+    weights = ALL_WEIGHTS.get(column_name, {})
+    
+    for keyword, weight in weights.items():
+        if keyword in text_lower:
+            count = text_lower.count(keyword)
+            total_score += weight * (1 + 0.1 * (count - 1))
+    
+    length_score = min(len(text) * 0.03, 1.0)
+    total_score += length_score
+    
+    return total_score
+
+def get_phrase_bonus(segment_parts):
+    """Phát hiện cụm từ có nghĩa khi gộp các phần tử"""
+    if len(segment_parts) < 2:
+        return 0.0
+    
+    merged_text = ' '.join(segment_parts).lower()
+    bonus = 0.0
+    
+    meaningful_phrases = [
+        ('nội dung', 'đầy đủ', 1.0),
+        ('nội dung', 'chi tiết', 1.0),
+        ('đầu ra', 'chuẩn', 1.0),
+        ('đánh giá', 'cụ thể', 1.5),
+        ('kiểm tra', 'cụ thể', 1.5),
+        ('giảng viên', 'nhiệt tình', 1.0),
+        ('bài giảng', 'dễ hiểu', 1.0),
+        ('đánh giá', 'công bằng', 1.0),
+        ('kiểm tra', 'công bằng', 1.0)
+    ]
+    
+    for kw1, kw2, weight in meaningful_phrases:
+        if kw1 in merged_text and kw2 in merged_text:
+            bonus += weight
+    
+    return bonus
+
+def split_by_condition_1(text):
+    """Cấp 1: Tách với điều kiện trước và sau dấu phẩy đều không có khoảng trắng"""
+    parts = []
+    current = []
+    i = 0
+    n = len(text)
+    
+    while i < n:
+        if text[i] == ',':
+            has_space_before = (i > 0 and text[i-1] == ' ')
+            has_space_after = (i + 1 < n and text[i+1] == ' ')
+            
+            if not has_space_before and not has_space_after:
+                if current:
+                    parts.append(''.join(current).strip())
+                    current = []
+            else:
+                current.append(',')
+        else:
+            current.append(text[i])
+        i += 1
+    
+    if current:
+        parts.append(''.join(current).strip())
+    
+    return [p for p in parts if p]
+
+def split_by_condition_2(text):
+    """Cấp 2: Tách với điều kiện sau dấu phẩy không có khoảng trắng"""
+    parts = []
+    current = []
+    i = 0
+    n = len(text)
+    
+    while i < n:
+        if text[i] == ',':
+            if i + 1 < n and text[i+1] == ' ':
+                current.append(',')
+            else:
+                if current:
+                    parts.append(''.join(current).strip())
+                    current = []
+        else:
+            current.append(text[i])
+        i += 1
+    
+    if current:
+        parts.append(''.join(current).strip())
+    
+    return [p for p in parts if p]
+
+def split_by_condition_3(text):
+    """Cấp 3: Tách với điều kiện sau dấu phẩy không có khoảng trắng VÀ chữ in hoa đầu tiên"""
+    parts = []
+    current = []
+    i = 0
+    n = len(text)
+    
+    while i < n:
+        if text[i] == ',':
+            if i + 1 < n:
+                next_char = text[i + 1]
+                if next_char != ' ' and next_char.isupper():
+                    if current:
+                        parts.append(''.join(current).strip())
+                        current = []
+                else:
+                    current.append(',')
+            else:
+                current.append(',')
+        else:
+            current.append(text[i])
+        i += 1
+    
+    if current:
+        parts.append(''.join(current).strip())
+    
+    return [p for p in parts if p]
+
+def try_create_4th_column(parts):
+    """Thử lấy phần tử cuối cùng sau dấu phẩy của cột cuối để tạo cột thứ 4"""
+    if len(parts) == 3:
+        last_col = parts[-1]
+        if ',' in last_col:
+            sub_parts = last_col.split(',')
+            if len(sub_parts) >= 2:
+                last_element = sub_parts[-1].strip()
+                parts[-1] = ','.join(sub_parts[:-1]).strip()
+                parts.append(last_element)
+                return True, parts
+    return False, parts
+
+def sequential_scoring_classification(parts):
+    """Phân loại các phần tử bằng trọng số, đảm bảo dùng hết tất cả các phần tử"""
+    if not parts:
+        return []
+    
+    n = len(parts)
+    num_columns = 4
+    
+    dp = [[-1e9] * num_columns for _ in range(n + 1)]
+    choice = [[None] * num_columns for _ in range(n + 1)]
+    
+    dp[0][0] = 0
+    
+    for i in range(n):
+        for j in range(num_columns):
+            if dp[i][j] < -1e8:
+                continue
+            
+            remaining_columns = num_columns - j
+            min_remaining_parts = remaining_columns - 1
+            max_k = n - i - min_remaining_parts
+            
+            for k in range(1, max_k + 1):
+                segment_parts = parts[i:i+k]
+                merged_text = ', '.join(segment_parts)
+                
+                base_score = calculate_weighted_score(merged_text, COLUMN_ORDER[j])
+                phrase_bonus = get_phrase_bonus(segment_parts)
+                score = base_score + phrase_bonus
+                
+                if j + 1 < num_columns:
+                    new_score = dp[i][j] + score
+                    if new_score > dp[i + k][j + 1]:
+                        dp[i + k][j + 1] = new_score
+                        choice[i + k][j + 1] = (i, j, k, merged_text)
+                else:
+                    if i + k == n:
+                        new_score = dp[i][j] + score
+                        if new_score > dp[i + k][j]:
+                            dp[i + k][j] = new_score
+                            choice[i + k][j] = (i, j, k, merged_text)
+    
+    best_score = dp[n][num_columns - 1]
+    
+    if best_score < -1e8:
+        return fallback_even_split(parts)
+    
+    assignments = []
+    i, j = n, num_columns - 1
+    while i > 0 and j >= 0:
+        if choice[i][j] is None:
+            break
+        
+        prev_i, prev_j, k, text = choice[i][j]
+        assignments.insert(0, {
+            'column': COLUMN_ORDER[prev_j],
+            'text': text,
+            'num_parts': k
+        })
+        i, j = prev_i, prev_j
+    
+    return assignments
+
+def fallback_even_split(parts):
+    """Fallback: chia đều các phần tử, đảm bảo dùng hết"""
+    n = len(parts)
+    num_columns = 4
+    
+    sizes = [1] * num_columns
+    remaining = n - num_columns
+    
+    for i in range(remaining):
+        sizes[i % num_columns] += 1
+    
+    assignments = []
+    start = 0
+    for col_idx, size in enumerate(sizes):
+        end = start + size
+        merged_text = ', '.join(parts[start:end])
+        assignments.append({
+            'column': COLUMN_ORDER[col_idx],
+            'text': merged_text,
+            'num_parts': size
+        })
+        start = end
+    
+    return assignments
+
+def split_after_null_by_scoring(after_null_list, row_number=None):
+    """Xử lý các cột sau cột NULL bằng 3 cấp rule-based và scoring"""
+    if not after_null_list:
+        return ['', '', '', ''], None
+    
+    original_text = ','.join(after_null_list)
+    
+    # CẤP 1
+    parts_level1 = split_by_condition_1(original_text)
+    if len(parts_level1) == 4:
+        return parts_level1[:4], None
+    if len(parts_level1) == 3:
+        success, new_parts = try_create_4th_column(parts_level1)
+        if success and len(new_parts) == 4:
+            return new_parts[:4], None
+    
+    # CẤP 2
+    parts_level2 = split_by_condition_2(original_text)
+    if len(parts_level2) == 4:
+        return parts_level2[:4], None
+    if len(parts_level2) == 3:
+        success, new_parts = try_create_4th_column(parts_level2)
+        if success and len(new_parts) == 4:
+            return new_parts[:4], None
+    
+    # CẤP 3
+    parts_level3 = split_by_condition_3(original_text)
+    if len(parts_level3) == 4:
+        return parts_level3[:4], None
+    if len(parts_level3) == 3:
+        success, new_parts = try_create_4th_column(parts_level3)
+        if success and len(new_parts) == 4:
+            return new_parts[:4], None
+    
+    # Chọn bộ parts có số lượng phần tử lớn nhất
+    best_parts = parts_level3 if len(parts_level3) >= len(parts_level2) else parts_level2
+    best_parts = best_parts if len(best_parts) >= len(parts_level1) else parts_level1
+    
+    if len(best_parts) < 4:
+        return [original_text, '', '', ''], None
+    
+    # Dùng scoring để phân loại
+    assignments = sequential_scoring_classification(best_parts)
+    
+    result = {col: '' for col in COLUMN_ORDER}
+    for assign in assignments:
+        col = assign['column']
+        text = assign['text']
+        if result[col]:
+            result[col] = f"{result[col]}, {text}"
+        else:
+            result[col] = text
+    
+    return [result['Cau13'], result['Cau14'], result['Cau15'], result['Cau16']], None
+
+# ================= PARSE CHÍNH =================
+
 def parse_one_line_csv(line: str) -> Optional[List[str]]:
     """Parse 1 dòng CSV - Xử lý đúng dấu phẩy trong quotes"""
     if not line or not line.strip():
@@ -212,81 +493,80 @@ def parse_one_line_csv(line: str) -> Optional[List[str]]:
     except:
         return line.split(',')
 
-def extract_fields_from_row(row: List[str]) -> Optional[Dict]:
-    """Trích xuất các trường từ 1 dòng đã parse"""
-    if not row:
-        return None
+def process_row(row: List[str], row_number: int = None) -> Tuple[Optional[Dict], Optional[str]]:
+    """Xử lý một dòng - GIỮ NGUYÊN LOGIC GỐC"""
+    if not row or len(row) < 2:
+        return None, None
     
-    # Tìm ngày sinh
-    ngay_sinh_idx = -1
-    ngay_sinh = ''
-    for i, val in enumerate(row):
-        if DATE_PATTERN.match(val):
-            ngay_sinh_idx = i
-            ngay_sinh = val
-            break
-    if ngay_sinh_idx == -1:
-        return None
-    
-    # Thông tin cơ bản
-    lop = row[0] if len(row) > 0 else ''
-    ma_sv = row[1] if len(row) > 1 else ''
-    ma_hp = row[ngay_sinh_idx + 1] if ngay_sinh_idx + 1 < len(row) else ''
-    
-    # Tìm MaGV
-    ma_gv = ''
-    ma_gv_idx = -1
-    for i in range(len(row) - 1, ngay_sinh_idx + 2, -1):
-        if MA_GV_PATTERN.match(row[i]):
-            ma_gv = row[i]
-            ma_gv_idx = i
-            break
-    if ma_gv_idx == -1:
-        ma_gv_idx = len(row) - 4 if len(row) >= 4 else ngay_sinh_idx + 2
-    
-    # Họ tên SV
-    ho_ten_parts = row[2:ngay_sinh_idx] if ngay_sinh_idx > 2 else []
-    ho_ten = ' '.join(ho_ten_parts)
-    name_parts = ho_ten.split()
-    ten = name_parts[-1] if name_parts else ''
-    ho_dem = ' '.join(name_parts[:-1]) if len(name_parts) > 1 else ''
-    
-    # TenHP
-    ten_hp_parts = row[ngay_sinh_idx + 2:ma_gv_idx] if ma_gv_idx > ngay_sinh_idx + 2 else []
-    ten_hp = ' '.join(ten_hp_parts)
-    
-    # Thông tin GV
-    ho_dem_gv = row[ma_gv_idx + 1] if ma_gv_idx + 1 < len(row) else ''
-    ten_gv = row[ma_gv_idx + 2] if ma_gv_idx + 2 < len(row) else ''
-    lop_hp = row[ma_gv_idx + 3] if ma_gv_idx + 3 < len(row) else ''
-    
-    # Câu trả lời
-    cau13 = cau14 = cau15 = cau16 = ''
-    for i in range(ma_gv_idx + 4, len(row)):
-        if row[i].upper() == 'NULL':
-            after_null = row[i+1:]
-            if after_null:
-                answers = ','.join(after_null)
-                parts = [p.strip() for p in answers.split(',') if p.strip()]
-                cau13 = parts[0] if len(parts) > 0 else ''
-                cau14 = parts[1] if len(parts) > 1 else ''
-                cau15 = parts[2] if len(parts) > 2 else ''
-                cau16 = parts[3] if len(parts) > 3 else ''
-            break
-    
-    return {
-        'Lop': lop, 'MaSV': ma_sv, 'HoDem': ho_dem, 'Ten': ten,
-        'NgaySinh': ngay_sinh, 'MaHP': ma_hp, 'TenHP': ten_hp,
-        'MaGV': ma_gv, 'HoDemGV': ho_dem_gv, 'TenGV': ten_gv, 'LopHP': lop_hp,
-        'Cau13': cau13, 'Cau14': cau14, 'Cau15': cau15, 'Cau16': cau16
-    }
+    try:
+        lop = row[0] if len(row) > 0 else ''
+        ma_sv = row[1] if len(row) > 1 else ''
+        
+        # Tìm ngày sinh
+        ngay_sinh_idx = -1
+        ngay_sinh = ''
+        for i, val in enumerate(row):
+            if DATE_PATTERN.match(val):
+                ngay_sinh_idx = i
+                ngay_sinh = val
+                break
+        if ngay_sinh_idx == -1:
+            return None, None
+        
+        # Họ tên SV
+        ho_ten_parts = row[2:ngay_sinh_idx] if ngay_sinh_idx > 2 else []
+        ho_ten = ' '.join(ho_ten_parts)
+        name_parts = ho_ten.split()
+        ten = name_parts[-1] if name_parts else ''
+        ho_dem = ' '.join(name_parts[:-1]) if len(name_parts) > 1 else ''
+        
+        ma_hp = row[ngay_sinh_idx + 1] if ngay_sinh_idx + 1 < len(row) else ''
+        
+        # Tìm MaGV
+        ma_gv = ''
+        ma_gv_idx = -1
+        for i in range(len(row) - 1, ngay_sinh_idx + 2, -1):
+            if MA_GV_PATTERN.match(row[i]):
+                ma_gv = row[i]
+                ma_gv_idx = i
+                break
+        if ma_gv_idx == -1:
+            ma_gv_idx = len(row) - 4 if len(row) >= 4 else ngay_sinh_idx + 2
+        
+        # TenHP
+        ten_hp_parts = row[ngay_sinh_idx + 2:ma_gv_idx] if ma_gv_idx > ngay_sinh_idx + 2 else []
+        ten_hp = ' '.join(ten_hp_parts)
+        
+        # Thông tin GV
+        ho_dem_gv = row[ma_gv_idx + 1] if ma_gv_idx + 1 < len(row) else ''
+        ten_gv = row[ma_gv_idx + 2] if ma_gv_idx + 2 < len(row) else ''
+        lop_hp = row[ma_gv_idx + 3] if ma_gv_idx + 3 < len(row) else ''
+        
+        # Tìm NULL và xử lý câu trả lời
+        cau13 = cau14 = cau15 = cau16 = ''
+        for i in range(ma_gv_idx + 4, len(row)):
+            if row[i].upper() == 'NULL':
+                after_null = row[i+1:]
+                if after_null:
+                    split_result, _ = split_after_null_by_scoring(after_null, row_number)
+                    cau13 = split_result[0] if len(split_result) > 0 else ''
+                    cau14 = split_result[1] if len(split_result) > 1 else ''
+                    cau15 = split_result[2] if len(split_result) > 2 else ''
+                    cau16 = split_result[3] if len(split_result) > 3 else ''
+                break
+        
+        return {
+            'Lop': lop, 'MaSV': ma_sv, 'HoDem': ho_dem, 'Ten': ten,
+            'NgaySinh': ngay_sinh, 'MaHP': ma_hp, 'TenHP': ten_hp,
+            'MaGV': ma_gv, 'HoDemGV': ho_dem_gv, 'TenGV': ten_gv, 'LopHP': lop_hp,
+            'Cau13': cau13, 'Cau14': cau14, 'Cau15': cau15, 'Cau16': cau16
+        }, None
+        
+    except Exception as e:
+        return None, str(e)
 
 def parse_survey_hybrid(content: str) -> pd.DataFrame:
-    """
-    Parse hybrid:
-    - Dùng ThreadPoolExecutor để parse CSV song song
-    - Dùng csv.reader để xử lý chính xác dấu phẩy
-    """
+    """Parse hybrid - Giữ nguyên logic gốc"""
     print(f"  -> Đang parse hybrid ({PARSE_WORKERS} workers)...")
     start = time.time()
     
@@ -296,13 +576,13 @@ def parse_survey_hybrid(content: str) -> pd.DataFrame:
     with ThreadPoolExecutor(max_workers=PARSE_WORKERS) as executor:
         rows = list(executor.map(parse_one_line_csv, lines))
     
-    # Bước 2: Trích xuất fields (có thể làm tuần tự vì nhanh)
+    # Bước 2: Xử lý từng dòng
     data = []
-    for row in rows:
+    for idx, row in enumerate(rows, 1):
         if row:
-            fields = extract_fields_from_row(row)
-            if fields:
-                data.append(fields)
+            result, error = process_row(row, idx)
+            if result:
+                data.append(result)
     
     df = pd.DataFrame(data)
     print(f"  -> Đã parse {len(df):,} dòng hợp lệ ({time.time()-start:.2f}s)")
@@ -348,13 +628,9 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
     else:
         df['TenChuyenNganh'] = 'Chuyên ngành ' + df['MaChuyenNganh']
     
-    # Tính điểm
+    # Tính điểm (giữ nguyên logic gốc: dùng calculate_weighted_score cho từng dòng)
     for col in ['Cau13', 'Cau14', 'Cau15', 'Cau16']:
-        texts = df[col].fillna('').astype(str).str.lower().values
-        scores = np.zeros(len(df), dtype=np.float32)
-        for keyword, weight in ALL_WEIGHTS[col].items():
-            scores += np.array([keyword in t for t in texts]) * weight
-        df[f'{col}_Score'] = scores
+        df[f'{col}_Score'] = df[col].apply(lambda x: calculate_weighted_score(x, col))
     
     # Tạo Dimensions
     dims = {
@@ -532,7 +808,7 @@ def load_to_database(dims: Dict, fact_df: pd.DataFrame):
 def main():
     total_start = time.time()
     print("=" * 60)
-    print("🚀 SURVEY ETL - HYBRID PARSE (CSV.READER + THREADPOOL)")
+    print("🚀 SURVEY ETL - GIỮ NGUYÊN LOGIC GỐC")
     print("=" * 60)
     print(f"Semester: {SEMESTER}")
     print(f"File: {SURVEY_FILE}")
@@ -551,7 +827,7 @@ def main():
         print("❌ Không thể đọc file survey!")
         sys.exit(1)
     
-    print("\n📝 2. PARSE (HYBRID)")
+    print("\n📝 2. PARSE (HYBRID + LOGIC GỐC)")
     start = time.time()
     df = parse_survey_hybrid(survey_content)
     

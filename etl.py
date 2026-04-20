@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SURVEY ETL - FIXED TVP FOR SQL SERVER
+SURVEY ETL - FIXED NgaySinh strftime ERROR
 """
 import os
 import sys
@@ -41,7 +41,7 @@ CONN_STR = (
     f"Connection Timeout=60;"
 )
 
-BATCH_SIZE = 50000  # Batch size cho bulk insert
+BATCH_SIZE = 50000
 PARSE_WORKERS = 4
 
 # ================= PATTERNS =================
@@ -288,17 +288,7 @@ def parse_survey_parallel(content: str, max_workers: int = PARSE_WORKERS) -> pd.
     print(f"  -> Đã parse {len(df):,} dòng hợp lệ ({time.time()-start:.2f}s)")
     return df
 
-# ================= TRANSFORM VECTORIZED (TỐI ƯU THÊM) =================
-def calculate_scores_fast(df: pd.DataFrame, col: str, weights_dict: Dict) -> pd.Series:
-    """Tính điểm - Dùng list comprehension nhanh hơn str.contains"""
-    texts = df[col].fillna('').astype(str).str.lower().values
-    scores = np.zeros(len(df))
-    for keyword, weight in weights_dict.items():
-        # Dùng numpy cho nhanh
-        mask = np.array([keyword in t for t in texts])
-        scores += mask * weight
-    return pd.Series(scores, index=df.index)
-
+# ================= TRANSFORM VECTORIZED =================
 def transform_vectorized(df: pd.DataFrame, hp_master: pd.DataFrame) -> Tuple[Dict, pd.DataFrame, str]:
     print("  -> Transform (vectorized)...")
     start = time.time()
@@ -353,7 +343,7 @@ def transform_vectorized(df: pd.DataFrame, hp_master: pd.DataFrame) -> Tuple[Dic
     dims['chuyen_nganh']['MaCTDT'] = 'CTDT_CHINHQUY'
     dims['lop_sv'] = dims['lop_sv'][dims['lop_sv']['MaLop'] != '']
     dims['lop_hp']['MaHocKy'] = ma_hoc_ky
-    dims['sinh_vien']['NgaySinh'] = pd.to_datetime(dims['sinh_vien']['NgaySinh'], format='%d/%m/%Y', errors='coerce')
+    # KHÔNG convert NgaySinh ở đây - giữ nguyên string
     
     # Tạo Fact
     df['SubmissionID'] = df['MaSV'] + '*' + df['LopHP'] + '*' + df['MaGV'] + '_' + FILE_NAME
@@ -375,7 +365,7 @@ def transform_vectorized(df: pd.DataFrame, hp_master: pd.DataFrame) -> Tuple[Dic
     
     return dims, fact_df, ma_hoc_ky
 
-# ================= LOAD (FIXED - KHÔNG DÙNG to_sql) =================
+# ================= LOAD (FIXED strftime) =================
 def get_existing_ids(cursor, table: str, id_col: str) -> set:
     cursor.execute(f"SELECT {id_col} FROM {table}")
     return {row[0] for row in cursor.fetchall()}
@@ -401,7 +391,15 @@ def load_dimension(cursor, table: str, df: pd.DataFrame, columns: List[str], id_
                 tuple_data.append(1 if row[c] else 0)
             elif c == 'NgaySinh':
                 val = row[c]
-                tuple_data.append(val.strftime('%Y-%m-%d') if pd.notna(val) else None)
+                if pd.isna(val):
+                    tuple_data.append(None)
+                else:
+                    # NgaySinh đã là string DD/MM/YYYY, cần convert sang YYYY-MM-DD
+                    try:
+                        dt = pd.to_datetime(val, format='%d/%m/%Y', errors='coerce')
+                        tuple_data.append(dt.strftime('%Y-%m-%d') if pd.notna(dt) else None)
+                    except:
+                        tuple_data.append(None)
             else:
                 tuple_data.append(to_str(row[c]))
         data.append(tuple(tuple_data))
@@ -411,14 +409,12 @@ def load_dimension(cursor, table: str, df: pd.DataFrame, columns: List[str], id_
     return len(new_data)
 
 def load_fact_bulk(cursor, fact_df: pd.DataFrame) -> int:
-    """Load FACT dùng executemany - CHUẨN SQL SERVER"""
     if fact_df.empty:
         return 0
     
     print(f"  -> Insert FACT: {len(fact_df):,} dòng...")
     start = time.time()
     
-    # Chuẩn bị data
     data = []
     for _, row in fact_df.iterrows():
         data.append((
@@ -445,7 +441,7 @@ def load_fact_bulk(cursor, fact_df: pd.DataFrame) -> int:
         """, batch)
         cursor.connection.commit()
         total += len(batch)
-        if (i // BATCH_SIZE + 1) % 5 == 0:
+        if (i // BATCH_SIZE + 1) % 10 == 0:
             print(f"    -> Đã insert {total:,}/{len(data):,} dòng")
     
     # Bật lại constraint
@@ -493,7 +489,6 @@ def load_to_database(dims: Dict, fact_df: pd.DataFrame):
                                ['MaHP', 'TenHP', 'MaKhoa'], 'MaHP')
         print(f"  ✅ DIM_HOC_PHAN: {count} new")
         
-        dims['sinh_vien']['NgaySinh'] = dims['sinh_vien']['NgaySinh'].dt.strftime('%Y-%m-%d')
         count = load_dimension(cursor, 'DIM_SINH_VIEN', dims['sinh_vien'],
                                ['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop', 'IsCTS'], 'MaSV')
         print(f"  ✅ DIM_SINH_VIEN: {count} new")
@@ -517,7 +512,7 @@ def load_to_database(dims: Dict, fact_df: pd.DataFrame):
 def main():
     total_start = time.time()
     print("=" * 60)
-    print("🚀 SURVEY ETL - FIXED LOAD")
+    print("🚀 SURVEY ETL - FIXED DATE")
     print("=" * 60)
     print(f"Semester: {SEMESTER}")
     print(f"File: {SURVEY_FILE}")

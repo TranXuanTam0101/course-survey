@@ -1,11 +1,15 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+SURVEY ETL - FIXED ALL numpy.int64 ERRORS
+"""
 import os
 import sys
 import re
 import io
-import csv
 import time
 from datetime import datetime
-from typing import List, Dict, Tuple
+from typing import Dict, Tuple
 import pandas as pd
 import numpy as np
 import pyodbc
@@ -74,7 +78,26 @@ DATE_PATTERN = re.compile(r'^\d{2}/\d{2}/\d{4}$')
 MA_GV_PATTERN = re.compile(r'^(\d{7}|TG\d{5}|gvDacThu_TKTH)$')
 CTS_PATTERN = re.compile(r'^CTS-', re.IGNORECASE)
 
-# ================= HELPER =================
+# ================= HELPER FUNCTIONS =================
+def to_int(val):
+    """Convert to Python int safely"""
+    if pd.isna(val):
+        return None
+    return int(val)
+
+def to_float(val):
+    """Convert to Python float safely"""
+    if pd.isna(val):
+        return None
+    return float(val)
+
+def to_str(val, max_len=None):
+    """Convert to Python str safely"""
+    if pd.isna(val):
+        return ''
+    s = str(val)
+    return s[:max_len] if max_len else s
+
 def create_ma_khoa(ten_khoa: str) -> str:
     if not isinstance(ten_khoa, str) or not ten_khoa:
         return "UNKNOWN"
@@ -82,7 +105,7 @@ def create_ma_khoa(ten_khoa: str) -> str:
     initials = [w[0].upper() for w in words if w and w[0].isalpha()]
     return ''.join(initials) if initials else "UNKNOWN"
 
-def normalize_lop(lop: str) -> Tuple[str, bool]:
+def normalize_lop(lop: str):
     if not isinstance(lop, str):
         return "", False
     is_cts = bool(CTS_PATTERN.match(lop))
@@ -111,29 +134,23 @@ def calculate_score(text, weights_dict):
     score = sum(weight for kw, weight in weights_dict.items() if kw in text_lower)
     return score if score > 0 else None
 
-# ================= 🔥 PARSE SIÊU NHANH (VECTORIZED) =================
+# ================= PARSE =================
 def parse_survey_ultra_fast(content: str) -> pd.DataFrame:
-    """Parse dùng list comprehension - nhanh gấp 50x"""
     print("  -> Đang parse...")
     lines = [l.strip() for l in content.split('\n') if l.strip()]
     
     data = []
     for line in lines:
-        # Tìm NULL
         if 'NULL' not in line.upper():
             continue
         
-        # Tách trước và sau NULL
         parts = line.split('NULL', 1)
         if len(parts) != 2:
             continue
         
         left_str, right_str = parts[0], parts[1]
-        
-        # Parse left part
         left = [x.strip() for x in left_str.split(',')]
         
-        # Tìm ngày sinh
         ngay_sinh_idx = -1
         ngay_sinh = ''
         for i, v in enumerate(left):
@@ -144,12 +161,10 @@ def parse_survey_ultra_fast(content: str) -> pd.DataFrame:
         if ngay_sinh_idx == -1:
             continue
         
-        # Lấy thông tin cơ bản
         lop = left[0] if len(left) > 0 else ''
         ma_sv = left[1] if len(left) > 1 else ''
         ma_hp = left[ngay_sinh_idx+1] if ngay_sinh_idx+1 < len(left) else ''
         
-        # Tìm MaGV (từ phải sang trái)
         ma_gv = ''
         ma_gv_idx = len(left) - 4
         for i in range(len(left)-1, ngay_sinh_idx+2, -1):
@@ -158,20 +173,17 @@ def parse_survey_ultra_fast(content: str) -> pd.DataFrame:
                 ma_gv_idx = i
                 break
         
-        # Họ tên SV
         ho_ten_parts = left[2:ngay_sinh_idx]
         ho_ten = ' '.join(ho_ten_parts)
         name_parts = ho_ten.split()
         ten = name_parts[-1] if name_parts else ''
         ho_dem = ' '.join(name_parts[:-1]) if len(name_parts) > 1 else ''
         
-        # Thông tin GV
         ten_hp = ' '.join(left[ngay_sinh_idx+2:ma_gv_idx])
         ho_dem_gv = left[ma_gv_idx+1] if ma_gv_idx+1 < len(left) else ''
         ten_gv = left[ma_gv_idx+2] if ma_gv_idx+2 < len(left) else ''
         lop_hp = left[ma_gv_idx+3] if ma_gv_idx+3 < len(left) else ''
         
-        # Parse right part (câu trả lời)
         right_parts = [x.strip() for x in right_str.split(',') if x.strip()]
         cau13 = right_parts[0] if len(right_parts) > 0 else ''
         cau14 = right_parts[1] if len(right_parts) > 1 else ''
@@ -188,7 +200,7 @@ def parse_survey_ultra_fast(content: str) -> pd.DataFrame:
     return pd.DataFrame(data)
 
 # ================= MASTER DATA =================
-def load_master_data(blob_service: BlobServiceClient) -> Tuple[pd.DataFrame, pd.DataFrame]:
+def load_master_data(blob_service: BlobServiceClient):
     container = "tailieu"
     prefix = f"{SEMESTER}/"
     hp_df = pd.DataFrame()
@@ -222,19 +234,17 @@ def load_master_data(blob_service: BlobServiceClient) -> Tuple[pd.DataFrame, pd.
     
     return hp_df, cn_df
 
-# ================= TRANSFORM NHANH =================
-def transform_data_fast(df: pd.DataFrame, hp_master: pd.DataFrame) -> Tuple[Dict, pd.DataFrame, str]:
+# ================= TRANSFORM =================
+def transform_data_fast(df: pd.DataFrame, hp_master: pd.DataFrame):
     print("  -> Transform...")
     ma_hoc_ky = derive_ma_hoc_ky()
     nam_hoc = SEMESTER
-    hoc_ky = int(ma_hoc_ky[2])
+    hoc_ky = int(ma_hoc_ky[2]) if ma_hoc_ky[2].isdigit() else 2
     
-    # Chuẩn hóa lớp (vectorized)
     norm = df['Lop'].apply(normalize_lop)
     df['LopChuanHoa'] = norm.apply(lambda x: x[0])
     df['IsCTS'] = norm.apply(lambda x: x[1])
     
-    # Merge master
     if not hp_master.empty:
         df = df.merge(hp_master[['MaHP', 'TenHP', 'MaKhoa', 'TenKhoa']], on='MaHP', how='left')
         df['TenHP'] = df['TenHP_y'].fillna(df['TenHP_x'])
@@ -248,11 +258,9 @@ def transform_data_fast(df: pd.DataFrame, hp_master: pd.DataFrame) -> Tuple[Dict
     df['MaChuyenNganh'] = df['MaKhoa']
     df['TenChuyenNganh'] = 'Chuyên ngành ' + df['MaChuyenNganh']
     
-    # Tính điểm
     for col in ['Cau13', 'Cau14', 'Cau15', 'Cau16']:
         df[f'{col}_Score'] = df[col].apply(lambda x: calculate_score(x, ALL_WEIGHTS[col]))
     
-    # Dimensions
     dims = {
         'hoc_ky': pd.DataFrame([{'MaHocKy': ma_hoc_ky, 'NamHoc': nam_hoc, 'HocKy': hoc_ky}]),
         'khoa': df[['MaKhoa', 'TenKhoa']].drop_duplicates().query("MaKhoa != 'UNKNOWN'"),
@@ -263,7 +271,6 @@ def transform_data_fast(df: pd.DataFrame, hp_master: pd.DataFrame) -> Tuple[Dict
     }
     dims['lop_hp']['MaHocKy'] = ma_hoc_ky
     
-    # FACT - Vectorized
     df['SubmissionID'] = df['MaSV'] + '*' + df['LopHP'] + '*' + df['MaGV'] + '_' + FILE_NAME
     df['MaLopHP'] = df['LopHP'] + '_' + df['MaHP']
     
@@ -281,7 +288,7 @@ def transform_data_fast(df: pd.DataFrame, hp_master: pd.DataFrame) -> Tuple[Dict
     print(f"  -> Fact: {len(fact_df):,} dòng")
     return dims, fact_df, ma_hoc_ky
 
-# ================= 🔥 LOAD SIÊU NHANH =================
+# ================= LOAD (ĐÃ FIX TRIỆT ĐỂ) =================
 def load_fast(dims: Dict, fact_df: pd.DataFrame, ma_hoc_ky: str):
     print("  -> Load...")
     conn = pyodbc.connect(CONN_STR)
@@ -289,63 +296,113 @@ def load_fast(dims: Dict, fact_df: pd.DataFrame, ma_hoc_ky: str):
     cursor.fast_executemany = True
     
     try:
-        # DIM_HOC_KY
+        # DIM_HOC_KY - ĐÃ FIX
         hk = dims['hoc_ky'].iloc[0]
         cursor.execute("""
             IF NOT EXISTS (SELECT 1 FROM DIM_HOC_KY WHERE MaHocKy = ?)
             INSERT INTO DIM_HOC_KY VALUES (?, ?, ?)
-        """, (hk['MaHocKy'], hk['MaHocKy'], hk['NamHoc'], hk['HocKy']))
+        """, (
+            to_str(hk['MaHocKy']), 
+            to_str(hk['MaHocKy']), 
+            to_str(hk['NamHoc']), 
+            to_int(hk['HocKy'])  # ← FIX: convert sang Python int
+        ))
+        conn.commit()
+        print("  ✅ DIM_HOC_KY")
         
-        # Các DIM khác - insert nhanh
-        for table, df, cols, id_col in [
-            ('DIM_KHOA', dims['khoa'], ['MaKhoa', 'TenKhoa'], 'MaKhoa'),
-            ('DIM_GIANG_VIEN', dims['giang_vien'], ['MaGV', 'HoDemGV', 'TenGV'], 'MaGV'),
-            ('DIM_HOC_PHAN', dims['hoc_phan'], ['MaHP', 'TenHP', 'MaKhoa'], 'MaHP'),
-        ]:
-            if not df.empty:
-                existing = pd.read_sql(f"SELECT {id_col} FROM {table}", conn)
-                new_data = df[~df[id_col].isin(existing[id_col])]
-                if not new_data.empty:
-                    placeholders = ','.join(['?']*len(cols))
-                    data = [tuple(row[c] for c in cols) for _, row in new_data.iterrows()]
-                    cursor.executemany(f"INSERT INTO {table} VALUES ({placeholders})", data)
+        # DIM_KHOA
+        if not dims['khoa'].empty:
+            existing = pd.read_sql("SELECT MaKhoa FROM DIM_KHOA", conn)
+            new_data = dims['khoa'][~dims['khoa']['MaKhoa'].isin(existing['MaKhoa'])]
+            if not new_data.empty:
+                data = [(to_str(r['MaKhoa']), to_str(r['TenKhoa'])) for _, r in new_data.iterrows()]
+                cursor.executemany("INSERT INTO DIM_KHOA VALUES (?, ?)", data)
+                conn.commit()
+            print(f"  ✅ DIM_KHOA: {len(new_data)}")
+        
+        # DIM_GIANG_VIEN
+        if not dims['giang_vien'].empty:
+            existing = pd.read_sql("SELECT MaGV FROM DIM_GIANG_VIEN", conn)
+            new_data = dims['giang_vien'][~dims['giang_vien']['MaGV'].isin(existing['MaGV'])]
+            if not new_data.empty:
+                data = [(to_str(r['MaGV']), to_str(r['HoDemGV']), to_str(r['TenGV'])) for _, r in new_data.iterrows()]
+                cursor.executemany("INSERT INTO DIM_GIANG_VIEN VALUES (?, ?, ?)", data)
+                conn.commit()
+            print(f"  ✅ DIM_GIANG_VIEN: {len(new_data)}")
+        
+        # DIM_HOC_PHAN
+        if not dims['hoc_phan'].empty:
+            existing = pd.read_sql("SELECT MaHP FROM DIM_HOC_PHAN", conn)
+            new_data = dims['hoc_phan'][~dims['hoc_phan']['MaHP'].isin(existing['MaHP'])]
+            if not new_data.empty:
+                data = [(to_str(r['MaHP']), to_str(r['TenHP']), to_str(r['MaKhoa'])) for _, r in new_data.iterrows()]
+                cursor.executemany("INSERT INTO DIM_HOC_PHAN VALUES (?, ?, ?)", data)
+                conn.commit()
+            print(f"  ✅ DIM_HOC_PHAN: {len(new_data)}")
         
         # DIM_SINH_VIEN
         if not dims['sinh_vien'].empty:
             existing = pd.read_sql("SELECT MaSV FROM DIM_SINH_VIEN", conn)
-            new_sv = dims['sinh_vien'][~dims['sinh_vien']['MaSV'].isin(existing['MaSV'])].copy()
-            if not new_sv.empty:
-                new_sv['NgaySinh'] = pd.to_datetime(new_sv['NgaySinh'], format='%d/%m/%Y').dt.strftime('%Y-%m-%d')
-                data = [tuple(row) for row in new_sv[['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop', 'IsCTS']].values]
-                cursor.executemany("INSERT INTO DIM_SINH_VIEN VALUES (?,?,?,?,?,?)", data)
+            new_data = dims['sinh_vien'][~dims['sinh_vien']['MaSV'].isin(existing['MaSV'])].copy()
+            if not new_data.empty:
+                new_data['NgaySinh'] = pd.to_datetime(new_data['NgaySinh'], format='%d/%m/%Y', errors='coerce').dt.strftime('%Y-%m-%d')
+                data = []
+                for _, r in new_data.iterrows():
+                    data.append((
+                        to_str(r['MaSV']),
+                        to_str(r['HoDem']),
+                        to_str(r['Ten']),
+                        to_str(r['NgaySinh']) if pd.notna(r['NgaySinh']) else None,
+                        to_str(r['MaLop']),
+                        to_int(r['IsCTS']) or 0
+                    ))
+                cursor.executemany("INSERT INTO DIM_SINH_VIEN VALUES (?, ?, ?, ?, ?, ?)", data)
+                conn.commit()
+            print(f"  ✅ DIM_SINH_VIEN: {len(new_data)}")
         
         # DIM_LOP_HOC_PHAN
         if not dims['lop_hp'].empty:
             existing = pd.read_sql("SELECT MaLopHP FROM DIM_LOP_HOC_PHAN", conn)
-            new_lhp = dims['lop_hp'][~dims['lop_hp']['MaLopHP'].isin(existing['MaLopHP'])]
-            if not new_lhp.empty:
-                data = [tuple(row) for row in new_lhp[['MaLopHP', 'LopHP', 'MaHP', 'MaGV', 'MaHocKy']].values]
-                cursor.executemany("INSERT INTO DIM_LOP_HOC_PHAN VALUES (?,?,?,?,?)", data)
+            new_data = dims['lop_hp'][~dims['lop_hp']['MaLopHP'].isin(existing['MaLopHP'])]
+            if not new_data.empty:
+                data = []
+                for _, r in new_data.iterrows():
+                    data.append((
+                        to_str(r['MaLopHP']),
+                        to_str(r['LopHP']),
+                        to_str(r['MaHP']),
+                        to_str(r['MaGV']),
+                        to_str(r['MaHocKy'])
+                    ))
+                cursor.executemany("INSERT INTO DIM_LOP_HOC_PHAN VALUES (?, ?, ?, ?, ?)", data)
+                conn.commit()
+            print(f"  ✅ DIM_LOP_HOC_PHAN: {len(new_data)}")
         
-        conn.commit()
-        
-        # FACT - Insert trực tiếp (NHANH NHẤT)
+        # FACT
         print(f"  -> Insert FACT: {len(fact_df):,} dòng...")
         start = time.time()
         
+        valid_sv = set(pd.read_sql("SELECT MaSV FROM DIM_SINH_VIEN", conn)['MaSV'])
+        valid_lhp = set(pd.read_sql("SELECT MaLopHP FROM DIM_LOP_HOC_PHAN", conn)['MaLopHP'])
+        
         data = []
         for _, row in fact_df.iterrows():
-            data.append((
-                str(row['SubmissionID'])[:500],
-                int(row['MaCauHoi']),
-                str(row['MaSV'])[:50],
-                str(row['MaLopHP'])[:200],
-                float(row['TraLoiSo']) if pd.notna(row['TraLoiSo']) else None,
-                str(row['TraLoiText'])[:1000] if row['TraLoiText'] else '',
-                1 if row['IsCTS'] else 0
-            ))
+            ma_sv = to_str(row['MaSV'])
+            ma_lop_hp = to_str(row['MaLopHP'])
+            
+            if ma_sv in valid_sv and ma_lop_hp in valid_lhp:
+                data.append((
+                    to_str(row['SubmissionID'], 500),
+                    to_int(row['MaCauHoi']),
+                    ma_sv[:50],
+                    ma_lop_hp[:200],
+                    to_float(row['TraLoiSo']),
+                    to_str(row['TraLoiText'], 1000),
+                    1 if row['IsCTS'] else 0
+                ))
         
-        # Insert theo batch 50K
+        print(f"  -> Valid: {len(data):,} dòng")
+        
         for i in range(0, len(data), 50000):
             batch = data[i:i+50000]
             cursor.executemany("""
@@ -354,9 +411,13 @@ def load_fast(dims: Dict, fact_df: pd.DataFrame, ma_hoc_ky: str):
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             """, batch)
             conn.commit()
+            print(f"    -> Batch {i//50000 + 1}: {len(batch)} dòng")
         
         print(f"  ✅ FACT done: {time.time()-start:.2f}s")
         
+    except Exception as e:
+        print(f"  ❌ Lỗi: {e}")
+        raise
     finally:
         conn.close()
 
@@ -364,12 +425,11 @@ def load_fast(dims: Dict, fact_df: pd.DataFrame, ma_hoc_ky: str):
 def main():
     total_start = time.time()
     print("=" * 50)
-    print("🚀 ULTRA FAST ETL")
+    print("🚀 ULTRA FAST ETL (FIXED)")
     print("=" * 50)
     
     blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
     
-    # EXTRACT
     print("\n📥 EXTRACT")
     start = time.time()
     hp_master, cn_master = load_master_data(blob_service)
@@ -377,7 +437,6 @@ def main():
     content = blob_client.download_blob().readall().decode('utf-8-sig')
     print(f"  ✅ {time.time()-start:.2f}s")
     
-    # TRANSFORM
     print("\n🔄 TRANSFORM")
     start = time.time()
     df = parse_survey_ultra_fast(content)
@@ -385,13 +444,11 @@ def main():
     dims, fact_df, ma_hoc_ky = transform_data_fast(df, hp_master)
     print(f"  ✅ {time.time()-start:.2f}s")
     
-    # LOAD
     print("\n💾 LOAD")
     start = time.time()
     load_fast(dims, fact_df, ma_hoc_ky)
     print(f"  ✅ {time.time()-start:.2f}s")
     
-    # TOTAL
     total = time.time() - total_start
     print("\n" + "=" * 50)
     print(f"🎉 TOTAL: {total:.1f}s")

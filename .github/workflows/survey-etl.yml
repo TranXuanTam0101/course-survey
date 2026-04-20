@@ -28,12 +28,8 @@ jobs:
         with:
           python-version: '3.10'
       
-      # 🔥 CHẠY SONG SONG THỰC SỰ TRONG CÙNG MÁY ẢO
-      - name: Install dependencies (PARALLEL)
+      - name: Install dependencies
         run: |
-          echo "=== CÀI ĐẶT SONG SONG ==="
-          
-          # Job nền 1: Cài ODBC Driver
           {
             echo "[1/2] Installing ODBC Driver..."
             curl -s https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
@@ -44,7 +40,6 @@ jobs:
             echo "✅ ODBC Driver done"
           } &
           
-          # Job nền 2: Cài Python dependencies
           {
             echo "[2/2] Installing Python deps..."
             python -m pip install --upgrade pip -q
@@ -52,12 +47,10 @@ jobs:
             echo "✅ Python deps done"
           } &
           
-          # ĐỢI CẢ 2 HOÀN THÀNH
           wait
           
           echo "🎉 ALL DEPENDENCIES INSTALLED!"
-      
-      # 🔥 CHẠY ETL NGAY SAU KHI CẢ 2 CÀI XONG
+    
       - name: Run ETL Pipeline
         env:
           SEMESTER: ${{ github.event.inputs.semester }}

@@ -35,9 +35,6 @@ CONN_STR = (
     f"DATABASE=course-survey-db;"
     f"UID=sqladmin;"
     f"PWD={DB_PASSWORD};"
-    f"Encrypt=yes;TrustServerCertificate=no;"
-    f"Connection Timeout=120;"
-    f"Command Timeout=300;"
 )
 
 BATCH_SIZE = 25000
@@ -425,7 +422,6 @@ def transform_data_fast(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd
     
     # Merge master - SỬA LỖI TRÙNG MaHP
     if not hp_master.empty:
-        # Drop duplicates trước khi tạo dict
         hp_unique = hp_master.drop_duplicates(subset=['MaHP'])
         hp_dict = hp_unique.set_index('MaHP')[['TenHP', 'MaKhoa', 'TenKhoa']].to_dict('index')
         df['TenHP_m'] = df['MaHP'].map(lambda x: hp_dict.get(x, {}).get('TenHP'))
@@ -627,28 +623,60 @@ def load_to_database(dims: dict):
     cursor.fast_executemany = True
     
     try:
-        for dim_name, (table, columns, id_col) in [
-            ('DIM_HOC_KY', ('DIM_HOC_KY', ['MaHocKy', 'NamHoc', 'HocKy'], 'MaHocKy')),
-            ('DIM_KHOA', ('DIM_KHOA', ['MaKhoa', 'TenKhoa'], 'MaKhoa')),
-            ('DIM_CHUYEN_NGANH', ('DIM_CHUYEN_NGANH', ['MaChuyenNganh', 'TenChuyenNganh', 'MaKhoa', 'MaCTDT'], 'MaChuyenNganh')),
-            ('DIM_HOC_PHAN', ('DIM_HOC_PHAN', ['MaHP', 'TenHP', 'MaKhoa'], 'MaHP')),
-            ('DIM_GIANG_VIEN', ('DIM_GIANG_VIEN', ['MaGV', 'HoDemGV', 'TenGV'], 'MaGV')),
-            ('DIM_LOP_HOC_PHAN', ('DIM_LOP_HOC_PHAN', ['MaLopHP', 'LopHP', 'MaHP', 'MaGV', 'MaHocKy'], 'MaLopHP')),
-            ('DIM_LOP_SINH_VIEN', ('DIM_LOP_SINH_VIEN', ['MaLop', 'Lop', 'MaChuyenNganh'], 'MaLop')),
-            ('DIM_SINH_VIEN', ('DIM_SINH_VIEN', ['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop'], 'MaSV')),
-        ]:
-            count = load_dimension(cursor, table, dims[dim_name], columns, id_col)
-            print(f"  ✅ {table}: {count} new")
+        # 1. DIM_HOC_KY
+        count = load_dimension(cursor, 'DIM_HOC_KY', dims['DIM_HOC_KY'],
+                               ['MaHocKy', 'NamHoc', 'HocKy'], 'MaHocKy')
+        print(f"  ✅ DIM_HOC_KY: {count} new")
         
+        # 2. DIM_KHOA
+        count = load_dimension(cursor, 'DIM_KHOA', dims['DIM_KHOA'],
+                               ['MaKhoa', 'TenKhoa'], 'MaKhoa')
+        print(f"  ✅ DIM_KHOA: {count} new")
+        
+        # 3. Đảm bảo DIM_CHUONG_TRINH_DAO_TAO có 'CTDT_CHINHQUY' TRƯỚC KHI INSERT DIM_CHUYEN_NGANH
         cursor.execute("""
             IF NOT EXISTS (SELECT 1 FROM DIM_CHUONG_TRINH_DAO_TAO WHERE MaCTDT = 'CTDT_CHINHQUY')
             INSERT INTO DIM_CHUONG_TRINH_DAO_TAO (MaCTDT, TenCTDT) VALUES ('CTDT_CHINHQUY', N'Chính quy')
         """)
         conn.commit()
+        print("  ✅ DIM_CTDT: ensured")
         
+        # 4. DIM_CHUYEN_NGANH
+        count = load_dimension(cursor, 'DIM_CHUYEN_NGANH', dims['DIM_CHUYEN_NGANH'],
+                               ['MaChuyenNganh', 'TenChuyenNganh', 'MaKhoa', 'MaCTDT'], 'MaChuyenNganh')
+        print(f"  ✅ DIM_CHUYEN_NGANH: {count} new")
+        
+        # 5. DIM_HOC_PHAN
+        count = load_dimension(cursor, 'DIM_HOC_PHAN', dims['DIM_HOC_PHAN'],
+                               ['MaHP', 'TenHP', 'MaKhoa'], 'MaHP')
+        print(f"  ✅ DIM_HOC_PHAN: {count} new")
+        
+        # 6. DIM_GIANG_VIEN
+        count = load_dimension(cursor, 'DIM_GIANG_VIEN', dims['DIM_GIANG_VIEN'],
+                               ['MaGV', 'HoDemGV', 'TenGV'], 'MaGV')
+        print(f"  ✅ DIM_GIANG_VIEN: {count} new")
+        
+        # 7. DIM_LOP_HOC_PHAN
+        count = load_dimension(cursor, 'DIM_LOP_HOC_PHAN', dims['DIM_LOP_HOC_PHAN'],
+                               ['MaLopHP', 'LopHP', 'MaHP', 'MaGV', 'MaHocKy'], 'MaLopHP')
+        print(f"  ✅ DIM_LOP_HOC_PHAN: {count} new")
+        
+        # 8. DIM_LOP_SINH_VIEN
+        count = load_dimension(cursor, 'DIM_LOP_SINH_VIEN', dims['DIM_LOP_SINH_VIEN'],
+                               ['MaLop', 'Lop', 'MaChuyenNganh'], 'MaLop')
+        print(f"  ✅ DIM_LOP_SINH_VIEN: {count} new")
+        
+        # 9. DIM_SINH_VIEN
+        count = load_dimension(cursor, 'DIM_SINH_VIEN', dims['DIM_SINH_VIEN'],
+                               ['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop'], 'MaSV')
+        print(f"  ✅ DIM_SINH_VIEN: {count} new")
+        
+        # 10. FACT
         count = load_fact(cursor, dims['FACT'])
         print(f"  ✅ FACT: {count:,} dòng")
+        
         print(f"  ✅ Load: {time.time()-start:.2f}s")
+        
     except Exception as e:
         print(f"  ❌ Lỗi: {e}")
         raise
@@ -659,7 +687,7 @@ def load_to_database(dims: dict):
 def main():
     total_start = time.time()
     print("=" * 60)
-    print("🚀 SURVEY ETL - FAST + SPECIAL MaKhoa + EXPORT")
+    print("🚀 SURVEY ETL - FAST + SPECIAL MaKhoa")
     print("=" * 60)
     print(f"Semester: {SEMESTER}")
     print(f"File: {SURVEY_FILE}")
@@ -698,42 +726,7 @@ def main():
     dims = transform_data_fast(df, hp_master, cn_master)
     print(f"  ✅ Transform: {time.time()-start:.2f}s")
     
-    # ========== XUẤT FILE KẾT QUẢ ==========
-    print("\n📄 4. EXPORT FILES")
-    start = time.time()
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    
-    # Lưu file processed survey
-    processed_path = f"{FILE_NAME}_processed_{timestamp}.csv"
-    df.to_csv(processed_path, index=False, encoding='utf-8-sig')
-    print(f"  -> Đã lưu: {processed_path} ({len(df):,} dòng)")
-    
-    # Lưu file FACT
-    fact_path = f"{FILE_NAME}_fact_{timestamp}.csv"
-    dims['FACT'].to_csv(fact_path, index=False, encoding='utf-8-sig')
-    print(f"  -> Đã lưu: {fact_path} ({len(dims['FACT']):,} dòng)")
-    
-    # Upload lên Blob (processed-data)
-    try:
-        processed_container = blob_service.get_container_client("processed-data")
-        if not processed_container.exists():
-            processed_container.create_container()
-        
-        # Upload processed survey
-        with open(processed_path, 'rb') as f:
-            processed_container.get_blob_client(f"{SEMESTER}/{processed_path}").upload_blob(f, overwrite=True)
-        print(f"  -> Uploaded: {SEMESTER}/{processed_path}")
-        
-        # Upload FACT
-        with open(fact_path, 'rb') as f:
-            processed_container.get_blob_client(f"{SEMESTER}/{fact_path}").upload_blob(f, overwrite=True)
-        print(f"  -> Uploaded: {SEMESTER}/{fact_path}")
-    except Exception as e:
-        print(f"  ⚠️ Lỗi upload: {e}")
-    
-    print(f"  ✅ Export: {time.time()-start:.2f}s")
-    
-    print("\n💾 5. LOAD TO DATABASE")
+    print("\n💾 4. LOAD TO DATABASE")
     start = time.time()
     load_to_database(dims)
     print(f"  ✅ Load: {time.time()-start:.2f}s")

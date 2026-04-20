@@ -1,4 +1,4 @@
-name: Survey ETL Pipeline (Parallel - ĐÚNG)
+name: Survey ETL Pipeline
 
 on:
   workflow_dispatch:

@@ -476,7 +476,7 @@ def transform_data_fast(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd
     ])
     dims['DIM_KHOA'] = pd.concat([dims['DIM_KHOA'], default_khoas]).drop_duplicates('MaKhoa').reset_index(drop=True)
     
-    # ========== TẠO FACT TỐI ƯU (MELT) ==========
+    # ========== TẠO FACT ==========
     print("  -> Tạo FACT (melt)...")
     fact_start = time.time()
     
@@ -559,64 +559,50 @@ def load_dimension(cursor, table: str, df: pd.DataFrame, columns: list, id_col: 
     return len(new_data)
 
 def load_fact(cursor, fact_df: pd.DataFrame) -> int:
-    if fact_df.empty: 
-        return 0
-    
+    if fact_df.empty: return 0
     print(f"  -> Insert FACT: {len(fact_df):,} dòng...")
     start = time.time()
     
-    # Lấy danh sách FK hợp lệ
     cursor.execute("SELECT MaSV FROM DIM_SINH_VIEN")
     valid_sv = {row[0] for row in cursor.fetchall()}
     cursor.execute("SELECT MaLopHP FROM DIM_LOP_HOC_PHAN")
     valid_lhp = {row[0] for row in cursor.fetchall()}
     
-    # Lọc nhanh bằng isin() - KHÔNG DÙNG iterrows
-    fact_df_valid = fact_df[
-        fact_df['MaSV'].isin(valid_sv) & 
-        fact_df['MaLopHP'].isin(valid_lhp)
-    ]
-    
-    skipped = len(fact_df) - len(fact_df_valid)
-    if skipped > 0:
-        print(f"  ⚠️ Bỏ {skipped:,} dòng do FK không hợp lệ")
+    fact_df_valid = fact_df[fact_df['MaSV'].isin(valid_sv) & fact_df['MaLopHP'].isin(valid_lhp)]
     
     if fact_df_valid.empty:
         print("  ❌ KHÔNG CÓ DÒNG NÀO HỢP LỆ!")
         return 0
     
-    # Chuẩn bị dữ liệu - DÙNG apply VECTORIZED
-    fact_df_valid = fact_df_valid.copy()
-    fact_df_valid['SubmissionID'] = fact_df_valid['SubmissionID'].fillna('').astype(str).str[:150]
-    fact_df_valid['MaCauHoi'] = fact_df_valid['MaCauHoi'].fillna(0).astype(int)
-    fact_df_valid['MaSV'] = fact_df_valid['MaSV'].fillna('').astype(str).str[:20]
-    fact_df_valid['MaLopHP'] = fact_df_valid['MaLopHP'].fillna('').astype(str).str[:50]
+    data = []
+    for _, row in fact_df_valid.iterrows():
+        sub_id = str(row['SubmissionID'])[:150] if pd.notna(row['SubmissionID']) else ''
+        try:
+            ma_cau = int(row['MaCauHoi'])
+        except:
+            ma_cau = 0
+        ma_sv = str(row['MaSV'])[:20] if pd.notna(row['MaSV']) else ''
+        ma_lop = str(row['MaLopHP'])[:50] if pd.notna(row['MaLopHP']) else ''
+        
+        tra_loi_so = None
+        val = row.get('TraLoiSo')
+        if pd.notna(val) and val != '' and val is not None:
+            try:
+                num = float(val)
+                if num > 0: tra_loi_so = num
+            except:
+                pass
+        
+        tra_loi_text = None
+        val = row.get('TraLoiText')
+        if pd.notna(val) and val != '' and val is not None:
+            tra_loi_text = str(val)
+        
+        data.append((sub_id, ma_cau, ma_sv, ma_lop, tra_loi_so, tra_loi_text))
     
-    # Xử lý TraLoiSo - giữ nguyên số hoặc NULL
-    fact_df_valid['TraLoiSo'] = fact_df_valid['TraLoiSo'].apply(
-        lambda x: float(x) if pd.notna(x) and x != '' and float(x) > 0 else None
-    )
-    
-    # Xử lý TraLoiText
-    fact_df_valid['TraLoiText'] = fact_df_valid['TraLoiText'].apply(
-        lambda x: str(x) if pd.notna(x) and x != '' else None
-    )
-    
-    # Chuyển thành list of tuples - DÙNG values.tolist() NHANH HƠN
-    data = list(zip(
-        fact_df_valid['SubmissionID'].tolist(),
-        fact_df_valid['MaCauHoi'].tolist(),
-        fact_df_valid['MaSV'].tolist(),
-        fact_df_valid['MaLopHP'].tolist(),
-        fact_df_valid['TraLoiSo'].tolist(),
-        fact_df_valid['TraLoiText'].tolist()
-    ))
-    
-    # Tắt FK check
     cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT NOCHECK CONSTRAINT ALL")
     cursor.connection.commit()
     
-    # Bulk insert theo batch
     total = 0
     for i in range(0, len(data), BATCH_SIZE):
         batch = data[i:i+BATCH_SIZE]
@@ -630,10 +616,8 @@ def load_fact(cursor, fact_df: pd.DataFrame) -> int:
         if (i // BATCH_SIZE + 1) % 10 == 0:
             print(f"    -> Đã insert {total:,}/{len(data):,} dòng")
     
-    # Bật lại FK check
     cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT CHECK CONSTRAINT ALL")
     cursor.connection.commit()
-    
     print(f"  ✅ FACT done: {total:,} dòng ({time.time()-start:.2f}s)")
     return total
 

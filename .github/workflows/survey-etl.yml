@@ -1,4 +1,4 @@
-name: Survey ETL Pipeline (Multi-Job Parallel)
+name: Survey ETL Pipeline (Parallel - ĐÚNG)
 
 on:
   workflow_dispatch:
@@ -15,44 +15,7 @@ on:
         type: string
 
 jobs:
-  # Job 1: Cài ODBC Driver (chạy song song với Job 2)
-  install-odbc:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Install ODBC Driver 18
-        run: |
-          echo "Installing ODBC Driver..."
-          curl https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
-          curl https://packages.microsoft.com/config/ubuntu/22.04/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list
-          sudo apt-get update
-          sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 mssql-tools18
-          echo "✅ ODBC Driver installed"
-          # Lưu trạng thái
-          echo "ODBC_INSTALLED=true" >> $GITHUB_ENV
-  
-  # Job 2: Cài Python dependencies (chạy song song với Job 1)
-  install-python:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-      
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: pip-${{ runner.os }}-${{ hashFiles('**/requirements.txt') }}
-      
-      - name: Install Python dependencies
-        run: |
-          echo "Installing Python dependencies..."
-          pip install pandas numpy pyodbc azure-storage-blob
-          echo "✅ Python dependencies installed"
-  
-  # Job 3: Chạy ETL (đợi cả 2 job trên hoàn thành)
-  run-etl:
-    needs: [install-odbc, install-python]  # Đợi cả 2 job hoàn thành
+  etl:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     
@@ -65,16 +28,36 @@ jobs:
         with:
           python-version: '3.10'
       
-      - name: Install ODBC Driver (đã cache 1 phần)
+      # 🔥 CHẠY SONG SONG THỰC SỰ TRONG CÙNG MÁY ẢO
+      - name: Install dependencies (PARALLEL)
         run: |
-          curl https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
-          curl https://packages.microsoft.com/config/ubuntu/22.04/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list
-          sudo apt-get update
-          sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18
+          echo "=== CÀI ĐẶT SONG SONG ==="
+          
+          # Job nền 1: Cài ODBC Driver
+          {
+            echo "[1/2] Installing ODBC Driver..."
+            curl -s https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
+            curl -s https://packages.microsoft.com/config/ubuntu/22.04/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list
+            sudo apt-get update -qq
+            sudo ACCEPT_EULA=Y apt-get install -y -qq msodbcsql18 mssql-tools18
+            echo 'export PATH="$PATH:/opt/mssql-tools18/bin"' >> ~/.bashrc
+            echo "✅ ODBC Driver done"
+          } &
+          
+          # Job nền 2: Cài Python dependencies
+          {
+            echo "[2/2] Installing Python deps..."
+            python -m pip install --upgrade pip -q
+            pip install -q pandas numpy pyodbc azure-storage-blob
+            echo "✅ Python deps done"
+          } &
+          
+          # ĐỢI CẢ 2 HOÀN THÀNH
+          wait
+          
+          echo "🎉 ALL DEPENDENCIES INSTALLED!"
       
-      - name: Install Python deps (dùng cache)
-        run: pip install pandas numpy pyodbc azure-storage-blob
-      
+      # 🔥 CHẠY ETL NGAY SAU KHI CẢ 2 CÀI XONG
       - name: Run ETL Pipeline
         env:
           SEMESTER: ${{ github.event.inputs.semester }}
@@ -82,3 +65,12 @@ jobs:
           CONNECTION_STRING: ${{ secrets.AZURE_CONNECTION_STRING }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
         run: python etl.py
+      
+      - name: Summary
+        if: always()
+        run: |
+          echo "## ETL Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Parameter | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "| Semester | ${{ github.event.inputs.semester }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Survey File | ${{ github.event.inputs.survey_file }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | ${{ job.status }} |" >> $GITHUB_STEP_SUMMARY

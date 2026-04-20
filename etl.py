@@ -1,11 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-SURVEY ETL - LOGIC GỐC + YÊU CẦU MỚI
-- Giữ nguyên logic parse file raw (DP + Scoring)
-- Cấu trúc thư mục mới: {SEMESTER}/rawdata, {SEMESTER}/tailieu
-- Logic chuyên ngành: TH1 (XXKNN), TH2 (CTS, QT), mặc định (MaKhoa)
-"""
 
 import os
 import sys
@@ -37,17 +29,14 @@ CONN_STR = (
     f"DATABASE=course-survey-db;"
     f"UID=sqladmin;"
     f"PWD={DB_PASSWORD};"
-    f"Encrypt=yes;TrustServerCertificate=no;"
-    f"Connection Timeout=120;"
-    f"Command Timeout=300;"
 )
 
 BATCH_SIZE = 25000
-CONTAINER_NAME = SEMESTER  # Container chính là năm học
+CONTAINER_NAME = SEMESTER
 RAWDATA_PATH = "rawdata"
 TAILIEU_PATH = "tailieu"
 
-# ========== TRỌNG SỐ CHO TỪNG CỘT (GIỮ NGUYÊN) ==========
+# ========== TRỌNG SỐ (GIỮ NGUYÊN) ==========
 WEIGHTS_CAU13 = {
     'chuẩn đầu ra': 5.0, 'mục tiêu môn học': 4.5, 'đáp ứng chương trình': 4.0,
     'nội dung': 3.0, 'học phần': 3.0, 'chương trình': 2.5, 'môn học': 2.5,
@@ -98,7 +87,7 @@ COLUMN_ORDER = ['Cau13', 'Cau14', 'Cau15', 'Cau16']
 # Cache regex patterns
 _date_pattern = re.compile(r'^\d{2}/\d{2}/\d{4}$')
 _ma_gv_pattern = re.compile(r'^(\d{7}|TG\d{5}|gvDacThu_TKTH)$')
-_lop_pattern = re.compile(r'^\d{2}K\d{2}$')  # Pattern cho TH1
+_lop_pattern = re.compile(r'^\d{2}K\d{2}$')
 _cts_pattern = re.compile(r'^CTS-', re.IGNORECASE)
 
 # ========== HELPER FUNCTIONS ==========
@@ -119,29 +108,23 @@ def to_str(val, max_len=None):
     return s[:max_len] if max_len else s
 
 def create_ma_khoa(ten_khoa: str) -> str:
-    """
-    Lấy chữ cái đầu tiên viết in của tất cả cụm từ
-    Ví dụ: 'Kinh doanh quốc tế' => 'KDQT'
-           'Bộ môn NNCN' => 'BMNNCN'
-    """
+    """Lấy chữ cái đầu tiên viết in của tất cả cụm từ"""
     if not isinstance(ten_khoa, str) or not ten_khoa:
-        return "UNKNOWN"
+        return "TĐHKT"
     words = ten_khoa.split()
     initials = []
     for w in words:
         chars = [c.upper() for c in w if c.isalpha()]
         if chars:
             initials.append(chars[0])
-    return ''.join(initials) if initials else "UNKNOWN"
+    return ''.join(initials) if initials else "TĐHKT"
 
 def normalize_lop(lop: str) -> str:
     """Chuẩn hóa mã lớp: bỏ CTS-, cắt sau dấu . - _"""
     if not isinstance(lop, str):
         return ""
-    # Bỏ CTS- nếu có
     if lop.upper().startswith('CTS-'):
         lop = lop[4:]
-    # Cắt sau dấu . - _
     for sep in ['.', '-', '_']:
         if sep in lop:
             lop = lop.split(sep)[0]
@@ -166,10 +149,10 @@ def is_ma_gv_format(value):
 
 def determine_ma_chuyen_nganh(lop: str) -> tuple:
     """
-    Xác định MaChuyenNganh và TenKhoa mặc định từ Lop
+    Xác định MaChuyenNganh, TenKhoa, MaKhoa mặc định từ Lop
     
     Returns:
-        (MaChuyenNganh, TenKhoa_mac_dinh, IsCTS)
+        (MaChuyenNganh, TenKhoa_mac_dinh, MaKhoa_mac_dinh, IsCTS)
     """
     lop_upper = lop.upper()
     lop_normalized = normalize_lop(lop)
@@ -177,20 +160,19 @@ def determine_ma_chuyen_nganh(lop: str) -> tuple:
     
     # TH1: Lop khớp pattern ^\d{2}K\d{2}$
     if _lop_pattern.match(lop_normalized):
-        # Lấy NN (2 chữ số sau K)
         nn = lop_normalized[3:5]
-        return f"K{nn}", None, is_cts
+        return f"K{nn}", None, None, is_cts
     
     # TH2a: Bắt đầu bằng 'CTS'
     if is_cts:
-        return "CTS", "Trường ĐHKT", True
+        return "CTS", "Trường ĐHKT", "TĐHKT", True
     
     # TH2b: Có ký tự 'QT' ở bất kỳ vị trí nào
     if 'QT' in lop_upper:
-        return "QT", "Phòng Đào Tạo", is_cts
+        return "QT", "Phòng Đào Tạo", "PĐT", is_cts
     
-    # Mặc định: trả về None (sẽ dùng MaKhoa từ HP)
-    return None, None, is_cts
+    # Mặc định: Trường ĐHKT
+    return "TĐHKT", "Trường ĐHKT", "TĐHKT", is_cts
 
 # ========== CÁC HÀM XỬ LÝ CÂU TRẢ LỜI (GIỮ NGUYÊN) ==========
 def calculate_weighted_score(text, column_name):
@@ -495,7 +477,6 @@ def download_blob_to_string(blob_service: BlobServiceClient, blob_path: str) -> 
         return ""
 
 def load_hp_master(blob_service: BlobServiceClient) -> pd.DataFrame:
-    """Đọc file HP-Khoa.csv từ tailieu/"""
     path = f"{TAILIEU_PATH}/HP-Khoa.csv"
     print(f"  -> Đọc HP-Khoa: {CONTAINER_NAME}/{path}")
     content = download_blob_to_string(blob_service, path)
@@ -511,7 +492,6 @@ def load_hp_master(blob_service: BlobServiceClient) -> pd.DataFrame:
     return df
 
 def load_cn_master(blob_service: BlobServiceClient) -> pd.DataFrame:
-    """Đọc file TenChuyenNganh-Khoa.csv từ tailieu/"""
     path = f"{TAILIEU_PATH}/TenChuyenNganh-Khoa.csv"
     print(f"  -> Đọc TenChuyenNganh-Khoa: {CONTAINER_NAME}/{path}")
     content = download_blob_to_string(blob_service, path)
@@ -536,11 +516,12 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
     hoc_ky = int(ma_hoc_ky[2]) if ma_hoc_ky[2].isdigit() else 2
     print(f"  -> MaHocKy: {ma_hoc_ky}")
     
-    # 1. Xác định MaChuyenNganh và IsCTS từ Lop
+    # 1. Xác định MaChuyenNganh, TenKhoa, MaKhoa, IsCTS từ Lop
     chuyen_nganh_info = df['Lop'].apply(determine_ma_chuyen_nganh)
     df['MaChuyenNganh_TuLop'] = chuyen_nganh_info.apply(lambda x: x[0])
     df['TenKhoa_MacDinh'] = chuyen_nganh_info.apply(lambda x: x[1])
-    df['IsCTS'] = chuyen_nganh_info.apply(lambda x: x[2])
+    df['MaKhoa_MacDinh'] = chuyen_nganh_info.apply(lambda x: x[2])
+    df['IsCTS'] = chuyen_nganh_info.apply(lambda x: x[3])
     
     # 2. Chuẩn hóa Lop để làm MaLop
     df['MaLop'] = df['Lop'].apply(normalize_lop)
@@ -549,13 +530,22 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
     if not hp_master.empty:
         df = df.merge(hp_master[['MaHP', 'TenHP', 'MaKhoa', 'TenKhoa']], on='MaHP', how='left')
         df['TenHP'] = df['TenHP_y'].fillna(df['TenHP_x'])
+        
+        # Nếu TenKhoa từ HP bị NaN, dùng TenKhoa_MacDinh
         df['TenKhoa'] = df['TenKhoa'].fillna(df['TenKhoa_MacDinh'])
+        # Nếu vẫn NaN, dùng giá trị mặc định
+        df['TenKhoa'] = df['TenKhoa'].fillna('Trường ĐHKT')
+        
+        # Nếu MaKhoa từ HP bị NaN, tạo từ TenKhoa hoặc dùng MaKhoa_MacDinh
         df['MaKhoa'] = df['MaKhoa'].fillna(df['TenKhoa'].apply(create_ma_khoa))
-        df.drop(['TenHP_x', 'TenHP_y', 'TenKhoa_MacDinh'], axis=1, inplace=True, errors='ignore')
+        df['MaKhoa'] = df['MaKhoa'].fillna(df['MaKhoa_MacDinh'])
+        df['MaKhoa'] = df['MaKhoa'].fillna('TĐHKT')
+        
+        df.drop(['TenHP_x', 'TenHP_y', 'TenKhoa_MacDinh', 'MaKhoa_MacDinh'], axis=1, inplace=True, errors='ignore')
     else:
-        df['MaKhoa'] = df['TenKhoa_MacDinh'].apply(create_ma_khoa) if 'TenKhoa_MacDinh' in df.columns else 'TĐHKT'
-        df['TenKhoa'] = df['TenKhoa_MacDinh'] if 'TenKhoa_MacDinh' in df.columns else 'Trường ĐHKT'
-        df.drop(['TenKhoa_MacDinh'], axis=1, inplace=True, errors='ignore')
+        df['MaKhoa'] = df['MaKhoa_MacDinh'].fillna('TĐHKT')
+        df['TenKhoa'] = df['TenKhoa_MacDinh'].fillna('Trường ĐHKT')
+        df.drop(['TenKhoa_MacDinh', 'MaKhoa_MacDinh'], axis=1, inplace=True, errors='ignore')
     
     # 4. MaChuyenNganh cuối cùng
     df['MaChuyenNganh'] = df['MaChuyenNganh_TuLop'].fillna(df['MaKhoa'])
@@ -584,9 +574,18 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
     # DIM_HOC_KY
     dim_hoc_ky = pd.DataFrame([{'MaHocKy': ma_hoc_ky, 'NamHoc': nam_hoc, 'HocKy': hoc_ky}])
     
-    # DIM_KHOA (từ HP-Khoa + các khoa mặc định)
+    # DIM_KHOA - ĐẢM BẢO KHÔNG CÓ NULL
     dim_khoa = df[['MaKhoa', 'TenKhoa']].drop_duplicates(subset=['MaKhoa'])
     dim_khoa = dim_khoa[dim_khoa['MaKhoa'] != '']
+    dim_khoa['TenKhoa'] = dim_khoa['TenKhoa'].fillna('Trường ĐHKT')
+    # Thêm các khoa mặc định nếu chưa có
+    default_khoas = pd.DataFrame([
+        {'MaKhoa': 'TĐHKT', 'TenKhoa': 'Trường ĐHKT'},
+        {'MaKhoa': 'PĐT', 'TenKhoa': 'Phòng Đào Tạo'},
+        {'MaKhoa': 'CTS', 'TenKhoa': 'Trường ĐHKT'},
+        {'MaKhoa': 'QT', 'TenKhoa': 'Phòng Đào Tạo'}
+    ])
+    dim_khoa = pd.concat([dim_khoa, default_khoas]).drop_duplicates(subset=['MaKhoa']).reset_index(drop=True)
     
     # DIM_CHUYEN_NGANH
     dim_chuyen_nganh = df[['MaChuyenNganh', 'TenChuyenNganh', 'MaKhoa']].drop_duplicates(subset=['MaChuyenNganh'])
@@ -650,6 +649,9 @@ def load_dimension(cursor, table: str, df: pd.DataFrame, columns: list, id_col: 
     if df.empty:
         return 0
     
+    # Đảm bảo không có NaN trong DataFrame
+    df = df.fillna('')
+    
     existing = get_existing_ids(cursor, table, id_col)
     new_data = df[~df[id_col].isin(existing)]
     
@@ -666,7 +668,7 @@ def load_dimension(cursor, table: str, df: pd.DataFrame, columns: list, id_col: 
         for c in columns:
             if c == 'NgaySinh':
                 val = row[c]
-                if pd.isna(val):
+                if pd.isna(val) or val == '':
                     tuple_data.append(None)
                 else:
                     try:
@@ -676,7 +678,10 @@ def load_dimension(cursor, table: str, df: pd.DataFrame, columns: list, id_col: 
                         tuple_data.append(None)
             else:
                 val = row[c]
-                tuple_data.append(str(val)[:500] if val else None)
+                if pd.isna(val) or val == '':
+                    tuple_data.append('')
+                else:
+                    tuple_data.append(str(val)[:500])
         data.append(tuple(tuple_data))
     
     cursor.executemany(query, data)
@@ -690,13 +695,15 @@ def load_fact(cursor, fact_df: pd.DataFrame) -> int:
     print(f"  -> Insert FACT: {len(fact_df):,} dòng...")
     start = time.time()
     
+    fact_df = fact_df.fillna('')
+    
     data = list(zip(
         fact_df['SubmissionID'].astype(str).str[:100],
         fact_df['MaCauHoi'].astype(int),
         fact_df['MaSV'].astype(str).str[:20],
         fact_df['MaLopHP'].astype(str).str[:50],
         fact_df['TraLoiSo'].fillna(0).astype(float),
-        fact_df['TraLoiText'].fillna('').astype(str)
+        fact_df['TraLoiText'].astype(str)
     ))
     
     cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT NOCHECK CONSTRAINT ALL")
@@ -795,7 +802,7 @@ def load_to_database(dims: dict):
 def main():
     total_start = time.time()
     print("=" * 60)
-    print("🚀 SURVEY ETL - LOGIC GỐC + YÊU CẦU MỚI")
+    print("🚀 SURVEY ETL - FIXED TenKhoa NULL")
     print("=" * 60)
     print(f"Semester: {SEMESTER}")
     print(f"File: {SURVEY_FILE}")
@@ -812,11 +819,9 @@ def main():
     print("\n📥 1. EXTRACT")
     start = time.time()
     
-    # Đọc master data
     hp_master = load_hp_master(blob_service)
     cn_master = load_cn_master(blob_service)
     
-    # Đọc survey file
     survey_path = f"{RAWDATA_PATH}/{SURVEY_FILE}"
     print(f"  -> Đọc survey: {CONTAINER_NAME}/{survey_path}")
     survey_content = download_blob_to_string(blob_service, survey_path)

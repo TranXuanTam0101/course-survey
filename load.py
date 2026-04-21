@@ -663,12 +663,19 @@ def load_dimension(cursor, table: str, df: pd.DataFrame, columns: list, id_col: 
     return len(new_data)
 
 def load_fact(cursor, df: pd.DataFrame) -> int:
-    """Load dữ liệu vào FACT - INSERT TẤT CẢ (TỐI ƯU)"""
+    """Load dữ liệu vào FACT - INSERT TẤT CẢ"""
     if df.empty:
         return 0
     
     print(f"  -> Insert FACT: processing...")
     start = time.time()
+    
+    # DEBUG
+    print(f"  -> DEBUG: Cau13 notna: {df['Cau13'].notna().sum():,}")
+    print(f"  -> DEBUG: Cau14 notna: {df['Cau14'].notna().sum():,}")
+    print(f"  -> DEBUG: Cau15 notna: {df['Cau15'].notna().sum():,}")
+    print(f"  -> DEBUG: Cau16 notna: {df['Cau16'].notna().sum():,}")
+    print(f"  -> DEBUG: Unique SubmissionID: {df['SubmissionID'].nunique():,}")
     
     # Lấy FK hợp lệ
     cursor.execute("SELECT MaSV FROM DIM_SINH_VIEN")
@@ -679,7 +686,7 @@ def load_fact(cursor, df: pd.DataFrame) -> int:
     valid_lhp = {row[0] for row in cursor.fetchall()}
     print(f"  -> Valid MaLopHP: {len(valid_lhp):,}")
     
-    # ========== 1. Câu trắc nghiệm (1-12) - VECTORIZED ==========
+    # ========== 1. Câu trắc nghiệm (1-12) ==========
     trac_nghiem_df = df[df['CauHoi'].notna() & df['GiaTri'].notna()].copy()
     if not trac_nghiem_df.empty:
         trac_nghiem_df['MaCauHoi'] = trac_nghiem_df['CauHoi'].astype(float).astype(int)
@@ -689,63 +696,113 @@ def load_fact(cursor, df: pd.DataFrame) -> int:
         trac_nghiem_df['TraLoiSo'] = trac_nghiem_df['GiaTri'].astype(float).astype(int)
         trac_nghiem_df['TraLoiText'] = None
         
-        # Lọc FK hợp lệ
         trac_nghiem_df = trac_nghiem_df[
             trac_nghiem_df['MaSV'].isin(valid_sv) & 
             trac_nghiem_df['MaLopHP'].isin(valid_lhp)
         ]
-        print(f"  -> Trắc nghiệm: {len(trac_nghiem_df):,} dòng hợp lệ")
+        print(f"  -> Trắc nghiệm: {len(trac_nghiem_df):,} dòng")
     else:
         trac_nghiem_df = pd.DataFrame()
     
-    # ========== 2. Câu tự luận (13-16) - VECTORIZED ==========
-    df_unique = df.drop_duplicates('SubmissionID')[['SubmissionID', 'MaSV', 'MaLopHP', 'Cau13', 'Cau14', 'Cau15', 'Cau16']].copy()
+    # ========== 2. Câu tự luận (13-16) - FIX: DÙNG GROUPBY FIRST ==========
+    # Lấy dòng đầu tiên cho mỗi SubmissionID
+    df_unique = df.groupby('SubmissionID', as_index=False).first()
     
-    # Melt thành 4 dòng
-    tu_luan_df = df_unique.melt(
-        id_vars=['SubmissionID', 'MaSV', 'MaLopHP'],
-        value_vars=['Cau13', 'Cau14', 'Cau15', 'Cau16'],
-        var_name='CauHoi_str',
-        value_name='TraLoiText'
-    )
+    # DEBUG
+    print(f"  -> DEBUG: df_unique rows: {len(df_unique):,}")
+    print(f"  -> DEBUG: df_unique Cau13 notna: {df_unique['Cau13'].notna().sum():,}")
     
-    # Map MaCauHoi
-    cau_map = {'Cau13': 13, 'Cau14': 14, 'Cau15': 15, 'Cau16': 16}
-    tu_luan_df['MaCauHoi'] = tu_luan_df['CauHoi_str'].map(cau_map)
-    tu_luan_df['TraLoiSo'] = None
+    # Tạo list chứa các dòng tự luận
+    tu_luan_rows = []
     
-    # Lọc dòng có text và FK hợp lệ
-    tu_luan_df = tu_luan_df[
-        tu_luan_df['TraLoiText'].notna() & 
-        (tu_luan_df['TraLoiText'].astype(str).str.strip() != '') &
-        tu_luan_df['MaSV'].isin(valid_sv) & 
-        tu_luan_df['MaLopHP'].isin(valid_lhp)
-    ]
-    tu_luan_df = tu_luan_df.drop('CauHoi_str', axis=1)
-    print(f"  -> Tự luận: {len(tu_luan_df):,} dòng hợp lệ")
+    for _, row in df_unique.iterrows():
+        sub_id = row['SubmissionID']
+        ma_sv = row['MaSV']
+        ma_lop_hp = row['MaLopHP']
+        
+        # Chỉ thêm nếu FK hợp lệ
+        if ma_sv not in valid_sv or ma_lop_hp not in valid_lhp:
+            continue
+        
+        # Cau13
+        val13 = row.get('Cau13')
+        if pd.notna(val13) and str(val13).strip():
+            tu_luan_rows.append({
+                'SubmissionID': sub_id,
+                'MaCauHoi': 13,
+                'MaSV': ma_sv,
+                'MaLopHP': ma_lop_hp,
+                'TraLoiSo': None,
+                'TraLoiText': str(val13).strip()
+            })
+        
+        # Cau14
+        val14 = row.get('Cau14')
+        if pd.notna(val14) and str(val14).strip():
+            tu_luan_rows.append({
+                'SubmissionID': sub_id,
+                'MaCauHoi': 14,
+                'MaSV': ma_sv,
+                'MaLopHP': ma_lop_hp,
+                'TraLoiSo': None,
+                'TraLoiText': str(val14).strip()
+            })
+        
+        # Cau15
+        val15 = row.get('Cau15')
+        if pd.notna(val15) and str(val15).strip():
+            tu_luan_rows.append({
+                'SubmissionID': sub_id,
+                'MaCauHoi': 15,
+                'MaSV': ma_sv,
+                'MaLopHP': ma_lop_hp,
+                'TraLoiSo': None,
+                'TraLoiText': str(val15).strip()
+            })
+        
+        # Cau16
+        val16 = row.get('Cau16')
+        if pd.notna(val16) and str(val16).strip():
+            tu_luan_rows.append({
+                'SubmissionID': sub_id,
+                'MaCauHoi': 16,
+                'MaSV': ma_sv,
+                'MaLopHP': ma_lop_hp,
+                'TraLoiSo': None,
+                'TraLoiText': str(val16).strip()
+            })
+    
+    tu_luan_df = pd.DataFrame(tu_luan_rows) if tu_luan_rows else pd.DataFrame()
+    if not tu_luan_df.empty:
+        print(f"  -> Tự luận: {len(tu_luan_df):,} dòng")
+    else:
+        print(f"  -> Tự luận: 0 dòng")
     
     # ========== 3. GỘP VÀ INSERT ==========
-    fact_df = pd.concat([trac_nghiem_df[['SubmissionID', 'MaCauHoi', 'MaSV', 'MaLopHP', 'TraLoiSo', 'TraLoiText']], 
-                         tu_luan_df], ignore_index=True)
+    fact_dfs = []
+    if not trac_nghiem_df.empty:
+        fact_dfs.append(trac_nghiem_df[['SubmissionID', 'MaCauHoi', 'MaSV', 'MaLopHP', 'TraLoiSo', 'TraLoiText']])
+    if not tu_luan_df.empty:
+        fact_dfs.append(tu_luan_df)
     
-    if fact_df.empty:
+    if not fact_dfs:
         print("  ❌ KHÔNG CÓ DÒNG NÀO HỢP LỆ!")
         return 0
     
+    fact_df = pd.concat(fact_dfs, ignore_index=True)
     print(f"  -> Total FACT rows: {len(fact_df):,}")
     
-    # Chuẩn bị data - dùng list comprehension cho nhanh
-    data = [
-        (
+    # Chuẩn bị data
+    data = []
+    for _, row in fact_df.iterrows():
+        data.append((
             str(row['SubmissionID'])[:150] if pd.notna(row['SubmissionID']) else '',
             int(row['MaCauHoi']) if pd.notna(row['MaCauHoi']) else 0,
             str(row['MaSV'])[:20] if pd.notna(row['MaSV']) else '',
             str(row['MaLopHP'])[:50] if pd.notna(row['MaLopHP']) else '',
             float(row['TraLoiSo']) if pd.notna(row.get('TraLoiSo')) else None,
             str(row['TraLoiText']) if pd.notna(row.get('TraLoiText')) else None
-        )
-        for _, row in fact_df.iterrows()
-    ]
+        ))
     
     # Tắt constraint
     cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT NOCHECK CONSTRAINT ALL")
@@ -762,7 +819,8 @@ def load_fact(cursor, df: pd.DataFrame) -> int:
         """, batch)
         cursor.connection.commit()
         total += len(batch)
-        print(f"    -> Đã insert {total:,}/{len(data):,} dòng")
+        if (i // BATCH_SIZE + 1) % 5 == 0:
+            print(f"    -> Đã insert {total:,}/{len(data):,} dòng")
     
     # Bật lại constraint
     cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT CHECK CONSTRAINT ALL")
@@ -770,7 +828,7 @@ def load_fact(cursor, df: pd.DataFrame) -> int:
     
     print(f"  ✅ FACT done: {total:,} dòng ({time.time()-start:.2f}s)")
     return total
-
+    
 def extract_dimensions_from_df(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.DataFrame) -> dict:
     """Trích xuất các bảng Dimension từ DataFrame đã xử lý - KHÔNG LỌC BỎ DÒNG"""
     print("  -> Extracting dimensions...")

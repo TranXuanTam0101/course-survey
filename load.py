@@ -1,3 +1,13 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+SURVEY ETL - FULL PIPELINE (EXTRACT + TRANSFORM + LOAD)
+- Multiprocessing parse
+- DP + Sequential Scoring cho câu tự luận
+- Transform thành 1 DataFrame duy nhất (mỗi câu hỏi 1 dòng)
+- Load trực tiếp vào SQL Server
+- FACT: INSERT ALL, DIM: UPSERT (check trùng)
+"""
 
 import os
 import sys
@@ -49,7 +59,7 @@ PROCESSED_PATH = "processed-data"
 # Cache cho existing IDs khi load
 _EXISTING_CACHE = {}
 
-# ========== TRỌNG SỐ (GIỮ NGUYÊN) ==========
+# ========== TRỌNG SỐ ==========
 WEIGHTS_CAU13 = {
     'chuẩn đầu ra': 5.0, 'mục tiêu môn học': 4.5, 'đáp ứng chương trình': 4.0,
     'nội dung': 3.0, 'học phần': 3.0, 'chương trình': 2.5, 'môn học': 2.5,
@@ -121,7 +131,7 @@ def create_ma_khoa(ten_khoa: str) -> str:
                 initials.append(first_char)
     return ''.join(initials) if initials else "UNKNOWN"
 
-# ========== CÁC HÀM XỬ LÝ CÂU TỰ LUẬN (GIỮ NGUYÊN) ==========
+# ========== CÁC HÀM XỬ LÝ CÂU TỰ LUẬN ==========
 def calculate_weighted_score(text, column_name):
     if not text or not isinstance(text, str):
         return 0.0
@@ -266,11 +276,7 @@ def sequential_scoring_classification(parts):
         if choice[i][j] is None:
             break
         prev_i, prev_j, k, text = choice[i][j]
-        assignments.insert(0, {
-            'column': COLUMN_ORDER[prev_j],
-            'text': text,
-            'num_parts': k
-        })
+        assignments.insert(0, {'column': COLUMN_ORDER[prev_j], 'text': text, 'num_parts': k})
         i, j = prev_i, prev_j
     return assignments
 
@@ -286,11 +292,7 @@ def fallback_even_split(parts):
     for col_idx, size in enumerate(sizes):
         end = start + size
         merged_text = ', '.join(parts[start:end])
-        assignments.append({
-            'column': COLUMN_ORDER[col_idx],
-            'text': merged_text,
-            'num_parts': size
-        })
+        assignments.append({'column': COLUMN_ORDER[col_idx], 'text': merged_text, 'num_parts': size})
         start = end
     return assignments
 
@@ -355,6 +357,7 @@ def is_ma_gv_format(value):
         return True
     return False
 
+# ========== PARSE ==========
 def parse_single_line(line: str) -> dict:
     if not line or not line.strip():
         return None
@@ -441,31 +444,22 @@ def derive_ma_hoc_ky() -> tuple:
     return ma_hoc_ky, nam_hoc, hoc_ky
 
 def determine_ma_chuyen_nganh(lop: str) -> tuple:
-    """
-    Xác định MaChuyenNganh, TenChuyenNganh, TenKhoa_CN, MaKhoa_CN từ Lop
-    
-    Returns:
-        (MaChuyenNganh, TenChuyenNganh, TenKhoa_CN, MaKhoa_CN)
-        Trả về None cho các giá trị không xác định được
-    """
     lop_upper = lop.upper()
     lop_normalized = normalize_lop(lop)
     
-    # TH1: Lop khớp pattern ^\d{2}K\d{2}$
     if _lop_pattern.match(lop_normalized):
         ma_cn = f"K{lop_normalized[3:5]}"
-        return ma_cn, f"Chuyên ngành {ma_cn}", None, None  # Sẽ tra từ TenChuyenNganh-Khoa.csv sau
+        return ma_cn, f"Chuyên ngành {ma_cn}", None, None
     
-    # TH2: Lop chứa 'QT'
     if 'QT' in lop_upper:
         return "QT", "Chuyên ngành QT", "Phòng Đào Tạo", "PĐT"
     
-    # TH3: Lop chứa 'CTS' hoặc bắt đầu bằng CTS
     if 'CTS' in lop_upper or lop_upper.startswith('CTS-') or lop_upper.startswith('CTS'):
         return "CTS", "Chuyên ngành CTS", "Trường ĐHKT", "TĐHKT"
     
     return None, None, None, None
 
+# ========== EXTRACT ==========
 def download_blob_to_string(blob_service: BlobServiceClient, blob_path: str) -> str:
     try:
         client = blob_service.get_container_client(CONTAINER_NAME).get_blob_client(blob_path)
@@ -517,7 +511,13 @@ def parse_survey_parallel(content: str) -> pd.DataFrame:
     print(f"  -> Đã parse {len(df):,} dòng ({time.time()-start:.2f}s)")
     return df
 
-def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.DataFrame) -> pd.DataFrame:
+# ================= TRANSFORM =================
+def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.DataFrame) -> tuple:
+    """
+    Transform dữ liệu - Trả về (df_original, df_fact)
+    - df_original: DataFrame gốc đã làm giàu (dùng cho DIM)
+    - df_fact: DataFrame đã melt (mỗi câu hỏi 1 dòng, dùng cho FACT)
+    """
     print("  -> Transform...")
     start = time.time()
     
@@ -532,76 +532,91 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
     if not cn_master.empty:
         cn_unique = cn_master.drop_duplicates(subset=['MaChuyenNganh'])
         cn_dict = cn_unique.set_index('MaChuyenNganh')[['TenChuyenNganh', 'TenKhoa', 'MaKhoa']].to_dict('index')
-        
-        # Chỉ map cho những dòng có MaChuyenNganh_Lop không None
         mask = df['MaChuyenNganh_Lop'].notna()
-        df.loc[mask, 'TenChuyenNganh_File'] = df.loc[mask, 'MaChuyenNganh_Lop'].map(
-            lambda x: cn_dict.get(x, {}).get('TenChuyenNganh') if x else None
-        )
-        df.loc[mask, 'TenKhoa_CN_File'] = df.loc[mask, 'MaChuyenNganh_Lop'].map(
-            lambda x: cn_dict.get(x, {}).get('TenKhoa') if x else None
-        )
-        df.loc[mask, 'MaKhoa_CN_File'] = df.loc[mask, 'MaChuyenNganh_Lop'].map(
-            lambda x: cn_dict.get(x, {}).get('MaKhoa') if x else None
-        )
-        
-        # Ưu tiên dùng từ file, nếu không có thì dùng giá trị từ Lop
-        df['MaChuyenNganh'] = df['MaChuyenNganh_Lop']  # Giữ nguyên MaChuyenNganh từ Lop
+        df.loc[mask, 'TenChuyenNganh_File'] = df.loc[mask, 'MaChuyenNganh_Lop'].map(lambda x: cn_dict.get(x, {}).get('TenChuyenNganh'))
+        df.loc[mask, 'TenKhoa_CN_File'] = df.loc[mask, 'MaChuyenNganh_Lop'].map(lambda x: cn_dict.get(x, {}).get('TenKhoa'))
+        df.loc[mask, 'MaKhoa_CN_File'] = df.loc[mask, 'MaChuyenNganh_Lop'].map(lambda x: cn_dict.get(x, {}).get('MaKhoa'))
+        df['MaChuyenNganh'] = df['MaChuyenNganh_Lop']
         df['TenChuyenNganh'] = df['TenChuyenNganh_File'].fillna(df['TenChuyenNganh_Lop'])
         df['TenKhoa_CN'] = df['TenKhoa_CN_File'].fillna(df['TenKhoa_CN_Lop'])
         df['MaKhoa_CN'] = df['MaKhoa_CN_File'].fillna(df['MaKhoa_CN_Lop'])
-        
-        df.drop(['TenChuyenNganh_File', 'TenKhoa_CN_File', 'MaKhoa_CN_File'], axis=1, inplace=True, errors='ignore')
+        df.drop(['TenChuyenNganh_File', 'TenKhoa_CN_File', 'MaKhoa_CN_File'], axis=1, errors='ignore')
     else:
-        # Không có file master, dùng trực tiếp từ Lop
         df['MaChuyenNganh'] = df['MaChuyenNganh_Lop']
         df['TenChuyenNganh'] = df['TenChuyenNganh_Lop']
         df['TenKhoa_CN'] = df['TenKhoa_CN_Lop']
         df['MaKhoa_CN'] = df['MaKhoa_CN_Lop']
+    df.drop(['MaChuyenNganh_Lop', 'TenChuyenNganh_Lop', 'TenKhoa_CN_Lop', 'MaKhoa_CN_Lop'], axis=1, errors='ignore')
     
-    # Xóa các cột tạm
-    df.drop(['MaChuyenNganh_Lop', 'TenChuyenNganh_Lop', 'TenKhoa_CN_Lop', 'MaKhoa_CN_Lop'], 
-            axis=1, inplace=True, errors='ignore')
-    
-    # ========== 3. XÁC ĐỊNH KHOA CỦA HỌC PHẦN TỪ HP-Khoa.csv ==========
+    # ========== 3. KHOA CỦA HỌC PHẦN TỪ HP-Khoa.csv ==========
     if not hp_master.empty:
         hp_unique = hp_master.drop_duplicates(subset=['MaHP'])
         hp_dict = hp_unique.set_index('MaHP')[['TenHP', 'TenKhoa', 'MaKhoa']].to_dict('index')
-        
         df['TenHP_File'] = df['MaHP'].map(lambda x: hp_dict.get(x, {}).get('TenHP'))
         df['TenKhoa_HP'] = df['MaHP'].map(lambda x: hp_dict.get(x, {}).get('TenKhoa'))
         df['MaKhoa_HP'] = df['MaHP'].map(lambda x: hp_dict.get(x, {}).get('MaKhoa'))
-        
         df['TenHP'] = df['TenHP_File'].fillna(df['TenHP'])
-        # Nếu không có trong HP-Khoa, để NULL (không gán mặc định)
-        
-        df.drop(['TenHP_File'], axis=1, inplace=True, errors='ignore')
+        df.drop(['TenHP_File'], axis=1, errors='ignore')
     else:
         df['TenKhoa_HP'] = None
         df['MaKhoa_HP'] = None
     
-    # ========== 4. CHUẨN HÓA LOP ==========
-    df['MaLop'] = df['Lop'].apply(normalize_lop)
+    # ========== 4. CHUẨN HÓA ==========
+    df['MaLop'] = df['Lop']
     df['MaLopHP'] = df['LopHP']
+    df['SubmissionID'] = df['MaSV'].astype(str) + "_" + df['LopHP'].astype(str) + "_" + df['MaGV'].astype(str) + "_" + FILE_NAME
     
-    # ========== 5. TẠO SubmissionID ==========
-    df['SubmissionID'] = (
-        df['MaSV'].fillna('UNKNOWN').astype(str) + "_" + 
-        df['LopHP'].fillna('UNKNOWN').astype(str) + "_" + 
-        df['MaGV'].fillna('UNKNOWN').astype(str) + "_" + 
-        FILE_NAME
-    )
+    # Lưu df_original (chưa melt)
+    df_original = df.copy()
     
+    # ========== 5. TẠO DF_FACT (MELT) ==========
+    rows_all = []
+    
+    # 5.1 Câu trắc nghiệm (1-12)
+    for _, row in df.iterrows():
+        cau_hoi = row.get('CauHoi')
+        gia_tri = row.get('GiaTri')
+        if pd.notna(cau_hoi) and pd.notna(gia_tri):
+            try:
+                ma_cau = int(float(cau_hoi))
+                if 1 <= ma_cau <= 12:
+                    new_row = row.to_dict()
+                    new_row['MaCauHoi'] = ma_cau
+                    new_row['TraLoiSo'] = int(float(gia_tri))
+                    new_row['TraLoiText'] = None
+                    rows_all.append(new_row)
+            except:
+                pass
+    
+    # 5.2 Câu tự luận (13-16)
+    df_unique = df.drop_duplicates('SubmissionID', keep='first')
+    for _, row in df_unique.iterrows():
+        for cau, col in [(13, 'Cau13'), (14, 'Cau14'), (15, 'Cau15'), (16, 'Cau16')]:
+            val = row.get(col)
+            if pd.notna(val) and str(val).strip():
+                new_row = row.to_dict()
+                new_row['MaCauHoi'] = cau
+                new_row['TraLoiSo'] = None
+                new_row['TraLoiText'] = str(val).strip()
+                rows_all.append(new_row)
+    
+    df_fact = pd.DataFrame(rows_all)
+    
+    # Xóa các cột không cần thiết trong df_fact
+    cols_to_drop = ['CauHoi', 'GiaTri', 'Cau13', 'Cau14', 'Cau15', 'Cau16']
+    df_fact.drop([c for c in cols_to_drop if c in df_fact.columns], axis=1, inplace=True, errors='ignore')
+    
+    print(f"  -> Dòng gốc: {len(df_original):,}")
+    print(f"  -> Dòng FACT: {len(df_fact):,}")
     print(f"  ✅ Transform: {time.time()-start:.2f}s")
-    return df
+    
+    return df_original, df_fact
 
 # ================= LOAD TO DATABASE =================
 def get_existing_ids_cached(cursor, table: str, id_col: str) -> set:
-    """Lấy existing IDs với cache"""
     cache_key = f"{table}.{id_col}"
     if cache_key in _EXISTING_CACHE:
         return _EXISTING_CACHE[cache_key]
-    
     print(f"    -> Querying {table}...")
     cursor.execute(f"SELECT {id_col} FROM {table}")
     ids = {row[0] for row in cursor.fetchall()}
@@ -609,22 +624,16 @@ def get_existing_ids_cached(cursor, table: str, id_col: str) -> set:
     return ids
 
 def load_dimension(cursor, table: str, df: pd.DataFrame, columns: list, id_col: str) -> int:
-    """Load dữ liệu vào bảng Dimension - chỉ insert dòng mới"""
     if df.empty:
         return 0
-    
     df = df.fillna('')
     existing = get_existing_ids_cached(cursor, table, id_col)
     new_data = df[~df[id_col].isin(existing)]
-    
     if new_data.empty:
         return 0
-    
     print(f"    -> Inserting {len(new_data)} new records into {table}...")
-    
     placeholders = ', '.join(['?'] * len(columns))
     query = f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders})"
-    
     data = []
     for _, row in new_data.iterrows():
         tuple_data = []
@@ -643,106 +652,47 @@ def load_dimension(cursor, table: str, df: pd.DataFrame, columns: list, id_col: 
                 val = row[c]
                 tuple_data.append(str(val)[:500] if val else '')
         data.append(tuple(tuple_data))
-    
     cursor.fast_executemany = True
     cursor.executemany(query, data)
     cursor.connection.commit()
-    
-    # Cập nhật cache
     _EXISTING_CACHE[f"{table}.{id_col}"].update(new_data[id_col].tolist())
-    
     return len(new_data)
 
-def load_fact(cursor, df: pd.DataFrame) -> int:
-    """Load dữ liệu vào FACT - INSERT TẤT CẢ (TỐI ƯU)"""
-    if df.empty:
+def load_fact(conn, cursor, df_fact: pd.DataFrame) -> int:
+    """Load FACT - df_fact đã có sẵn cột MaCauHoi, TraLoiSo, TraLoiText"""
+    if df_fact.empty:
         return 0
     
-    print(f"  -> Insert FACT: processing...")
+    print(f"  -> Insert FACT: {len(df_fact):,} dòng...")
     start = time.time()
     
-    # Lấy FK hợp lệ
     cursor.execute("SELECT MaSV FROM DIM_SINH_VIEN")
     valid_sv = {row[0] for row in cursor.fetchall()}
-    print(f"  -> Valid MaSV: {len(valid_sv):,}")
-    
     cursor.execute("SELECT MaLopHP FROM DIM_LOP_HOC_PHAN")
     valid_lhp = {row[0] for row in cursor.fetchall()}
-    print(f"  -> Valid MaLopHP: {len(valid_lhp):,}")
     
-    # ========== 1. Câu trắc nghiệm (1-12) - VECTORIZED ==========
-    trac_nghiem_df = df[df['CauHoi'].notna() & df['GiaTri'].notna()].copy()
-    if not trac_nghiem_df.empty:
-        trac_nghiem_df['MaCauHoi'] = trac_nghiem_df['CauHoi'].astype(float).astype(int)
-        trac_nghiem_df = trac_nghiem_df[
-            (trac_nghiem_df['MaCauHoi'] >= 1) & (trac_nghiem_df['MaCauHoi'] <= 12)
-        ]
-        trac_nghiem_df['TraLoiSo'] = trac_nghiem_df['GiaTri'].astype(float).astype(int)
-        trac_nghiem_df['TraLoiText'] = None
-        
-        # Lọc FK hợp lệ
-        trac_nghiem_df = trac_nghiem_df[
-            trac_nghiem_df['MaSV'].isin(valid_sv) & 
-            trac_nghiem_df['MaLopHP'].isin(valid_lhp)
-        ]
-        print(f"  -> Trắc nghiệm: {len(trac_nghiem_df):,} dòng hợp lệ")
-    else:
-        trac_nghiem_df = pd.DataFrame()
-    
-    # ========== 2. Câu tự luận (13-16) - VECTORIZED ==========
-    df_unique = df.drop_duplicates('SubmissionID')[['SubmissionID', 'MaSV', 'MaLopHP', 'Cau13', 'Cau14', 'Cau15', 'Cau16']].copy()
-    
-    # Melt thành 4 dòng
-    tu_luan_df = df_unique.melt(
-        id_vars=['SubmissionID', 'MaSV', 'MaLopHP'],
-        value_vars=['Cau13', 'Cau14', 'Cau15', 'Cau16'],
-        var_name='CauHoi_str',
-        value_name='TraLoiText'
-    )
-    
-    # Map MaCauHoi
-    cau_map = {'Cau13': 13, 'Cau14': 14, 'Cau15': 15, 'Cau16': 16}
-    tu_luan_df['MaCauHoi'] = tu_luan_df['CauHoi_str'].map(cau_map)
-    tu_luan_df['TraLoiSo'] = None
-    
-    # Lọc dòng có text và FK hợp lệ
-    tu_luan_df = tu_luan_df[
-        tu_luan_df['TraLoiText'].notna() & 
-        (tu_luan_df['TraLoiText'].astype(str).str.strip() != '') &
-        tu_luan_df['MaSV'].isin(valid_sv) & 
-        tu_luan_df['MaLopHP'].isin(valid_lhp)
-    ]
-    tu_luan_df = tu_luan_df.drop('CauHoi_str', axis=1)
-    print(f"  -> Tự luận: {len(tu_luan_df):,} dòng hợp lệ")
-    
-    # ========== 3. GỘP VÀ INSERT ==========
-    fact_df = pd.concat([trac_nghiem_df[['SubmissionID', 'MaCauHoi', 'MaSV', 'MaLopHP', 'TraLoiSo', 'TraLoiText']], 
-                         tu_luan_df], ignore_index=True)
+    fact_df = df_fact[df_fact['MaSV'].isin(valid_sv) & df_fact['MaLopHP'].isin(valid_lhp)].copy()
     
     if fact_df.empty:
         print("  ❌ KHÔNG CÓ DÒNG NÀO HỢP LỆ!")
         return 0
     
-    print(f"  -> Total FACT rows: {len(fact_df):,}")
+    print(f"  -> Valid FACT rows: {len(fact_df):,}")
     
-    # Chuẩn bị data - dùng list comprehension cho nhanh
-    data = [
-        (
+    data = []
+    for _, row in fact_df.iterrows():
+        data.append((
             str(row['SubmissionID'])[:150] if pd.notna(row['SubmissionID']) else '',
             int(row['MaCauHoi']) if pd.notna(row['MaCauHoi']) else 0,
             str(row['MaSV'])[:20] if pd.notna(row['MaSV']) else '',
             str(row['MaLopHP'])[:50] if pd.notna(row['MaLopHP']) else '',
             float(row['TraLoiSo']) if pd.notna(row.get('TraLoiSo')) else None,
             str(row['TraLoiText']) if pd.notna(row.get('TraLoiText')) else None
-        )
-        for _, row in fact_df.iterrows()
-    ]
+        ))
     
-    # Tắt constraint
     cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT NOCHECK CONSTRAINT ALL")
-    cursor.connection.commit()
+    conn.commit()
     
-    # Insert theo batch
     total = 0
     for i in range(0, len(data), BATCH_SIZE):
         batch = data[i:i+BATCH_SIZE]
@@ -751,85 +701,71 @@ def load_fact(cursor, df: pd.DataFrame) -> int:
             (SubmissionID, MaCauHoi, MaSV, MaLopHP, TraLoiSo, TraLoiText)
             VALUES (?, ?, ?, ?, ?, ?)
         """, batch)
-        cursor.connection.commit()
+        conn.commit()
         total += len(batch)
-        print(f"    -> Đã insert {total:,}/{len(data):,} dòng")
+        if (i // BATCH_SIZE + 1) % 5 == 0:
+            print(f"    -> Đã insert {total:,}/{len(data):,} dòng")
     
-    # Bật lại constraint
     cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT CHECK CONSTRAINT ALL")
-    cursor.connection.commit()
+    conn.commit()
     
     print(f"  ✅ FACT done: {total:,} dòng ({time.time()-start:.2f}s)")
     return total
-def extract_dimensions_from_df(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.DataFrame) -> dict:
-    """Trích xuất các bảng Dimension từ DataFrame đã xử lý - KHÔNG LỌC BỎ DÒNG"""
+
+def extract_dimensions_from_df(df: pd.DataFrame) -> dict:
+    """Trích xuất các bảng Dimension từ df_original"""
     print("  -> Extracting dimensions...")
-    
     dims = {}
     
-    # ========== DIM_KHOA - GỘP TỪ HP-Khoa.csv VÀ TỪ DỮ LIỆU ==========
-    # Lấy từ HP-Khoa.csv
-    khoa_from_hp = pd.DataFrame()
-    if not hp_master.empty:
-        khoa_from_hp = hp_master[['MaKhoa', 'TenKhoa']].drop_duplicates('MaKhoa')
-    
-    # Lấy từ dữ liệu (MaKhoa_CN và MaKhoa_HP) để đảm bảo không thiếu
+    # DIM_KHOA
     khoa_cn = df[['MaKhoa_CN', 'TenKhoa_CN']].dropna(subset=['MaKhoa_CN']).drop_duplicates('MaKhoa_CN')
     khoa_cn.columns = ['MaKhoa', 'TenKhoa']
-    
     khoa_hp = df[['MaKhoa_HP', 'TenKhoa_HP']].dropna(subset=['MaKhoa_HP']).drop_duplicates('MaKhoa_HP')
     khoa_hp.columns = ['MaKhoa', 'TenKhoa']
-    
-    # Gộp tất cả, ưu tiên TenKhoa từ HP-Khoa.csv nếu có
-    dims['DIM_KHOA'] = pd.concat([khoa_from_hp, khoa_cn, khoa_hp]).drop_duplicates('MaKhoa').reset_index(drop=True)
+    dims['DIM_KHOA'] = pd.concat([khoa_cn, khoa_hp]).drop_duplicates('MaKhoa').reset_index(drop=True)
     print(f"    -> DIM_KHOA: {len(dims['DIM_KHOA'])} rows")
     
-    # ========== DIM_CHUYEN_NGANH - GIỮ NGUYÊN TẤT CẢ ==========
+    # DIM_CHUYEN_NGANH
     dims['DIM_CHUYEN_NGANH'] = df[['MaChuyenNganh', 'TenChuyenNganh', 'MaKhoa_CN']].drop_duplicates('MaChuyenNganh')
     dims['DIM_CHUYEN_NGANH'].columns = ['MaChuyenNganh', 'TenChuyenNganh', 'MaKhoa']
     dims['DIM_CHUYEN_NGANH']['MaCTDT'] = 'CTDT_CHINHQUY'
-    # Nếu MaKhoa rỗng, gán giá trị mặc định để tránh lỗi FK
     dims['DIM_CHUYEN_NGANH']['MaKhoa'] = dims['DIM_CHUYEN_NGANH']['MaKhoa'].fillna('TĐHKT')
     print(f"    -> DIM_CHUYEN_NGANH: {len(dims['DIM_CHUYEN_NGANH'])} rows")
     
-    # ========== DIM_HOC_PHAN - GIỮ NGUYÊN TẤT CẢ TỪ RAW ==========
+    # DIM_HOC_PHAN
     dims['DIM_HOC_PHAN'] = df[['MaHP', 'TenHP', 'MaKhoa_HP']].drop_duplicates('MaHP')
     dims['DIM_HOC_PHAN'].columns = ['MaHP', 'TenHP', 'MaKhoa']
-    # Nếu MaKhoa rỗng, gán giá trị mặc định để tránh lỗi FK
     dims['DIM_HOC_PHAN']['MaKhoa'] = dims['DIM_HOC_PHAN']['MaKhoa'].fillna('TĐHKT')
     print(f"    -> DIM_HOC_PHAN: {len(dims['DIM_HOC_PHAN'])} rows")
     
-    # ========== DIM_GIANG_VIEN - GIỮ NGUYÊN TẤT CẢ ==========
+    # DIM_GIANG_VIEN
     dims['DIM_GIANG_VIEN'] = df[['MaGV', 'HoDemGV', 'TenGV']].drop_duplicates('MaGV')
     print(f"    -> DIM_GIANG_VIEN: {len(dims['DIM_GIANG_VIEN'])} rows")
     
-    # ========== DIM_LOP_HOC_PHAN - GIỮ NGUYÊN TẤT CẢ ==========
+    # DIM_LOP_HOC_PHAN
     dims['DIM_LOP_HOC_PHAN'] = df[['MaLopHP', 'LopHP', 'MaHP', 'MaGV']].drop_duplicates('MaLopHP')
     print(f"    -> DIM_LOP_HOC_PHAN: {len(dims['DIM_LOP_HOC_PHAN'])} rows")
     
-    # ========== DIM_LOP_SINH_VIEN - GIỮ NGUYÊN TẤT CẢ ==========
+    # DIM_LOP_SINH_VIEN
     dims['DIM_LOP_SINH_VIEN'] = df[['MaLop', 'Lop', 'MaChuyenNganh']].drop_duplicates('MaLop')
     print(f"    -> DIM_LOP_SINH_VIEN: {len(dims['DIM_LOP_SINH_VIEN'])} rows")
     
-    # ========== DIM_SINH_VIEN - GIỮ NGUYÊN TẤT CẢ ==========
+    # DIM_SINH_VIEN
     dims['DIM_SINH_VIEN'] = df[['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop']].drop_duplicates('MaSV')
     print(f"    -> DIM_SINH_VIEN: {len(dims['DIM_SINH_VIEN'])} rows")
     
     return dims
 
-def load_to_database(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.DataFrame):
+def load_to_database(df_original: pd.DataFrame, df_fact: pd.DataFrame):
     """Load toàn bộ dữ liệu vào database"""
     print("  -> Load...")
     start = time.time()
     
-    # Tạo MaHocKy từ input
     ma_hoc_ky, nam_hoc, hoc_ky = derive_ma_hoc_ky()
     print(f"  -> MaHocKy: {ma_hoc_ky} (NamHoc: {nam_hoc}, HocKy: {hoc_ky})")
     
-    # Trích xuất dimensions
-    dims = extract_dimensions_from_df(df, hp_master, cn_master)
+    dims = extract_dimensions_from_df(df_original)
     
-    # ========== ĐẢM BẢO DIM_KHOA CÓ ĐỦ CÁC MaKhoa MẶC ĐỊNH ==========
     default_khoas = pd.DataFrame([
         {'MaKhoa': 'TĐHKT', 'TenKhoa': 'Trường ĐHKT'},
         {'MaKhoa': 'PĐT', 'TenKhoa': 'Phòng Đào Tạo'},
@@ -837,10 +773,8 @@ def load_to_database(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Da
     ])
     dims['DIM_KHOA'] = pd.concat([dims['DIM_KHOA'], default_khoas]).drop_duplicates('MaKhoa').reset_index(drop=True)
     
-    # Thêm DIM_HOC_KY
     dims['DIM_HOC_KY'] = pd.DataFrame([{'MaHocKy': ma_hoc_ky, 'NamHoc': nam_hoc, 'HocKy': hoc_ky}])
     
-    # Thêm MaHocKy vào DIM_LOP_HOC_PHAN
     if 'DIM_LOP_HOC_PHAN' in dims:
         dims['DIM_LOP_HOC_PHAN']['MaHocKy'] = ma_hoc_ky
     
@@ -849,17 +783,14 @@ def load_to_database(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Da
     cursor.fast_executemany = True
     
     try:
-        # 1. DIM_HOC_KY
         count = load_dimension(cursor, 'DIM_HOC_KY', dims.get('DIM_HOC_KY', pd.DataFrame()),
                                ['MaHocKy', 'NamHoc', 'HocKy'], 'MaHocKy')
         print(f"  ✅ DIM_HOC_KY: {count} new")
         
-        # 2. DIM_KHOA - ĐÃ BAO GỒM CẢ MẶC ĐỊNH
         count = load_dimension(cursor, 'DIM_KHOA', dims.get('DIM_KHOA', pd.DataFrame()),
                                ['MaKhoa', 'TenKhoa'], 'MaKhoa')
         print(f"  ✅ DIM_KHOA: {count} new")
         
-        # 3. DIM_CTDT
         cursor.execute("""
             IF NOT EXISTS (SELECT 1 FROM DIM_CHUONG_TRINH_DAO_TAO WHERE MaCTDT = 'CTDT_CHINHQUY')
             INSERT INTO DIM_CHUONG_TRINH_DAO_TAO (MaCTDT, TenCTDT) VALUES ('CTDT_CHINHQUY', N'Chính quy')
@@ -867,39 +798,32 @@ def load_to_database(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Da
         conn.commit()
         print("  ✅ DIM_CTDT: ensured")
         
-        # 4. DIM_CHUYEN_NGANH
         count = load_dimension(cursor, 'DIM_CHUYEN_NGANH', dims.get('DIM_CHUYEN_NGANH', pd.DataFrame()),
                                ['MaChuyenNganh', 'TenChuyenNganh', 'MaKhoa', 'MaCTDT'], 'MaChuyenNganh')
         print(f"  ✅ DIM_CHUYEN_NGANH: {count} new")
         
-        # 5. DIM_HOC_PHAN - MaKhoa đã được lọc để đảm bảo tồn tại trong DIM_KHOA
         count = load_dimension(cursor, 'DIM_HOC_PHAN', dims.get('DIM_HOC_PHAN', pd.DataFrame()),
                                ['MaHP', 'TenHP', 'MaKhoa'], 'MaHP')
         print(f"  ✅ DIM_HOC_PHAN: {count} new")
         
-        # 6. DIM_GIANG_VIEN
         count = load_dimension(cursor, 'DIM_GIANG_VIEN', dims.get('DIM_GIANG_VIEN', pd.DataFrame()),
                                ['MaGV', 'HoDemGV', 'TenGV'], 'MaGV')
         print(f"  ✅ DIM_GIANG_VIEN: {count} new")
         
-        # 7. DIM_LOP_HOC_PHAN
         count = load_dimension(cursor, 'DIM_LOP_HOC_PHAN', dims.get('DIM_LOP_HOC_PHAN', pd.DataFrame()),
                                ['MaLopHP', 'LopHP', 'MaHP', 'MaGV', 'MaHocKy'], 'MaLopHP')
         print(f"  ✅ DIM_LOP_HOC_PHAN: {count} new")
         
-        # 8. DIM_LOP_SINH_VIEN
         count = load_dimension(cursor, 'DIM_LOP_SINH_VIEN', dims.get('DIM_LOP_SINH_VIEN', pd.DataFrame()),
                                ['MaLop', 'Lop', 'MaChuyenNganh'], 'MaLop')
         print(f"  ✅ DIM_LOP_SINH_VIEN: {count} new")
         
-        # 9. DIM_SINH_VIEN
         count = load_dimension(cursor, 'DIM_SINH_VIEN', dims.get('DIM_SINH_VIEN', pd.DataFrame()),
                                ['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop'], 'MaSV')
         print(f"  ✅ DIM_SINH_VIEN: {count} new")
         
-        # 10. FACT
         print("\n  --- FACT ---")
-        count = load_fact(cursor, df)
+        count = load_fact(conn, cursor, df_fact)
         print(f"  ✅ FACT: {count:,} dòng")
         
         print(f"\n  ✅ Load hoàn tất: {time.time()-start:.2f}s")
@@ -912,10 +836,11 @@ def load_to_database(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Da
     finally:
         conn.close()
 
+# ================= MAIN =================
 def main():
     total_start = time.time()
     print("=" * 60)
-    print("🚀 SURVEY ETL - FULL PIPELINE (EXTRACT + TRANSFORM + LOAD)")
+    print("🚀 SURVEY ETL - FULL PIPELINE (1 DATAFRAME)")
     print("=" * 60)
     print(f"Semester: {SEMESTER}")
     print(f"File: {SURVEY_FILE}")
@@ -951,29 +876,27 @@ def main():
     
     print("\n🔄 3. TRANSFORM")
     start = time.time()
-    df = transform_data(df, hp_master, cn_master)
+    df_original, df_fact = transform_data(df, hp_master, cn_master)
     print(f"  ✅ Transform: {time.time()-start:.2f}s")
     
-    # ========== SAVE PARQUET (BACKUP) ==========
     print("\n💾 4. SAVE PARQUET (BACKUP)")
     start = time.time()
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    output_filename = f"{FILE_NAME}_processed_{timestamp}.parquet"
+    output_filename = f"{FILE_NAME}_fact_{timestamp}.parquet"
     local_path = f"/tmp/{output_filename}"
-    df.to_parquet(local_path, index=False, compression='snappy')
+    df_fact.to_parquet(local_path, index=False, compression='snappy')
     print(f"  ✅ Đã lưu backup: {local_path} ({time.time()-start:.2f}s)")
     
-    # ========== LOAD TO DATABASE ==========
     print("\n💾 5. LOAD TO DATABASE")
     start = time.time()
-    load_to_database(df, hp_master, cn_master)  
+    load_to_database(df_original, df_fact)
     print(f"  ✅ Load: {time.time()-start:.2f}s")
     
     total = time.time() - total_start
     print("\n" + "=" * 60)
     print(f"🎉 HOÀN THÀNH! Tổng thời gian: {total:.1f}s")
     print(f"📁 Backup file: {local_path}")
-    print(f"📊 Số dòng đã xử lý: {len(df):,}")
+    print(f"📊 Dòng FACT: {len(df_fact):,}")
     print("=" * 60)
 
 if __name__ == "__main__":

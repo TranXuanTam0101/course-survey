@@ -780,51 +780,57 @@ def load_fact(cursor, df: pd.DataFrame) -> int:
     return total
 
 def extract_dimensions_from_df(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.DataFrame) -> dict:
-    """Trích xuất các bảng Dimension từ DataFrame đã xử lý"""
+    """Trích xuất các bảng Dimension từ DataFrame đã xử lý - KHÔNG LỌC BỎ DÒNG"""
     print("  -> Extracting dimensions...")
     
     dims = {}
     
-    # ========== DIM_KHOA - CHỈ LẤY TỪ HP-Khoa.csv ==========
+    # ========== DIM_KHOA - GỘP TỪ HP-Khoa.csv VÀ TỪ DỮ LIỆU ==========
+    # Lấy từ HP-Khoa.csv
+    khoa_from_hp = pd.DataFrame()
     if not hp_master.empty:
-        dims['DIM_KHOA'] = hp_master[['MaKhoa', 'TenKhoa']].drop_duplicates('MaKhoa').reset_index(drop=True)
-        print(f"    -> DIM_KHOA: {len(dims['DIM_KHOA'])} rows (từ HP-Khoa.csv)")
-    else:
-        dims['DIM_KHOA'] = pd.DataFrame(columns=['MaKhoa', 'TenKhoa'])
-        print(f"    -> DIM_KHOA: 0 rows (không có HP-Khoa.csv)")
+        khoa_from_hp = hp_master[['MaKhoa', 'TenKhoa']].drop_duplicates('MaKhoa')
     
-    # ========== DIM_CHUYEN_NGANH - từ dữ liệu đã transform ==========
-    dims['DIM_CHUYEN_NGANH'] = df[['MaChuyenNganh', 'TenChuyenNganh', 'MaKhoa_CN']].dropna(subset=['MaChuyenNganh']).drop_duplicates('MaChuyenNganh')
+    # Lấy từ dữ liệu (MaKhoa_CN và MaKhoa_HP) để đảm bảo không thiếu
+    khoa_cn = df[['MaKhoa_CN', 'TenKhoa_CN']].dropna(subset=['MaKhoa_CN']).drop_duplicates('MaKhoa_CN')
+    khoa_cn.columns = ['MaKhoa', 'TenKhoa']
+    
+    khoa_hp = df[['MaKhoa_HP', 'TenKhoa_HP']].dropna(subset=['MaKhoa_HP']).drop_duplicates('MaKhoa_HP')
+    khoa_hp.columns = ['MaKhoa', 'TenKhoa']
+    
+    # Gộp tất cả, ưu tiên TenKhoa từ HP-Khoa.csv nếu có
+    dims['DIM_KHOA'] = pd.concat([khoa_from_hp, khoa_cn, khoa_hp]).drop_duplicates('MaKhoa').reset_index(drop=True)
+    print(f"    -> DIM_KHOA: {len(dims['DIM_KHOA'])} rows")
+    
+    # ========== DIM_CHUYEN_NGANH - GIỮ NGUYÊN TẤT CẢ ==========
+    dims['DIM_CHUYEN_NGANH'] = df[['MaChuyenNganh', 'TenChuyenNganh', 'MaKhoa_CN']].drop_duplicates('MaChuyenNganh')
     dims['DIM_CHUYEN_NGANH'].columns = ['MaChuyenNganh', 'TenChuyenNganh', 'MaKhoa']
     dims['DIM_CHUYEN_NGANH']['MaCTDT'] = 'CTDT_CHINHQUY'
-    
-    # Đảm bảo MaKhoa tồn tại trong DIM_KHOA
-    valid_ma_khoa = set(dims['DIM_KHOA']['MaKhoa'].tolist())
-    dims['DIM_CHUYEN_NGANH'] = dims['DIM_CHUYEN_NGANH'][dims['DIM_CHUYEN_NGANH']['MaKhoa'].isin(valid_ma_khoa)]
+    # Nếu MaKhoa rỗng, gán giá trị mặc định để tránh lỗi FK
+    dims['DIM_CHUYEN_NGANH']['MaKhoa'] = dims['DIM_CHUYEN_NGANH']['MaKhoa'].fillna('TĐHKT')
     print(f"    -> DIM_CHUYEN_NGANH: {len(dims['DIM_CHUYEN_NGANH'])} rows")
     
-    # ========== DIM_HOC_PHAN - từ dữ liệu đã transform ==========
-    dims['DIM_HOC_PHAN'] = df[['MaHP', 'TenHP', 'MaKhoa_HP']].dropna(subset=['MaHP']).drop_duplicates('MaHP')
+    # ========== DIM_HOC_PHAN - GIỮ NGUYÊN TẤT CẢ TỪ RAW ==========
+    dims['DIM_HOC_PHAN'] = df[['MaHP', 'TenHP', 'MaKhoa_HP']].drop_duplicates('MaHP')
     dims['DIM_HOC_PHAN'].columns = ['MaHP', 'TenHP', 'MaKhoa']
-    
-    # Đảm bảo MaKhoa tồn tại trong DIM_KHOA
-    dims['DIM_HOC_PHAN'] = dims['DIM_HOC_PHAN'][dims['DIM_HOC_PHAN']['MaKhoa'].isin(valid_ma_khoa)]
+    # Nếu MaKhoa rỗng, gán giá trị mặc định để tránh lỗi FK
+    dims['DIM_HOC_PHAN']['MaKhoa'] = dims['DIM_HOC_PHAN']['MaKhoa'].fillna('TĐHKT')
     print(f"    -> DIM_HOC_PHAN: {len(dims['DIM_HOC_PHAN'])} rows")
     
-    # ========== DIM_GIANG_VIEN ==========
-    dims['DIM_GIANG_VIEN'] = df[['MaGV', 'HoDemGV', 'TenGV']].dropna(subset=['MaGV']).drop_duplicates('MaGV')
+    # ========== DIM_GIANG_VIEN - GIỮ NGUYÊN TẤT CẢ ==========
+    dims['DIM_GIANG_VIEN'] = df[['MaGV', 'HoDemGV', 'TenGV']].drop_duplicates('MaGV')
     print(f"    -> DIM_GIANG_VIEN: {len(dims['DIM_GIANG_VIEN'])} rows")
     
-    # ========== DIM_LOP_HOC_PHAN ==========
-    dims['DIM_LOP_HOC_PHAN'] = df[['MaLopHP', 'LopHP', 'MaHP', 'MaGV']].dropna(subset=['MaLopHP']).drop_duplicates('MaLopHP')
+    # ========== DIM_LOP_HOC_PHAN - GIỮ NGUYÊN TẤT CẢ ==========
+    dims['DIM_LOP_HOC_PHAN'] = df[['MaLopHP', 'LopHP', 'MaHP', 'MaGV']].drop_duplicates('MaLopHP')
     print(f"    -> DIM_LOP_HOC_PHAN: {len(dims['DIM_LOP_HOC_PHAN'])} rows")
     
-    # ========== DIM_LOP_SINH_VIEN ==========
-    dims['DIM_LOP_SINH_VIEN'] = df[['MaLop', 'Lop', 'MaChuyenNganh']].dropna(subset=['MaLop']).drop_duplicates('MaLop')
+    # ========== DIM_LOP_SINH_VIEN - GIỮ NGUYÊN TẤT CẢ ==========
+    dims['DIM_LOP_SINH_VIEN'] = df[['MaLop', 'Lop', 'MaChuyenNganh']].drop_duplicates('MaLop')
     print(f"    -> DIM_LOP_SINH_VIEN: {len(dims['DIM_LOP_SINH_VIEN'])} rows")
     
-    # ========== DIM_SINH_VIEN ==========
-    dims['DIM_SINH_VIEN'] = df[['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop']].dropna(subset=['MaSV']).drop_duplicates('MaSV')
+    # ========== DIM_SINH_VIEN - GIỮ NGUYÊN TẤT CẢ ==========
+    dims['DIM_SINH_VIEN'] = df[['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop']].drop_duplicates('MaSV')
     print(f"    -> DIM_SINH_VIEN: {len(dims['DIM_SINH_VIEN'])} rows")
     
     return dims
@@ -840,6 +846,14 @@ def load_to_database(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Da
     
     # Trích xuất dimensions
     dims = extract_dimensions_from_df(df, hp_master, cn_master)
+    
+    # ========== ĐẢM BẢO DIM_KHOA CÓ ĐỦ CÁC MaKhoa MẶC ĐỊNH ==========
+    default_khoas = pd.DataFrame([
+        {'MaKhoa': 'TĐHKT', 'TenKhoa': 'Trường ĐHKT'},
+        {'MaKhoa': 'PĐT', 'TenKhoa': 'Phòng Đào Tạo'},
+        {'MaKhoa': 'UNKNOWN', 'TenKhoa': 'Chưa xác định'}
+    ])
+    dims['DIM_KHOA'] = pd.concat([dims['DIM_KHOA'], default_khoas]).drop_duplicates('MaKhoa').reset_index(drop=True)
     
     # Thêm DIM_HOC_KY
     dims['DIM_HOC_KY'] = pd.DataFrame([{'MaHocKy': ma_hoc_ky, 'NamHoc': nam_hoc, 'HocKy': hoc_ky}])
@@ -858,13 +872,10 @@ def load_to_database(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Da
                                ['MaHocKy', 'NamHoc', 'HocKy'], 'MaHocKy')
         print(f"  ✅ DIM_HOC_KY: {count} new")
         
-        # 2. DIM_KHOA - ĐÃ LẤY TỪ HP-Khoa.csv
+        # 2. DIM_KHOA - ĐÃ BAO GỒM CẢ MẶC ĐỊNH
         count = load_dimension(cursor, 'DIM_KHOA', dims.get('DIM_KHOA', pd.DataFrame()),
                                ['MaKhoa', 'TenKhoa'], 'MaKhoa')
         print(f"  ✅ DIM_KHOA: {count} new")
-        
-        # Cập nhật cache
-        _EXISTING_CACHE['DIM_KHOA.MaKhoa'] = get_existing_ids_cached(cursor, 'DIM_KHOA', 'MaKhoa')
         
         # 3. DIM_CTDT
         cursor.execute("""

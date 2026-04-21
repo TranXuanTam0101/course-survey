@@ -520,7 +520,7 @@ def parse_survey_parallel(content: str) -> pd.DataFrame:
 def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.DataFrame) -> pd.DataFrame:
     print("  -> Transform...")
     start = time.time()
-    
+    original_columns = df.columns.tolist()
     # ========== 1. XÁC ĐỊNH CHUYÊN NGÀNH TỪ LOP ==========
     cn_info = df['Lop'].apply(determine_ma_chuyen_nganh)
     df['MaChuyenNganh_Lop'] = cn_info.apply(lambda x: x[0] if x[0] else None)
@@ -591,7 +591,10 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
         df['MaGV'].fillna('UNKNOWN').astype(str) + "_" + 
         FILE_NAME
     )
-    
+    for col in original_columns:
+        if col not in df.columns and col in ['CauHoi', 'GiaTri', 'Cau13', 'Cau14', 'Cau15', 'Cau16']:
+            print(f"  ⚠️ Cột {col} bị mất, thêm lại với giá trị rỗng")
+            df[col] = ''
     print(f"  ✅ Transform: {time.time()-start:.2f}s")
     return df
 

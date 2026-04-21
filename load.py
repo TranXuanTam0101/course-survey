@@ -1,5 +1,4 @@
 
-
 import os
 import sys
 import re
@@ -662,7 +661,12 @@ def load_fact(cursor, df: pd.DataFrame) -> int:
     print(f"  -> Insert FACT: processing...")
     start = time.time()
     
-    # KHÔNG KIỂM TRA, INSERT TRỰC TIẾP
+    cursor.execute("SELECT MaSV FROM DIM_SINH_VIEN")
+    valid_sv = {row[0] for row in cursor.fetchall()}
+    
+    cursor.execute("SELECT MaLopHP FROM DIM_LOP_HOC_PHAN")
+    valid_lhp = {row[0] for row in cursor.fetchall()}
+    
     fact_rows = []
     
     # 1. Câu trắc nghiệm (1-12)
@@ -674,14 +678,18 @@ def load_fact(cursor, df: pd.DataFrame) -> int:
             try:
                 ma_cau = int(float(cau_hoi))
                 if 1 <= ma_cau <= 12:
-                    fact_rows.append({
-                        'SubmissionID': row.get('SubmissionID', ''),
-                        'MaCauHoi': ma_cau,
-                        'MaSV': row.get('MaSV', ''),
-                        'MaLopHP': row.get('MaLopHP', ''),
-                        'TraLoiSo': int(float(gia_tri)),
-                        'TraLoiText': None
-                    })
+                    ma_sv = row.get('MaSV', '')
+                    ma_lop_hp = row.get('MaLopHP', '')
+                    
+                    if ma_sv in valid_sv and ma_lop_hp in valid_lhp:
+                        fact_rows.append({
+                            'SubmissionID': row.get('SubmissionID', ''),
+                            'MaCauHoi': ma_cau,
+                            'MaSV': ma_sv,
+                            'MaLopHP': ma_lop_hp,
+                            'TraLoiSo': int(float(gia_tri)),
+                            'TraLoiText': None
+                        })
             except:
                 pass
     
@@ -689,27 +697,33 @@ def load_fact(cursor, df: pd.DataFrame) -> int:
     df_unique = df.drop_duplicates('SubmissionID') if 'SubmissionID' in df.columns else df
     
     for _, row in df_unique.iterrows():
+        sub_id = row.get('SubmissionID', '')
+        ma_sv = row.get('MaSV', '')
+        ma_lop_hp = row.get('MaLopHP', '')
+        
+        if ma_sv not in valid_sv or ma_lop_hp not in valid_lhp:
+            continue
+        
         for cau in range(13, 17):
             cau_col = f'Cau{cau}'
             cau_value = row.get(cau_col, '')
             if pd.notna(cau_value) and str(cau_value).strip():
                 fact_rows.append({
-                    'SubmissionID': row.get('SubmissionID', ''),
+                    'SubmissionID': sub_id,
                     'MaCauHoi': cau,
-                    'MaSV': row.get('MaSV', ''),
-                    'MaLopHP': row.get('MaLopHP', ''),
+                    'MaSV': ma_sv,
+                    'MaLopHP': ma_lop_hp,
                     'TraLoiSo': None,
                     'TraLoiText': str(cau_value).strip()
                 })
     
     if not fact_rows:
-        print("  ❌ KHÔNG CÓ DÒNG NÀO!")
+        print("  ❌ KHÔNG CÓ DÒNG NÀO HỢP LỆ!")
         return 0
     
     fact_df = pd.DataFrame(fact_rows)
     print(f"  -> Valid FACT rows: {len(fact_df):,}")
     
-    # Chuẩn bị data
     data = []
     for _, row in fact_df.iterrows():
         sub_id = str(row['SubmissionID'])[:150] if pd.notna(row['SubmissionID']) else ''
@@ -846,11 +860,13 @@ def load_to_database(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Da
         # 1. DIM_HOC_KY
         count = load_dimension(cursor, 'DIM_HOC_KY', dims.get('DIM_HOC_KY', pd.DataFrame()),
                                ['MaHocKy', 'NamHoc', 'HocKy'], 'MaHocKy')
+        conn.commit()
         print(f"  ✅ DIM_HOC_KY: {count} new")
         
         # 2. DIM_KHOA - ĐÃ BAO GỒM CẢ MẶC ĐỊNH
         count = load_dimension(cursor, 'DIM_KHOA', dims.get('DIM_KHOA', pd.DataFrame()),
                                ['MaKhoa', 'TenKhoa'], 'MaKhoa')
+        conn.commit()
         print(f"  ✅ DIM_KHOA: {count} new")
         
         # 3. DIM_CTDT
@@ -864,36 +880,43 @@ def load_to_database(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Da
         # 4. DIM_CHUYEN_NGANH
         count = load_dimension(cursor, 'DIM_CHUYEN_NGANH', dims.get('DIM_CHUYEN_NGANH', pd.DataFrame()),
                                ['MaChuyenNganh', 'TenChuyenNganh', 'MaKhoa', 'MaCTDT'], 'MaChuyenNganh')
+        conn.commit()
         print(f"  ✅ DIM_CHUYEN_NGANH: {count} new")
         
         # 5. DIM_HOC_PHAN - MaKhoa đã được lọc để đảm bảo tồn tại trong DIM_KHOA
         count = load_dimension(cursor, 'DIM_HOC_PHAN', dims.get('DIM_HOC_PHAN', pd.DataFrame()),
                                ['MaHP', 'TenHP', 'MaKhoa'], 'MaHP')
+        conn.commit()
         print(f"  ✅ DIM_HOC_PHAN: {count} new")
         
         # 6. DIM_GIANG_VIEN
         count = load_dimension(cursor, 'DIM_GIANG_VIEN', dims.get('DIM_GIANG_VIEN', pd.DataFrame()),
                                ['MaGV', 'HoDemGV', 'TenGV'], 'MaGV')
+        conn.commit()
         print(f"  ✅ DIM_GIANG_VIEN: {count} new")
         
         # 7. DIM_LOP_HOC_PHAN
         count = load_dimension(cursor, 'DIM_LOP_HOC_PHAN', dims.get('DIM_LOP_HOC_PHAN', pd.DataFrame()),
                                ['MaLopHP', 'LopHP', 'MaHP', 'MaGV', 'MaHocKy'], 'MaLopHP')
+        conn.commit()
         print(f"  ✅ DIM_LOP_HOC_PHAN: {count} new")
         
         # 8. DIM_LOP_SINH_VIEN
         count = load_dimension(cursor, 'DIM_LOP_SINH_VIEN', dims.get('DIM_LOP_SINH_VIEN', pd.DataFrame()),
                                ['MaLop', 'Lop', 'MaChuyenNganh'], 'MaLop')
+        conn.commit()
         print(f"  ✅ DIM_LOP_SINH_VIEN: {count} new")
         
         # 9. DIM_SINH_VIEN
         count = load_dimension(cursor, 'DIM_SINH_VIEN', dims.get('DIM_SINH_VIEN', pd.DataFrame()),
                                ['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop'], 'MaSV')
+        conn.commit()
         print(f"  ✅ DIM_SINH_VIEN: {count} new")
         
         # 10. FACT
         print("\n  --- FACT ---")
         count = load_fact(cursor, df)
+        conn.commit()
         print(f"  ✅ FACT: {count:,} dòng")
         
         print(f"\n  ✅ Load hoàn tất: {time.time()-start:.2f}s")

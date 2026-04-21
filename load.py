@@ -1,13 +1,4 @@
-từ thông tin trên xem cho tôi đoạn code sau lấy dữ liệu đúng chưa
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-SURVEY ETL - FULL PIPELINE (EXTRACT + TRANSFORM + LOAD)
-- Multiprocessing parse
-- DP + Sequential Scoring cho câu tự luận
-- Load trực tiếp vào SQL Server
-- FACT: INSERT ALL, DIM: UPSERT (check trùng)
-"""
+
 
 import os
 import sys

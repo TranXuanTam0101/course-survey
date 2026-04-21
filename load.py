@@ -662,7 +662,7 @@ def load_dimension(cursor, table: str, df: pd.DataFrame, columns: list, id_col: 
     
     return len(new_data)
 
-def load_fact_ultra_fast(conn, cursor, df: pd.DataFrame) -> int:
+def load_fact(conn, cursor, df: pd.DataFrame) -> int:
     """Load FACT siêu nhanh dùng temp table"""
     if df.empty:
         return 0

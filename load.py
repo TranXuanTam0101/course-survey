@@ -881,7 +881,7 @@ def load_to_database(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Da
         
         # 10. FACT
         print("\n  --- FACT ---")
-        count = load_fact(cursor, df)
+        count = load_fact(conn, cursor, df)
         print(f"  ✅ FACT: {count:,} dòng")
         
         print(f"\n  ✅ Load hoàn tất: {time.time()-start:.2f}s")

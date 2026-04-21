@@ -31,8 +31,24 @@ jobs:
       - name: Install dependencies
         run: |
           {
-          sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 mssql-tools18
-          pip install -r requirements.txt
+            echo "[1/2] Installing ODBC Driver..."
+            curl -s https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
+            curl -s https://packages.microsoft.com/config/ubuntu/22.04/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list
+            sudo apt-get update -qq
+            sudo ACCEPT_EULA=Y apt-get install -y -qq msodbcsql18 mssql-tools18
+            echo "✅ ODBC Driver done"
+          } &
+          
+          {
+            echo "[2/2] Installing Python deps..."
+            python -m pip install --upgrade pip -q
+            pip install -r requirements.txt
+            echo "✅ Python deps done"
+          } &
+          
+          wait
+          
+          echo "🎉 ALL DEPENDENCIES INSTALLED!"
     
       - name: Run ETL Pipeline
         env:
@@ -41,4 +57,3 @@ jobs:
           CONNECTION_STRING: ${{ secrets.AZURE_CONNECTION_STRING }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
         run: python ETL-RUN.py
-      

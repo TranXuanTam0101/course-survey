@@ -582,7 +582,7 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
         df['MaKhoa_HP'] = None
     
     # ========== 4. CHUẨN HÓA LOP ==========
-    df['MaLop'] = df['Lop'].apply(normalize_lop)
+    df['MaLop'] = df['Lop']
     df['MaLopHP'] = df['LopHP']
     
     # ========== 5. TẠO SubmissionID ==========

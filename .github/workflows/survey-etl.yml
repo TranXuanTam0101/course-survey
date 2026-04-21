@@ -15,7 +15,7 @@ on:
         type: string
 
 jobs:
-  extract-transform:
+  etl:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     
@@ -28,7 +28,7 @@ jobs:
         with:
           python-version: '3.10'
       
-      - name: Install dependencies (PARALLEL)
+      - name: Install dependencies
         run: |
           {
             echo "[1/2] Installing ODBC Driver..."
@@ -43,76 +43,27 @@ jobs:
           {
             echo "[2/2] Installing Python deps..."
             python -m pip install --upgrade pip -q
-            pip install -q pandas numpy pyarrow azure-storage-blob
+            pip install -q polars pyarrow pandas numpy pyodbc azure-storage-blob
             echo "✅ Python deps done"
           } &
           
           wait
           
           echo "🎉 ALL DEPENDENCIES INSTALLED!"
-      
-      - name: Run Extract & Transform
-        id: et
+    
+      - name: Run ETL Pipeline
         env:
           SEMESTER: ${{ github.event.inputs.semester }}
           SURVEY_FILE: ${{ github.event.inputs.survey_file }}
           CONNECTION_STRING: ${{ secrets.AZURE_CONNECTION_STRING }}
-        run: python extract_transform.py
-      
-      - name: Upload Parquet artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: etl-output
-          path: /tmp/etl_output/
-          retention-days: 7
-
-  load:
-    needs: extract-transform
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-      
-      - name: Install ODBC Driver 18
-        run: |
-          curl -s https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
-          curl -s https://packages.microsoft.com/config/ubuntu/22.04/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list
-          sudo apt-get update -qq
-          sudo ACCEPT_EULA=Y apt-get install -y -qq msodbcsql18
-          echo "✅ ODBC Driver installed"
-      
-      - name: Install Python dependencies
-        run: |
-          pip install -q pandas pyarrow pyodbc
-          echo "✅ Python deps installed"
-      
-      - name: Download Parquet artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: etl-output
-          path: /tmp/etl_output/
-      
-      - name: Run Load to Database
-        env:
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-          OUTPUT_DIR: /tmp/etl_output
-        run: python load.py
+        run: python extract_transform.py
       
       - name: Summary
         if: always()
         run: |
-          echo "## 🎯 ETL Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "## ETL Pipeline Summary" >> $GITHUB_STEP_SUMMARY
           echo "| Parameter | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|-----------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| Semester | ${{ github.event.inputs.semester }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Survey File | ${{ github.event.inputs.survey_file }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Extract-Transform Status | ${{ needs.extract-transform.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Load Status | ${{ job.status }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Run ID | ${{ github.run_id }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | ${{ job.status }} |" >> $GITHUB_STEP_SUMMARY

@@ -716,7 +716,7 @@ def load_fact(cursor, df: pd.DataFrame) -> int:
     cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT DISABLE TRIGGER ALL")
     cursor.connection.commit()
     
-    batch_size = 30000
+    batch_size = 20000
     total = 0
     for i in range(0, len(fact_data), batch_size):
         batch = fact_data[i:i+batch_size]

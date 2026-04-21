@@ -669,7 +669,7 @@ def load_fact(cursor, df: pd.DataFrame) -> int:
     
     print(f"  -> Insert FACT: processing...")
     start = time.time()
-    
+    cursor = conn.cursor()
     # Lấy FK hợp lệ
     cursor.execute("SELECT MaSV FROM DIM_SINH_VIEN")
     valid_sv = {row[0] for row in cursor.fetchall()}

@@ -640,20 +640,31 @@ def load_dimension(cursor, table: str, df: pd.DataFrame, columns: list, id_col: 
     _EXISTING_CACHE[f"{table}.{id_col}"].update(new_data[id_col].tolist())
     return len(new_data)
 
-def load_fact(conn, cursor, df_fact: pd.DataFrame) -> int:
-    """Load FACT - df_fact đã có sẵn cột MaCauHoi, TraLoiSo, TraLoiText"""
-    if df_fact.empty:
+def load_fact(conn, cursor, df_final: pd.DataFrame) -> int:
+    """Load FACT bằng BULK INSERT - SIÊU NHANH"""
+    if df_final.empty:
         return 0
     
-    print(f"  -> Insert FACT: {len(df_fact):,} dòng...")
+    print(f"  -> Insert FACT (BULK INSERT): {len(df_final):,} dòng...")
     start = time.time()
     
+    # ========== 1. LẤY FK HỢP LỆ ==========
     cursor.execute("SELECT MaSV FROM DIM_SINH_VIEN")
     valid_sv = {row[0] for row in cursor.fetchall()}
+    print(f"  -> Valid MaSV: {len(valid_sv):,}")
+    
     cursor.execute("SELECT MaLopHP FROM DIM_LOP_HOC_PHAN")
     valid_lhp = {row[0] for row in cursor.fetchall()}
+    print(f"  -> Valid MaLopHP: {len(valid_lhp):,}")
     
-    fact_df = df_fact[df_fact['MaSV'].isin(valid_sv) & df_fact['MaLopHP'].isin(valid_lhp)].copy()
+    # ========== 2. LỌC VÀ CHUẨN BỊ DỮ LIỆU ==========
+    fact_cols = ['SubmissionID', 'MaCauHoi', 'MaSV', 'MaLopHP', 'TraLoiSo', 'TraLoiText']
+    
+    # Lấy các cột cần thiết
+    fact_df = df_final[fact_cols].copy()
+    
+    # Lọc FK hợp lệ
+    fact_df = fact_df[fact_df['MaSV'].isin(valid_sv) & fact_df['MaLopHP'].isin(valid_lhp)]
     
     if fact_df.empty:
         print("  ❌ KHÔNG CÓ DÒNG NÀO HỢP LỆ!")
@@ -661,38 +672,74 @@ def load_fact(conn, cursor, df_fact: pd.DataFrame) -> int:
     
     print(f"  -> Valid FACT rows: {len(fact_df):,}")
     
-    data = []
-    for _, row in fact_df.iterrows():
-        data.append((
-            str(row['SubmissionID'])[:150] if pd.notna(row['SubmissionID']) else '',
-            int(row['MaCauHoi']) if pd.notna(row['MaCauHoi']) else 0,
-            str(row['MaSV'])[:20] if pd.notna(row['MaSV']) else '',
-            str(row['MaLopHP'])[:50] if pd.notna(row['MaLopHP']) else '',
-            float(row['TraLoiSo']) if pd.notna(row.get('TraLoiSo')) else None,
-            str(row['TraLoiText']) if pd.notna(row.get('TraLoiText')) else None
-        ))
+    # ========== 3. LƯU RA FILE CSV TẠM ==========
+    csv_path = "/tmp/fact_data.csv"
     
+    # Xử lý NULL và định dạng
+    fact_df['SubmissionID'] = fact_df['SubmissionID'].fillna('').astype(str).str[:150]
+    fact_df['MaCauHoi'] = fact_df['MaCauHoi'].fillna(0).astype(int)
+    fact_df['MaSV'] = fact_df['MaSV'].fillna('').astype(str).str[:20]
+    fact_df['MaLopHP'] = fact_df['MaLopHP'].fillna('').astype(str).str[:50]
+    fact_df['TraLoiSo'] = fact_df['TraLoiSo'].fillna('').astype(str).replace('', '\\N')
+    fact_df['TraLoiText'] = fact_df['TraLoiText'].fillna('').astype(str).str.replace('\n', ' ').str.replace('\r', ' ')
+    
+    # Lưu CSV với delimiter |
+    fact_df.to_csv(csv_path, index=False, header=False, sep='|', encoding='utf-8')
+    print(f"  -> Đã lưu CSV tạm: {csv_path}")
+    
+    # ========== 4. BULK INSERT ==========
     cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT NOCHECK CONSTRAINT ALL")
     conn.commit()
     
-    total = 0
-    for i in range(0, len(data), BATCH_SIZE):
-        batch = data[i:i+BATCH_SIZE]
-        cursor.executemany("""
-            INSERT INTO FACT_TRA_LOI_KHAO_SAT 
-            (SubmissionID, MaCauHoi, MaSV, MaLopHP, TraLoiSo, TraLoiText)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, batch)
+    bulk_sql = f"""
+        BULK INSERT FACT_TRA_LOI_KHAO_SAT
+        FROM '{csv_path}'
+        WITH (
+            FIELDTERMINATOR = '|',
+            ROWTERMINATOR = '\\n',
+            CODEPAGE = '65001',
+            KEEPNULLS
+        )
+    """
+    
+    try:
+        cursor.execute(bulk_sql)
         conn.commit()
-        total += len(batch)
-        if (i // BATCH_SIZE + 1) % 5 == 0:
-            print(f"    -> Đã insert {total:,}/{len(data):,} dòng")
+        inserted = cursor.rowcount
+    except Exception as e:
+        print(f"  -> Lỗi BULK INSERT: {e}")
+        # Fallback sang executemany nếu BULK INSERT lỗi
+        print("  -> Fallback sang executemany...")
+        data = []
+        for _, row in fact_df.iterrows():
+            data.append((
+                str(row['SubmissionID'])[:150],
+                int(row['MaCauHoi']),
+                str(row['MaSV'])[:20],
+                str(row['MaLopHP'])[:50],
+                float(row['TraLoiSo']) if row['TraLoiSo'] != '\\N' else None,
+                str(row['TraLoiText']) if row['TraLoiText'] else None
+            ))
+        
+        for i in range(0, len(data), BATCH_SIZE):
+            batch = data[i:i+BATCH_SIZE]
+            cursor.executemany("""
+                INSERT INTO FACT_TRA_LOI_KHAO_SAT 
+                (SubmissionID, MaCauHoi, MaSV, MaLopHP, TraLoiSo, TraLoiText)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, batch)
+            conn.commit()
+        inserted = len(data)
     
     cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT CHECK CONSTRAINT ALL")
     conn.commit()
     
-    print(f"  ✅ FACT done: {total:,} dòng ({time.time()-start:.2f}s)")
-    return total
+    # ========== 5. XÓA FILE TẠM ==========
+    os.remove(csv_path)
+    
+    print(f"  ✅ FACT done: {inserted:,} dòng ({time.time()-start:.2f}s)")
+    return inserted
+
 
 def extract_dimensions_from_df(df: pd.DataFrame) -> dict:
     """Trích xuất các bảng DIM từ DataFrame duy nhất"""

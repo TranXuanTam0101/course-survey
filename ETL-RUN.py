@@ -956,7 +956,6 @@ def main():
     total = time.time() - total_start
     print("\n" + "=" * 60)
     print(f"🎉 HOÀN THÀNH! Tổng thời gian: {total:.1f}s")
-    print(f"📁 Backup DIM file: {dims_path}")
     print(f"📊 Số dòng DIM đã xử lý: {len(df):,}")
     print("=" * 60)
     

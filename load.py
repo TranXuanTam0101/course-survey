@@ -662,86 +662,114 @@ def load_dimension(cursor, table: str, df: pd.DataFrame, columns: list, id_col: 
     
     return len(new_data)
 
-def load_fact(conn, cursor, df: pd.DataFrame) -> int:
-    """Load FACT siêu nhanh dùng temp table"""
+def load_fact(cursor, df: pd.DataFrame) -> int:
+    """Load dữ liệu vào FACT - INSERT TẤT CẢ (TỐI ƯU)"""
     if df.empty:
         return 0
     
-    print(f"  -> Insert FACT (ULTRA FAST): {len(df):,} dòng...")
+    print(f"  -> Insert FACT: processing...")
     start = time.time()
     
-    # ========== 1. TẠO TEMP TABLE (đã tương thích) ==========
-    cursor.execute("""
-        CREATE TABLE #TEMP_FACT (
-            SubmissionID NVARCHAR(150),
-            MaCauHoi INT,
-            MaSV NVARCHAR(20),
-            MaLopHP NVARCHAR(50),
-            TraLoiSo FLOAT NULL,
-            TraLoiText NVARCHAR(MAX) NULL
+    # Lấy FK hợp lệ
+    cursor.execute("SELECT MaSV FROM DIM_SINH_VIEN")
+    valid_sv = {row[0] for row in cursor.fetchall()}
+    print(f"  -> Valid MaSV: {len(valid_sv):,}")
+    
+    cursor.execute("SELECT MaLopHP FROM DIM_LOP_HOC_PHAN")
+    valid_lhp = {row[0] for row in cursor.fetchall()}
+    print(f"  -> Valid MaLopHP: {len(valid_lhp):,}")
+    
+    # ========== 1. Câu trắc nghiệm (1-12) - VECTORIZED ==========
+    trac_nghiem_df = df[df['CauHoi'].notna() & df['GiaTri'].notna()].copy()
+    if not trac_nghiem_df.empty:
+        trac_nghiem_df['MaCauHoi'] = trac_nghiem_df['CauHoi'].astype(float).astype(int)
+        trac_nghiem_df = trac_nghiem_df[
+            (trac_nghiem_df['MaCauHoi'] >= 1) & (trac_nghiem_df['MaCauHoi'] <= 12)
+        ]
+        trac_nghiem_df['TraLoiSo'] = trac_nghiem_df['GiaTri'].astype(float).astype(int)
+        trac_nghiem_df['TraLoiText'] = None
+        
+        # Lọc FK hợp lệ
+        trac_nghiem_df = trac_nghiem_df[
+            trac_nghiem_df['MaSV'].isin(valid_sv) & 
+            trac_nghiem_df['MaLopHP'].isin(valid_lhp)
+        ]
+        print(f"  -> Trắc nghiệm: {len(trac_nghiem_df):,} dòng hợp lệ")
+    else:
+        trac_nghiem_df = pd.DataFrame()
+    
+    # ========== 2. Câu tự luận (13-16) - VECTORIZED ==========
+    df_unique = df.drop_duplicates('SubmissionID')[['SubmissionID', 'MaSV', 'MaLopHP', 'Cau13', 'Cau14', 'Cau15', 'Cau16']].copy()
+    
+    # Melt thành 4 dòng
+    tu_luan_df = df_unique.melt(
+        id_vars=['SubmissionID', 'MaSV', 'MaLopHP'],
+        value_vars=['Cau13', 'Cau14', 'Cau15', 'Cau16'],
+        var_name='CauHoi_str',
+        value_name='TraLoiText'
+    )
+    
+    # Map MaCauHoi
+    cau_map = {'Cau13': 13, 'Cau14': 14, 'Cau15': 15, 'Cau16': 16}
+    tu_luan_df['MaCauHoi'] = tu_luan_df['CauHoi_str'].map(cau_map)
+    tu_luan_df['TraLoiSo'] = None
+    
+    # Lọc dòng có text và FK hợp lệ
+    tu_luan_df = tu_luan_df[
+        tu_luan_df['TraLoiText'].notna() & 
+        (tu_luan_df['TraLoiText'].astype(str).str.strip() != '') &
+        tu_luan_df['MaSV'].isin(valid_sv) & 
+        tu_luan_df['MaLopHP'].isin(valid_lhp)
+    ]
+    tu_luan_df = tu_luan_df.drop('CauHoi_str', axis=1)
+    print(f"  -> Tự luận: {len(tu_luan_df):,} dòng hợp lệ")
+    
+    # ========== 3. GỘP VÀ INSERT ==========
+    fact_df = pd.concat([trac_nghiem_df[['SubmissionID', 'MaCauHoi', 'MaSV', 'MaLopHP', 'TraLoiSo', 'TraLoiText']], 
+                         tu_luan_df], ignore_index=True)
+    
+    if fact_df.empty:
+        print("  ❌ KHÔNG CÓ DÒNG NÀO HỢP LỆ!")
+        return 0
+    
+    print(f"  -> Total FACT rows: {len(fact_df):,}")
+    
+    # Chuẩn bị data - dùng list comprehension cho nhanh
+    data = [
+        (
+            str(row['SubmissionID'])[:150] if pd.notna(row['SubmissionID']) else '',
+            int(row['MaCauHoi']) if pd.notna(row['MaCauHoi']) else 0,
+            str(row['MaSV'])[:20] if pd.notna(row['MaSV']) else '',
+            str(row['MaLopHP'])[:50] if pd.notna(row['MaLopHP']) else '',
+            float(row['TraLoiSo']) if pd.notna(row.get('TraLoiSo')) else None,
+            str(row['TraLoiText']) if pd.notna(row.get('TraLoiText')) else None
         )
-    """)
-    conn.commit()
+        for _, row in fact_df.iterrows()
+    ]
     
-    # ========== 2. LẤY DỮ LIỆU CÂU 1-12 ==========
-    mask_tn = df['CauHoi'].notna() & df['GiaTri'].notna()
-    if mask_tn.any():
-        tn_df = df.loc[mask_tn, ['SubmissionID', 'CauHoi', 'MaSV', 'MaLopHP', 'GiaTri']].copy()
-        tn_df['MaCauHoi'] = tn_df['CauHoi'].astype(int)
-        tn_df = tn_df[(tn_df['MaCauHoi'] >= 1) & (tn_df['MaCauHoi'] <= 12)]
-        tn_df['TraLoiSo'] = tn_df['GiaTri'].astype(float)
-        tn_df['TraLoiText'] = None
-        
-        rows = [(
-            str(row['SubmissionID'])[:150],
-            int(row['MaCauHoi']),
-            str(row['MaSV'])[:20],
-            str(row['MaLopHP'])[:50],
-            float(row['TraLoiSo']),
-            None
-        ) for _, row in tn_df.iterrows()]
-        
-        cursor.executemany("INSERT INTO #TEMP_FACT VALUES (?,?,?,?,?,?)", rows)
-        conn.commit()
-        print(f"  -> Trắc nghiệm: {len(rows):,} dòng")
-
-    # ========== 3. LẤY DỮ LIỆU CÂU 13-16 ==========
-    df_unique = df.groupby('SubmissionID', as_index=False).first()
-    tl_rows = []
-    for _, row in df_unique.iterrows():
-        sub_id = str(row['SubmissionID'])[:150]
-        ma_sv = str(row['MaSV'])[:20]
-        ma_lop = str(row['MaLopHP'])[:50]
-        
-        for cau, col in [(13, 'Cau13'), (14, 'Cau14'), (15, 'Cau15'), (16, 'Cau16')]:
-            val = row.get(col)
-            if pd.notna(val) and str(val).strip():
-                tl_rows.append((sub_id, cau, ma_sv, ma_lop, None, str(val).strip()))
+    # Tắt constraint
+    cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT NOCHECK CONSTRAINT ALL")
+    cursor.connection.commit()
     
-    if tl_rows:
-        cursor.executemany("INSERT INTO #TEMP_FACT VALUES (?,?,?,?,?,?)", tl_rows)
-        conn.commit()
-        print(f"  -> Tự luận: {len(tl_rows):,} dòng")
+    # Insert theo batch
+    total = 0
+    for i in range(0, len(data), BATCH_SIZE):
+        batch = data[i:i+BATCH_SIZE]
+        cursor.executemany("""
+            INSERT INTO FACT_TRA_LOI_KHAO_SAT 
+            (SubmissionID, MaCauHoi, MaSV, MaLopHP, TraLoiSo, TraLoiText)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, batch)
+        cursor.connection.commit()
+        total += len(batch)
+        print(f"    -> Đã insert {total:,}/{len(data):,} dòng")
     
-    # ========== 4. MERGE VÀO FACT CHÍNH ==========
-    cursor.execute("""
-        INSERT INTO FACT_TRA_LOI_KHAO_SAT 
-        (SubmissionID, MaCauHoi, MaSV, MaLopHP, TraLoiSo, TraLoiText)
-        SELECT t.SubmissionID, t.MaCauHoi, t.MaSV, t.MaLopHP, t.TraLoiSo, t.TraLoiText
-        FROM #TEMP_FACT t
-        WHERE EXISTS (SELECT 1 FROM DIM_SINH_VIEN s WHERE s.MaSV = t.MaSV)
-          AND EXISTS (SELECT 1 FROM DIM_LOP_HOC_PHAN l WHERE l.MaLopHP = t.MaLopHP)
-    """)
+    # Bật lại constraint
+    cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT CHECK CONSTRAINT ALL")
+    cursor.connection.commit()
     
-    inserted = cursor.rowcount
-    conn.commit()
-    
-    # ========== 5. DỌN DẸP ==========
-    cursor.execute("DROP TABLE #TEMP_FACT")
-    conn.commit()
-    
-    print(f"  ✅ FACT done: {inserted:,} dòng ({time.time()-start:.2f}s)")
-    return inserted
+    print(f"  ✅ FACT done: {total:,} dòng ({time.time()-start:.2f}s)")
+    return total
     
 def extract_dimensions_from_df(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.DataFrame) -> dict:
     """Trích xuất các bảng Dimension từ DataFrame đã xử lý - KHÔNG LỌC BỎ DÒNG"""

@@ -662,12 +662,7 @@ def load_fact(cursor, df: pd.DataFrame) -> int:
     print(f"  -> Insert FACT: processing...")
     start = time.time()
     
-    cursor.execute("SELECT MaSV FROM DIM_SINH_VIEN")
-    valid_sv = {row[0] for row in cursor.fetchall()}
-    
-    cursor.execute("SELECT MaLopHP FROM DIM_LOP_HOC_PHAN")
-    valid_lhp = {row[0] for row in cursor.fetchall()}
-    
+    # KHÔNG KIỂM TRA, INSERT TRỰC TIẾP
     fact_rows = []
     
     # 1. Câu trắc nghiệm (1-12)
@@ -679,18 +674,14 @@ def load_fact(cursor, df: pd.DataFrame) -> int:
             try:
                 ma_cau = int(float(cau_hoi))
                 if 1 <= ma_cau <= 12:
-                    ma_sv = row.get('MaSV', '')
-                    ma_lop_hp = row.get('MaLopHP', '')
-                    
-                    if ma_sv in valid_sv and ma_lop_hp in valid_lhp:
-                        fact_rows.append({
-                            'SubmissionID': row.get('SubmissionID', ''),
-                            'MaCauHoi': ma_cau,
-                            'MaSV': ma_sv,
-                            'MaLopHP': ma_lop_hp,
-                            'TraLoiSo': int(float(gia_tri)),
-                            'TraLoiText': None
-                        })
+                    fact_rows.append({
+                        'SubmissionID': row.get('SubmissionID', ''),
+                        'MaCauHoi': ma_cau,
+                        'MaSV': row.get('MaSV', ''),
+                        'MaLopHP': row.get('MaLopHP', ''),
+                        'TraLoiSo': int(float(gia_tri)),
+                        'TraLoiText': None
+                    })
             except:
                 pass
     
@@ -698,33 +689,27 @@ def load_fact(cursor, df: pd.DataFrame) -> int:
     df_unique = df.drop_duplicates('SubmissionID') if 'SubmissionID' in df.columns else df
     
     for _, row in df_unique.iterrows():
-        sub_id = row.get('SubmissionID', '')
-        ma_sv = row.get('MaSV', '')
-        ma_lop_hp = row.get('MaLopHP', '')
-        
-        if ma_sv not in valid_sv or ma_lop_hp not in valid_lhp:
-            continue
-        
         for cau in range(13, 17):
             cau_col = f'Cau{cau}'
             cau_value = row.get(cau_col, '')
             if pd.notna(cau_value) and str(cau_value).strip():
                 fact_rows.append({
-                    'SubmissionID': sub_id,
+                    'SubmissionID': row.get('SubmissionID', ''),
                     'MaCauHoi': cau,
-                    'MaSV': ma_sv,
-                    'MaLopHP': ma_lop_hp,
+                    'MaSV': row.get('MaSV', ''),
+                    'MaLopHP': row.get('MaLopHP', ''),
                     'TraLoiSo': None,
                     'TraLoiText': str(cau_value).strip()
                 })
     
     if not fact_rows:
-        print("  ❌ KHÔNG CÓ DÒNG NÀO HỢP LỆ!")
+        print("  ❌ KHÔNG CÓ DÒNG NÀO!")
         return 0
     
     fact_df = pd.DataFrame(fact_rows)
     print(f"  -> Valid FACT rows: {len(fact_df):,}")
     
+    # Chuẩn bị data
     data = []
     for _, row in fact_df.iterrows():
         sub_id = str(row['SubmissionID'])[:150] if pd.notna(row['SubmissionID']) else ''

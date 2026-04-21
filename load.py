@@ -741,58 +741,76 @@ def load_fact(conn, cursor, df_final: pd.DataFrame) -> int:
     return inserted
 
 
-def extract_dimensions_from_df(df: pd.DataFrame) -> dict:
-    """Trích xuất các bảng DIM từ DataFrame duy nhất"""
+def extract_dimensions_from_df(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.DataFrame) -> dict:
+    """Trích xuất các bảng Dimension từ DataFrame đã xử lý - KHÔNG LỌC BỎ DÒNG"""
     print("  -> Extracting dimensions...")
+    
     dims = {}
     
-    # DIM_KHOA - gộp từ cả MaKhoa_CN và MaKhoa_HP
+    # ========== DIM_KHOA - GỘP TỪ HP-Khoa.csv VÀ TỪ DỮ LIỆU ==========
+    khoa_from_hp = pd.DataFrame()
+    if not hp_master.empty:
+        khoa_from_hp = hp_master[['MaKhoa', 'TenKhoa']].drop_duplicates('MaKhoa')
+    
     khoa_cn = df[['MaKhoa_CN', 'TenKhoa_CN']].dropna(subset=['MaKhoa_CN']).drop_duplicates('MaKhoa_CN')
     khoa_cn.columns = ['MaKhoa', 'TenKhoa']
+    
     khoa_hp = df[['MaKhoa_HP', 'TenKhoa_HP']].dropna(subset=['MaKhoa_HP']).drop_duplicates('MaKhoa_HP')
     khoa_hp.columns = ['MaKhoa', 'TenKhoa']
-    dims['DIM_KHOA'] = pd.concat([khoa_cn, khoa_hp]).drop_duplicates('MaKhoa').reset_index(drop=True)
+    
+    dims['DIM_KHOA'] = pd.concat([khoa_from_hp, khoa_cn, khoa_hp]).drop_duplicates('MaKhoa').reset_index(drop=True)
     print(f"    -> DIM_KHOA: {len(dims['DIM_KHOA'])} rows")
     
-    # DIM_CHUYEN_NGANH
-    dims['DIM_CHUYEN_NGANH'] = df[['MaChuyenNganh', 'TenChuyenNganh', 'MaKhoa_CN']].dropna(subset=['MaChuyenNganh']).drop_duplicates('MaChuyenNganh')
+    # ========== DIM_CHUYEN_NGANH - GIỮ NGUYÊN TẤT CẢ ==========
+    dims['DIM_CHUYEN_NGANH'] = df[['MaChuyenNganh', 'TenChuyenNganh', 'MaKhoa_CN']].drop_duplicates('MaChuyenNganh')
     dims['DIM_CHUYEN_NGANH'].columns = ['MaChuyenNganh', 'TenChuyenNganh', 'MaKhoa']
     dims['DIM_CHUYEN_NGANH']['MaCTDT'] = 'CTDT_CHINHQUY'
+    dims['DIM_CHUYEN_NGANH']['MaKhoa'] = dims['DIM_CHUYEN_NGANH']['MaKhoa'].fillna('TĐHKT')
     print(f"    -> DIM_CHUYEN_NGANH: {len(dims['DIM_CHUYEN_NGANH'])} rows")
     
-    # DIM_HOC_PHAN
-    dims['DIM_HOC_PHAN'] = df[['MaHP', 'TenHP', 'MaKhoa_HP']].dropna(subset=['MaHP']).drop_duplicates('MaHP')
+    # ========== DIM_HOC_PHAN - GIỮ NGUYÊN TẤT CẢ TỪ RAW ==========
+    dims['DIM_HOC_PHAN'] = df[['MaHP', 'TenHP', 'MaKhoa_HP']].drop_duplicates('MaHP')
     dims['DIM_HOC_PHAN'].columns = ['MaHP', 'TenHP', 'MaKhoa']
+    dims['DIM_HOC_PHAN']['MaKhoa'] = dims['DIM_HOC_PHAN']['MaKhoa'].fillna('TĐHKT')
     print(f"    -> DIM_HOC_PHAN: {len(dims['DIM_HOC_PHAN'])} rows")
     
-    # DIM_GIANG_VIEN
-    dims['DIM_GIANG_VIEN'] = df[['MaGV', 'HoDemGV', 'TenGV']].dropna(subset=['MaGV']).drop_duplicates('MaGV')
+    # ========== DIM_GIANG_VIEN - GIỮ NGUYÊN TẤT CẢ ==========
+    dims['DIM_GIANG_VIEN'] = df[['MaGV', 'HoDemGV', 'TenGV']].drop_duplicates('MaGV')
     print(f"    -> DIM_GIANG_VIEN: {len(dims['DIM_GIANG_VIEN'])} rows")
     
-    # DIM_LOP_HOC_PHAN
-    dims['DIM_LOP_HOC_PHAN'] = df[['MaLopHP', 'LopHP', 'MaHP', 'MaGV']].dropna(subset=['MaLopHP']).drop_duplicates('MaLopHP')
+    # ========== DIM_LOP_HOC_PHAN - GIỮ NGUYÊN TẤT CẢ ==========
+    dims['DIM_LOP_HOC_PHAN'] = df[['MaLopHP', 'LopHP', 'MaHP', 'MaGV']].drop_duplicates('MaLopHP')
     print(f"    -> DIM_LOP_HOC_PHAN: {len(dims['DIM_LOP_HOC_PHAN'])} rows")
     
-    # DIM_LOP_SINH_VIEN
-    dims['DIM_LOP_SINH_VIEN'] = df[['MaLop', 'Lop', 'MaChuyenNganh']].dropna(subset=['MaLop']).drop_duplicates('MaLop')
+    # ========== DIM_LOP_SINH_VIEN - GIỮ NGUYÊN TẤT CẢ ==========
+    dims['DIM_LOP_SINH_VIEN'] = df[['MaLop', 'Lop', 'MaChuyenNganh']].drop_duplicates('MaLop')
     print(f"    -> DIM_LOP_SINH_VIEN: {len(dims['DIM_LOP_SINH_VIEN'])} rows")
     
-    # DIM_SINH_VIEN
-    dims['DIM_SINH_VIEN'] = df[['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop']].dropna(subset=['MaSV']).drop_duplicates('MaSV')
+    # ========== DIM_SINH_VIEN - GIỮ NGUYÊN TẤT CẢ ==========
+    dims['DIM_SINH_VIEN'] = df[['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop']].drop_duplicates('MaSV')
     print(f"    -> DIM_SINH_VIEN: {len(dims['DIM_SINH_VIEN'])} rows")
     
     return dims
 
-def load_to_database(df_final: pd.DataFrame):
-    """Load toàn bộ dữ liệu vào database từ 1 DataFrame duy nhất"""
+def load_to_database(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.DataFrame):
+    """Load toàn bộ dữ liệu vào database"""
     print("  -> Load...")
     start = time.time()
     
+    # Tạo MaHocKy từ input
     ma_hoc_ky, nam_hoc, hoc_ky = derive_ma_hoc_ky()
     print(f"  -> MaHocKy: {ma_hoc_ky} (NamHoc: {nam_hoc}, HocKy: {hoc_ky})")
     
-    # Trích xuất DIM từ df_final (dùng drop_duplicates)
-    dims = extract_dimensions_from_df(df_final)
+    # Trích xuất dimensions
+    dims = extract_dimensions_from_df(df, hp_master, cn_master)
+    
+    # ========== ĐẢM BẢO DIM_KHOA CÓ ĐỦ CÁC MaKhoa MẶC ĐỊNH ==========
+    default_khoas = pd.DataFrame([
+        {'MaKhoa': 'TĐHKT', 'TenKhoa': 'Trường ĐHKT'},
+        {'MaKhoa': 'PĐT', 'TenKhoa': 'Phòng Đào Tạo'},
+        {'MaKhoa': 'UNKNOWN', 'TenKhoa': 'Chưa xác định'}
+    ])
+    dims['DIM_KHOA'] = pd.concat([dims['DIM_KHOA'], default_khoas]).drop_duplicates('MaKhoa').reset_index(drop=True)
     
     # Thêm DIM_HOC_KY
     dims['DIM_HOC_KY'] = pd.DataFrame([{'MaHocKy': ma_hoc_ky, 'NamHoc': nam_hoc, 'HocKy': hoc_ky}])
@@ -801,28 +819,22 @@ def load_to_database(df_final: pd.DataFrame):
     if 'DIM_LOP_HOC_PHAN' in dims:
         dims['DIM_LOP_HOC_PHAN']['MaHocKy'] = ma_hoc_ky
     
-    # Đảm bảo DIM_KHOA có đủ MaKhoa mặc định
-    default_khoas = pd.DataFrame([
-        {'MaKhoa': 'TĐHKT', 'TenKhoa': 'Trường ĐHKT'},
-        {'MaKhoa': 'PĐT', 'TenKhoa': 'Phòng Đào Tạo'},
-        {'MaKhoa': 'UNKNOWN', 'TenKhoa': 'Chưa xác định'}
-    ])
-    dims['DIM_KHOA'] = pd.concat([dims['DIM_KHOA'], default_khoas]).drop_duplicates('MaKhoa').reset_index(drop=True)
-    
     conn = pyodbc.connect(CONN_STR)
     cursor = conn.cursor()
     cursor.fast_executemany = True
     
     try:
-        # Load các bảng DIM
-        count = load_dimension(cursor, 'DIM_HOC_KY', dims['DIM_HOC_KY'],
+        # 1. DIM_HOC_KY
+        count = load_dimension(cursor, 'DIM_HOC_KY', dims.get('DIM_HOC_KY', pd.DataFrame()),
                                ['MaHocKy', 'NamHoc', 'HocKy'], 'MaHocKy')
         print(f"  ✅ DIM_HOC_KY: {count} new")
         
-        count = load_dimension(cursor, 'DIM_KHOA', dims['DIM_KHOA'],
+        # 2. DIM_KHOA
+        count = load_dimension(cursor, 'DIM_KHOA', dims.get('DIM_KHOA', pd.DataFrame()),
                                ['MaKhoa', 'TenKhoa'], 'MaKhoa')
         print(f"  ✅ DIM_KHOA: {count} new")
         
+        # 3. DIM_CTDT
         cursor.execute("""
             IF NOT EXISTS (SELECT 1 FROM DIM_CHUONG_TRINH_DAO_TAO WHERE MaCTDT = 'CTDT_CHINHQUY')
             INSERT INTO DIM_CHUONG_TRINH_DAO_TAO (MaCTDT, TenCTDT) VALUES ('CTDT_CHINHQUY', N'Chính quy')
@@ -830,35 +842,39 @@ def load_to_database(df_final: pd.DataFrame):
         conn.commit()
         print("  ✅ DIM_CTDT: ensured")
         
-        count = load_dimension(cursor, 'DIM_CHUYEN_NGANH', dims['DIM_CHUYEN_NGANH'],
+        # 4. DIM_CHUYEN_NGANH
+        count = load_dimension(cursor, 'DIM_CHUYEN_NGANH', dims.get('DIM_CHUYEN_NGANH', pd.DataFrame()),
                                ['MaChuyenNganh', 'TenChuyenNganh', 'MaKhoa', 'MaCTDT'], 'MaChuyenNganh')
         print(f"  ✅ DIM_CHUYEN_NGANH: {count} new")
         
-        count = load_dimension(cursor, 'DIM_HOC_PHAN', dims['DIM_HOC_PHAN'],
+        # 5. DIM_HOC_PHAN
+        count = load_dimension(cursor, 'DIM_HOC_PHAN', dims.get('DIM_HOC_PHAN', pd.DataFrame()),
                                ['MaHP', 'TenHP', 'MaKhoa'], 'MaHP')
         print(f"  ✅ DIM_HOC_PHAN: {count} new")
         
-        count = load_dimension(cursor, 'DIM_GIANG_VIEN', dims['DIM_GIANG_VIEN'],
+        # 6. DIM_GIANG_VIEN
+        count = load_dimension(cursor, 'DIM_GIANG_VIEN', dims.get('DIM_GIANG_VIEN', pd.DataFrame()),
                                ['MaGV', 'HoDemGV', 'TenGV'], 'MaGV')
         print(f"  ✅ DIM_GIANG_VIEN: {count} new")
         
-        count = load_dimension(cursor, 'DIM_LOP_HOC_PHAN', dims['DIM_LOP_HOC_PHAN'],
+        # 7. DIM_LOP_HOC_PHAN
+        count = load_dimension(cursor, 'DIM_LOP_HOC_PHAN', dims.get('DIM_LOP_HOC_PHAN', pd.DataFrame()),
                                ['MaLopHP', 'LopHP', 'MaHP', 'MaGV', 'MaHocKy'], 'MaLopHP')
         print(f"  ✅ DIM_LOP_HOC_PHAN: {count} new")
         
-        count = load_dimension(cursor, 'DIM_LOP_SINH_VIEN', dims['DIM_LOP_SINH_VIEN'],
+        # 8. DIM_LOP_SINH_VIEN
+        count = load_dimension(cursor, 'DIM_LOP_SINH_VIEN', dims.get('DIM_LOP_SINH_VIEN', pd.DataFrame()),
                                ['MaLop', 'Lop', 'MaChuyenNganh'], 'MaLop')
         print(f"  ✅ DIM_LOP_SINH_VIEN: {count} new")
         
-        count = load_dimension(cursor, 'DIM_SINH_VIEN', dims['DIM_SINH_VIEN'],
+        # 9. DIM_SINH_VIEN
+        count = load_dimension(cursor, 'DIM_SINH_VIEN', dims.get('DIM_SINH_VIEN', pd.DataFrame()),
                                ['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop'], 'MaSV')
         print(f"  ✅ DIM_SINH_VIEN: {count} new")
         
-        # Load FACT - từ df_final
+        # 10. FACT
         print("\n  --- FACT ---")
-        fact_cols = ['SubmissionID', 'MaCauHoi', 'MaSV', 'MaLopHP', 'TraLoiSo', 'TraLoiText']
-        fact_df = df_final[fact_cols].copy()
-        count = load_fact(conn, cursor, fact_df)
+        count = load_fact(conn, cursor, df)
         print(f"  ✅ FACT: {count:,} dòng")
         
         print(f"\n  ✅ Load hoàn tất: {time.time()-start:.2f}s")
@@ -870,7 +886,7 @@ def load_to_database(df_final: pd.DataFrame):
         raise
     finally:
         conn.close()
-
+        
 # ================= MAIN =================
 def main():
     total_start = time.time()
@@ -926,7 +942,7 @@ def main():
     # ========== LOAD TO DATABASE ==========
     print("\n💾 5. LOAD TO DATABASE")
     start = time.time()
-    load_to_database(df_final)  # ← SỬA: df_fact → df_final
+    load_to_database(df_final, hp_master, cn_master)
     print(f"  ✅ Load: {time.time()-start:.2f}s")
     
     total = time.time() - total_start

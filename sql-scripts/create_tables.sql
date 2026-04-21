@@ -145,22 +145,22 @@ CREATE INDEX IX_FACT_MaCauHoi ON FACT_TRA_LOI_KHAO_SAT(MaCauHoi);
 -- INSERT DIM_CAU_HOI (16 câu)
 -- =====================================================
 INSERT INTO DIM_CAU_HOI (MaCauHoi, ThuTuCauHoi, Phan, NoiDung, LoaiTraLoi) VALUES
-(1, 1, N'Trắc nghiệm', N'Câu hỏi 1', N'Thang5'),
-(2, 2, N'Trắc nghiệm', N'Câu hỏi 2', N'Thang5'),
-(3, 3, N'Trắc nghiệm', N'Câu hỏi 3', N'Thang5'),
-(4, 4, N'Trắc nghiệm', N'Câu hỏi 4', N'Thang5'),
-(5, 5, N'Trắc nghiệm', N'Câu hỏi 5', N'Thang5'),
-(6, 6, N'Trắc nghiệm', N'Câu hỏi 6', N'Thang5'),
-(7, 7, N'Trắc nghiệm', N'Câu hỏi 7', N'Thang5'),
-(8, 8, N'Trắc nghiệm', N'Câu hỏi 8', N'Thang5'),
-(9, 9, N'Trắc nghiệm', N'Câu hỏi 9', N'Thang5'),
-(10, 10, N'Trắc nghiệm', N'Câu hỏi 10', N'Thang5'),
-(11, 11, N'Trắc nghiệm', N'Câu hỏi 11', N'Thang5'),
-(12, 12, N'Trắc nghiệm', N'Câu hỏi 12', N'Thang5'),
-(13, 13, N'Tự luận', N'Câu hỏi 13', N'VanBan'),
-(14, 14, N'Tự luận', N'Câu hỏi 14', N'VanBan'),
-(15, 15, N'Tự luận', N'Câu hỏi 15', N'VanBan'),
-(16, 16, N'Tự luận', N'Câu hỏi 16', N'VanBan');
+(1, 1, 'I', N'Giảng viên giới thiệu rõ ràng, đầy đủ về đề cương chi tiết học phần, gồm: chuẩn đầu ra, nội dung, phương pháp dạy - học, phương pháp kiểm tra - đánh giá, tài liệu học tập của học phần', 'so'),
+(2, 2, 'I', N'Nội dung của học phần phù hợp với năng lực của người học', 'so'),
+(3, 3, 'I', N'Phương pháp dạy - học phù hợp với chuẩn đầu ra và nội dung của học phần', 'so'),
+(4, 4, 'I', N'Giảng viên thực hiện đầy đủ kế hoạch dạy - học đã công bố và tuân thủ các quy định trong giảng dạy', 'so'),
+(5, 5, 'I', N'Giảng viên có cập nhật kiến thức mới và thực tế trong bài giảng', 'so'),
+(6, 6, 'I', N'Hoạt động dạy - học khơi gợi đam mê khám phá và giúp phát triển khả năng tự học', 'so'),
+(7, 7, 'I', N'Giảng viên khuyến khích người học chủ động tham gia thảo luận, giải quyết vấn đề trong giờ học', 'so'),
+(8, 8, 'I', N'Giảng viên tận tụy, sẵn sàng giúp đỡ, giải đáp thỏa đáng các thắc mắc của người học', 'so'),
+(9, 9, 'I', N'Giảng viên sử dụng hiệu quả Elearning và các phương tiện công nghệ trong tổ chức dạy học', 'so'),
+(10, 10, 'I', N'Phương pháp kiểm tra, đánh giá phù hợp với chuẩn đầu ra và nội dung của học phần', 'so'),
+(11, 11, 'I', N'Việc đánh giá được thực hiện công bằng, khách quan và đảm bảo độ tin cậy', 'so'),
+(12, 12, 'I', N'Anh/Chị hài lòng về chất lượng và hiệu quả giảng dạy của giảng viên đối với sự tiến bộ trong học tập của bản thân', 'so'),
+(13, 13, 'II', N'Về chuẩn đầu ra và nội dung của học phần', 'text'),
+(14, 14, 'II', N'Về hoạt động dạy - học', 'text'),
+(15, 15, 'II', N'Về công tác kiểm tra – đánh giá', 'text'),
+(16, 16, 'II', N'Các góp ý khác', 'text');
 
 -- =====================================================
 -- INSERT DIM_CTDT
@@ -168,4 +168,3 @@ INSERT INTO DIM_CAU_HOI (MaCauHoi, ThuTuCauHoi, Phan, NoiDung, LoaiTraLoi) VALUE
 INSERT INTO DIM_CHUONG_TRINH_DAO_TAO (MaCTDT, TenCTDT) 
 VALUES ('CTDT_CHINHQUY', N'Chính quy');
 
-PRINT '✅ All tables created successfully!';

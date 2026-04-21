@@ -1021,7 +1021,7 @@ def main():
     load_to_database(df, hp_master, cn_master)  # Chỉ truyền df, không truyền df_fact
     print(f"  ✅ Load: {time.time()-start:.2f}s")
     
-      total = time.time() - total_start
+    total = time.time() - total_start
     print("\n" + "=" * 60)
     print(f"🎉 HOÀN THÀNH! Tổng thời gian: {total:.1f}s")
     print(f"📁 Backup DIM file: {dims_path}")

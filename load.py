@@ -659,7 +659,7 @@ def load_dimension(cursor, table: str, df: pd.DataFrame, columns: list, id_col: 
     return len(new_data)
     
 def load_fact(cursor, df: pd.DataFrame) -> int:
-    """Load FACT bằng pandas to_sql - siêu nhanh"""
+    """Load FACT - Dùng cursor có sẵn, insert batch nhanh"""
     if df.empty:
         print("  ❌ DataFrame rỗng!")
         return 0
@@ -702,41 +702,36 @@ def load_fact(cursor, df: pd.DataFrame) -> int:
         print("  ❌ Không có dữ liệu!")
         return 0
     
-    # ========== 2. INSERT BẰNG to_sql ==========
-    print("  -> Insert vào database bằng to_sql...")
+    # ========== 2. INSERT BẰNG executemany (dùng cursor cũ) ==========
+    print("  -> Insert vào database...")
     
-    # Tạo connection string cho SQLAlchemy
-    conn_str = (
-        f"mssql+pyodbc://sqladmin:{DB_PASSWORD}@course-survey.database.windows.net:1433/"
-        f"course-survey-db?driver=ODBC+Driver+18+for+SQL+Server&encrypt=yes&trustservercertificate=no"
-    )
+    # Disable constraints
+    cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT NOCHECK CONSTRAINT ALL")
+    cursor.connection.commit()
     
-    engine = create_engine(conn_str)
+    # Chuyển DataFrame thành list of tuples
+    data = [tuple(row) for row in df_fact[['SubmissionID', 'MaCauHoi', 'MaSV', 'MaLopHP', 'TraLoiSo', 'TraLoiText']].values]
     
-    try:
-        # Disable constraints
-        with engine.connect() as conn:
-            conn.execute(text("ALTER TABLE FACT_TRA_LOI_KHAO_SAT NOCHECK CONSTRAINT ALL"))
-            conn.commit()
-        
-        # Insert bằng to_sql
-        df_fact.to_sql('FACT_TRA_LOI_KHAO_SAT', engine, 
-                       if_exists='append', 
-                       index=False,
-                       method='multi',
-                       chunksize=50000)
-        
-        # Re-enable constraints
-        with engine.connect() as conn:
-            conn.execute(text("ALTER TABLE FACT_TRA_LOI_KHAO_SAT CHECK CONSTRAINT ALL"))
-            conn.commit()
-        
-        print(f"  ✅ FACT done: {len(df_fact):,} dòng ({time.time()-start:.2f}s)")
-        return len(df_fact)
-        
-    except Exception as e:
-        print(f"  ❌ Lỗi: {e}")
-        raise
+    # Insert batch
+    total = 0
+    for i in range(0, len(data), BATCH_SIZE):
+        batch = data[i:i+BATCH_SIZE]
+        cursor.executemany("""
+            INSERT INTO FACT_TRA_LOI_KHAO_SAT 
+            (SubmissionID, MaCauHoi, MaSV, MaLopHP, TraLoiSo, TraLoiText)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, batch)
+        cursor.connection.commit()
+        total += len(batch)
+        if (i // BATCH_SIZE + 1) % 5 == 0:
+            print(f"    -> Inserted {total:,}/{len(data):,} rows")
+    
+    # Re-enable constraints
+    cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT CHECK CONSTRAINT ALL")
+    cursor.connection.commit()
+    
+    print(f"  ✅ FACT done: {total:,} dòng ({time.time()-start:.2f}s)")
+    return total
     
 def load_fact_direct(cursor, df_fact: pd.DataFrame) -> int:
     """Load FACT trực tiếp từ DataFrame đã được format sẵn"""

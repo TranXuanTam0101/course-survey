@@ -657,15 +657,24 @@ def load_dimension(cursor, table: str, df: pd.DataFrame, columns: list, id_col: 
     
     return len(new_data)
     
-def load_fact(cursor, df: pd.DataFrame, conn) -> int:
-    """Load FACT bằng BULK INSERT - cực nhanh"""
+def load_fact(cursor, df: pd.DataFrame) -> int:
+    """Load FACT - 1 dòng/submission, dùng executemany"""
+    if df.empty:
+        print("  ❌ DataFrame rỗng!")
+        return 0
     
-    # Gom nhóm dữ liệu
+    print(f"  -> Chuẩn bị dữ liệu FACT...")
+    start = time.time()
+    
+    # Lấy unique submissions
     unique_subs = df[['SubmissionID', 'MaSV', 'MaLopHP', 'Cau13', 'Cau14', 'Cau15', 'Cau16']].drop_duplicates('SubmissionID')
+    print(f"  -> Số submission unique: {len(unique_subs):,}")
     
-    # Gom câu trắc nghiệm
+    # Gom nhóm câu trắc nghiệm
     answer_dict = {}
-    for _, row in df[df['CauHoi'].notna() & df['GiaTri'].notna()].iterrows():
+    mcq_data = df[df['CauHoi'].notna() & df['GiaTri'].notna()].copy()
+    
+    for _, row in mcq_data.iterrows():
         try:
             sub_id = row['SubmissionID']
             cau_hoi = int(float(row['CauHoi']))
@@ -675,47 +684,64 @@ def load_fact(cursor, df: pd.DataFrame, conn) -> int:
                     answer_dict[sub_id] = {}
                 answer_dict[sub_id][cau_hoi] = gia_tri
         except:
-            pass
+            continue
     
-    # Ghi ra file CSV
-    import csv
-    csv_path = "/tmp/fact_bulk.csv"
+    # Tạo dữ liệu insert
+    fact_data = []
+    for _, row in unique_subs.iterrows():
+        sub_id = row['SubmissionID']
+        answers = answer_dict.get(sub_id, {})
+        
+        fact_data.append((
+            str(sub_id)[:100],
+            str(row['MaSV'])[:20] if row['MaSV'] else '',
+            str(row['MaLopHP'])[:50] if row['MaLopHP'] else '',
+            answers.get(1), answers.get(2), answers.get(3), answers.get(4),
+            answers.get(5), answers.get(6), answers.get(7), answers.get(8),
+            answers.get(9), answers.get(10), answers.get(11), answers.get(12),
+            str(row.get('Cau13', ''))[:4000] if pd.notna(row.get('Cau13')) else None,
+            str(row.get('Cau14', ''))[:4000] if pd.notna(row.get('Cau14')) else None,
+            str(row.get('Cau15', ''))[:4000] if pd.notna(row.get('Cau15')) else None,
+            str(row.get('Cau16', ''))[:4000] if pd.notna(row.get('Cau16')) else None,
+        ))
     
-    with open(csv_path, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.writer(f)
-        for _, row in unique_subs.iterrows():
-            sub_id = row['SubmissionID']
-            answers = answer_dict.get(sub_id, {})
-            writer.writerow([
-                sub_id[:100],
-                row['MaSV'][:20] if row['MaSV'] else '',
-                row['MaLopHP'][:50] if row['MaLopHP'] else '',
-                answers.get(1), answers.get(2), answers.get(3), answers.get(4),
-                answers.get(5), answers.get(6), answers.get(7), answers.get(8),
-                answers.get(9), answers.get(10), answers.get(11), answers.get(12),
-                (row.get('Cau13', '') or '')[:4000],
-                (row.get('Cau14', '') or '')[:4000],
-                (row.get('Cau15', '') or '')[:4000],
-                (row.get('Cau16', '') or '')[:4000],
-            ])
+    print(f"  -> Đã tạo {len(fact_data):,} dòng FACT")
     
-    # BULK INSERT
-    cursor.execute("""
-        BULK INSERT FACT_TRA_LOI_KHAO_SAT
-        FROM '{}'
-        WITH (
-            FIELDTERMINATOR = ',',
-            ROWTERMINATOR = '\\n',
-            FIRSTROW = 1,
-            KEEPNULLS
-        )
-    """.format(csv_path.replace('\\', '/')))
-    conn.commit()
+    if not fact_data:
+        print("  ❌ Không có dữ liệu!")
+        return 0
     
-    import os
-    os.remove(csv_path)
+    # Insert
+    print("  -> Đang insert {:,} dòng...".format(len(fact_data)))
     
-    return len(unique_subs)
+    # Tắt ràng buộc
+    cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT NOCHECK CONSTRAINT ALL")
+    cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT DISABLE TRIGGER ALL")
+    cursor.connection.commit()
+    
+    # Insert batch (chia nhỏ để tránh timeout)
+    batch_size = 10000
+    total = 0
+    for i in range(0, len(fact_data), batch_size):
+        batch = fact_data[i:i+batch_size]
+        cursor.executemany("""
+            INSERT INTO FACT_TRA_LOI_KHAO_SAT 
+            (SubmissionID, MaSV, MaLopHP, 
+             C1, C2, C3, C4, C5, C6, C7, C8, C9, C10, C11, C12,
+             C13, C14, C15, C16)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, batch)
+        cursor.connection.commit()
+        total += len(batch)
+        print(f"     -> Đã insert {total:,}/{len(fact_data):,} dòng")
+    
+    # Bật lại ràng buộc
+    cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT ENABLE TRIGGER ALL")
+    cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT CHECK CONSTRAINT ALL")
+    cursor.connection.commit()
+    
+    print(f"  ✅ FACT done: {total:,} dòng ({time.time()-start:.2f}s)")
+    return total
     
 def extract_dimensions_from_df(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.DataFrame) -> dict:
     """Trích xuất các bảng Dimension từ DataFrame đã xử lý - KHÔNG LỌC BỎ DÒNG"""

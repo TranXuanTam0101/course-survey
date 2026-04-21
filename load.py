@@ -1001,11 +1001,6 @@ def main():
     df.to_parquet(dims_path, index=False, compression='snappy')
     print(f"  ✅ Đã lưu DIM data: {dims_path}")
     
-    # Lưu df_fact cho FACT
-    fact_path = f"/tmp/{FILE_NAME}_fact_{timestamp}.parquet"
-    df_fact.to_parquet(fact_path, index=False, compression='snappy')
-    print(f"  ✅ Đã lưu FACT data: {fact_path}")
-    
     # ========== LOAD TO DATABASE ==========
     print("\n💾 5. LOAD TO DATABASE")
     start = time.time()

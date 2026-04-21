@@ -1,4 +1,3 @@
-from sqlalchemy import create_engine, text
 import os
 import sys
 import re
@@ -658,104 +657,65 @@ def load_dimension(cursor, table: str, df: pd.DataFrame, columns: list, id_col: 
     
     return len(new_data)
     
-def load_fact(cursor, df: pd.DataFrame) -> int:
-    """
-    Load FACT - 1 dòng/submission
-    Các câu không có trả lời sẽ để NULL
-    """
-    if df.empty:
-        print("  ❌ DataFrame rỗng!")
-        return 0
+def load_fact(cursor, df: pd.DataFrame, conn) -> int:
+    """Load FACT bằng BULK INSERT - cực nhanh"""
     
-    print(f"  -> Chuẩn bị dữ liệu FACT...")
-    start = time.time()
-    
-    # ========== 1. LẤY UNIQUE SUBMISSIONS ==========
-    # Lấy thông tin cơ bản của mỗi submission (chỉ 1 lần)
+    # Gom nhóm dữ liệu
     unique_subs = df[['SubmissionID', 'MaSV', 'MaLopHP', 'Cau13', 'Cau14', 'Cau15', 'Cau16']].drop_duplicates('SubmissionID')
-    print(f"  -> Số submission unique: {len(unique_subs):,}")
     
-    # ========== 2. GOM NHÓM CÂU TRẮC NGHIỆM ==========
-    # Tạo dictionary: {submission_id: {cau_hoi: gia_tri, ...}}
+    # Gom câu trắc nghiệm
     answer_dict = {}
-    
-    # Lọc các dòng có câu hỏi trắc nghiệm
-    mcq_data = df[df['CauHoi'].notna() & df['GiaTri'].notna()].copy()
-    
-    for _, row in mcq_data.iterrows():
+    for _, row in df[df['CauHoi'].notna() & df['GiaTri'].notna()].iterrows():
         try:
             sub_id = row['SubmissionID']
             cau_hoi = int(float(row['CauHoi']))
             gia_tri = int(float(row['GiaTri']))
-            
-            # Chỉ lấy câu 1-12
             if 1 <= cau_hoi <= 12:
                 if sub_id not in answer_dict:
                     answer_dict[sub_id] = {}
                 answer_dict[sub_id][cau_hoi] = gia_tri
-        except Exception as e:
-            continue
+        except:
+            pass
     
-    print(f"  -> Đã gom nhóm {len(answer_dict):,} submissions có câu trắc nghiệm")
+    # Ghi ra file CSV
+    import csv
+    csv_path = "/tmp/fact_bulk.csv"
     
-    # ========== 3. TẠO DỮ LIỆU INSERT ==========
-    fact_data = []
+    with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        for _, row in unique_subs.iterrows():
+            sub_id = row['SubmissionID']
+            answers = answer_dict.get(sub_id, {})
+            writer.writerow([
+                sub_id[:100],
+                row['MaSV'][:20] if row['MaSV'] else '',
+                row['MaLopHP'][:50] if row['MaLopHP'] else '',
+                answers.get(1), answers.get(2), answers.get(3), answers.get(4),
+                answers.get(5), answers.get(6), answers.get(7), answers.get(8),
+                answers.get(9), answers.get(10), answers.get(11), answers.get(12),
+                (row.get('Cau13', '') or '')[:4000],
+                (row.get('Cau14', '') or '')[:4000],
+                (row.get('Cau15', '') or '')[:4000],
+                (row.get('Cau16', '') or '')[:4000],
+            ])
     
-    for _, row in unique_subs.iterrows():
-        sub_id = row['SubmissionID']
-        ma_sv = row['MaSV']
-        ma_lop_hp = row['MaLopHP']
-        
-        # Lấy câu trả lời cho submission này (mặc định None nếu không có)
-        answers = answer_dict.get(sub_id, {})
-        
-        # Tạo 1 dòng duy nhất cho submission
-        fact_data.append((
-            str(sub_id)[:100],                    # SubmissionID
-            str(ma_sv)[:20],                      # MaSV
-            str(ma_lop_hp)[:50],                  # MaLopHP
-            # 12 câu trắc nghiệm (1-12)
-            answers.get(1), answers.get(2), answers.get(3), answers.get(4),
-            answers.get(5), answers.get(6), answers.get(7), answers.get(8),
-            answers.get(9), answers.get(10), answers.get(11), answers.get(12),
-            # 4 câu tự luận (13-16)
-            str(row.get('Cau13', ''))[:4000] if pd.notna(row.get('Cau13')) else None,
-            str(row.get('Cau14', ''))[:4000] if pd.notna(row.get('Cau14')) else None,
-            str(row.get('Cau15', ''))[:4000] if pd.notna(row.get('Cau15')) else None,
-            str(row.get('Cau16', ''))[:4000] if pd.notna(row.get('Cau16')) else None,
-        ))
+    # BULK INSERT
+    cursor.execute("""
+        BULK INSERT FACT_TRA_LOI_KHAO_SAT
+        FROM '{}'
+        WITH (
+            FIELDTERMINATOR = ',',
+            ROWTERMINATOR = '\\n',
+            FIRSTROW = 1,
+            KEEPNULLS
+        )
+    """.format(csv_path.replace('\\', '/')))
+    conn.commit()
     
-    print(f"  -> Đã tạo {len(fact_data):,} dòng FACT")
+    import os
+    os.remove(csv_path)
     
-    if not fact_data:
-        print("  ❌ Không có dữ liệu!")
-        return 0
-    
-    # ========== 4. INSERT VÀO DATABASE ==========
-    print("  -> Đang insert...")
-    
-    # Tắt ràng buộc để insert nhanh
-    cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT NOCHECK CONSTRAINT ALL")
-    cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT DISABLE TRIGGER ALL")
-    cursor.connection.commit()
-    
-    # Insert 1 lần duy nhất
-    cursor.executemany("""
-        INSERT INTO FACT_TRA_LOI_KHAO_SAT 
-        (SubmissionID, MaSV, MaLopHP, 
-         C1, C2, C3, C4, C5, C6, C7, C8, C9, C10, C11, C12,
-         C13, C14, C15, C16)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, fact_data)
-    cursor.connection.commit()
-    
-    # Bật lại ràng buộc
-    cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT ENABLE TRIGGER ALL")
-    cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT CHECK CONSTRAINT ALL")
-    cursor.connection.commit()
-    
-    print(f"  ✅ FACT done: {len(fact_data):,} dòng ({time.time()-start:.2f}s)")
-    return len(fact_data)
+    return len(unique_subs)
     
 def extract_dimensions_from_df(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.DataFrame) -> dict:
     """Trích xuất các bảng Dimension từ DataFrame đã xử lý - KHÔNG LỌC BỎ DÒNG"""

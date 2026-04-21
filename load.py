@@ -1,14 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-SURVEY ETL - FULL PIPELINE (EXTRACT + TRANSFORM + LOAD)
-- Multiprocessing parse
-- DP + Sequential Scoring cho câu tự luận
-- Transform thành 1 DataFrame duy nhất (mỗi câu hỏi 1 dòng)
-- Load trực tiếp vào SQL Server
-- FACT: INSERT ALL, DIM: UPSERT (check trùng)
-"""
-
 import os
 import sys
 import re
@@ -45,9 +34,6 @@ CONN_STR = (
     f"DATABASE=course-survey-db;"
     f"UID=sqladmin;"
     f"PWD={DB_PASSWORD};"
-    f"Encrypt=yes;TrustServerCertificate=no;"
-    f"Connection Timeout=120;"
-    f"Command Timeout=300;"
 )
 
 BATCH_SIZE = 50000
@@ -512,13 +498,12 @@ def parse_survey_parallel(content: str) -> pd.DataFrame:
     return df
 
 # ================= TRANSFORM =================
-def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.DataFrame) -> tuple:
+def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.DataFrame) -> pd.DataFrame:
     """
-    Transform dữ liệu - Trả về (df_original, df_fact)
-    - df_original: DataFrame gốc đã làm giàu (dùng cho DIM)
-    - df_fact: DataFrame đã melt (mỗi câu hỏi 1 dòng, dùng cho FACT)
+    Transform dữ liệu - Trả về 1 DataFrame duy nhất chứa cả thông tin DIM và FACT
+    Mỗi dòng là 1 câu trả lời (1-16)
     """
-    print("  -> Transform...")
+    print("  -> Transform (tạo 1 DataFrame duy nhất)...")
     start = time.time()
     
     # ========== 1. XÁC ĐỊNH CHUYÊN NGÀNH TỪ LOP ==========
@@ -566,13 +551,10 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
     df['MaLopHP'] = df['LopHP']
     df['SubmissionID'] = df['MaSV'].astype(str) + "_" + df['LopHP'].astype(str) + "_" + df['MaGV'].astype(str) + "_" + FILE_NAME
     
-    # Lưu df_original (chưa melt)
-    df_original = df.copy()
-    
-    # ========== 5. TẠO DF_FACT (MELT) ==========
+    # ========== 5. TẠO DATAFRAME DUY NHẤT (MỖI CÂU HỎI 1 DÒNG) ==========
     rows_all = []
     
-    # 5.1 Câu trắc nghiệm (1-12)
+    # 5.1 Câu trắc nghiệm (1-12) - từ tất cả các dòng
     for _, row in df.iterrows():
         cau_hoi = row.get('CauHoi')
         gia_tri = row.get('GiaTri')
@@ -588,7 +570,7 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
             except:
                 pass
     
-    # 5.2 Câu tự luận (13-16)
+    # 5.2 Câu tự luận (13-16) - từ dòng đầu tiên của mỗi SubmissionID
     df_unique = df.drop_duplicates('SubmissionID', keep='first')
     for _, row in df_unique.iterrows():
         for cau, col in [(13, 'Cau13'), (14, 'Cau14'), (15, 'Cau15'), (16, 'Cau16')]:
@@ -600,17 +582,17 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
                 new_row['TraLoiText'] = str(val).strip()
                 rows_all.append(new_row)
     
-    df_fact = pd.DataFrame(rows_all)
+    # ========== 6. DATAFRAME CUỐI CÙNG ==========
+    df_final = pd.DataFrame(rows_all)
     
-    # Xóa các cột không cần thiết trong df_fact
+    # Xóa các cột không cần thiết
     cols_to_drop = ['CauHoi', 'GiaTri', 'Cau13', 'Cau14', 'Cau15', 'Cau16']
-    df_fact.drop([c for c in cols_to_drop if c in df_fact.columns], axis=1, inplace=True, errors='ignore')
+    df_final.drop([c for c in cols_to_drop if c in df_final.columns], axis=1, inplace=True, errors='ignore')
     
-    print(f"  -> Dòng gốc: {len(df_original):,}")
-    print(f"  -> Dòng FACT: {len(df_fact):,}")
+    print(f"  -> Tổng số dòng: {len(df_final):,}")
     print(f"  ✅ Transform: {time.time()-start:.2f}s")
     
-    return df_original, df_fact
+    return df_final
 
 # ================= LOAD TO DATABASE =================
 def get_existing_ids_cached(cursor, table: str, id_col: str) -> set:

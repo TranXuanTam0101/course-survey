@@ -659,7 +659,7 @@ def load_dimension(cursor, table: str, df: pd.DataFrame, columns: list, id_col: 
     return len(new_data)
     
 def load_fact(cursor, df: pd.DataFrame) -> int:
-    """Load FACT - Dùng cursor có sẵn, insert batch nhanh"""
+    """Load FACT - Cực nhanh, bỏ qua mọi kiểm tra"""
     if df.empty:
         print("  ❌ DataFrame rỗng!")
         return 0
@@ -667,8 +667,7 @@ def load_fact(cursor, df: pd.DataFrame) -> int:
     print(f"  -> Chuẩn bị dữ liệu FACT...")
     start = time.time()
     
-    # ========== 1. TẠO DATAFRAME FACT ==========
-    # Câu trắc nghiệm (1-12)
+    # Tạo FACT DataFrame
     mcq = df[df['CauHoi'].notna() & df['GiaTri'].notna()].copy()
     if not mcq.empty:
         mcq['MaCauHoi'] = mcq['CauHoi'].astype(float).astype(int)
@@ -679,7 +678,6 @@ def load_fact(cursor, df: pd.DataFrame) -> int:
     else:
         mcq_fact = pd.DataFrame()
     
-    # Câu tự luận (13-16)
     unique_subs = df.drop_duplicates('SubmissionID')
     essay_parts = []
     for cau, col in [(13, 'Cau13'), (14, 'Cau14'), (15, 'Cau15'), (16, 'Cau16')]:
@@ -692,46 +690,42 @@ def load_fact(cursor, df: pd.DataFrame) -> int:
                 essay_parts.append(temp[['SubmissionID', 'MaCauHoi', 'MaSV', 'MaLopHP', 'TraLoiSo', 'TraLoiText']])
     
     essay_fact = pd.concat(essay_parts, ignore_index=True) if essay_parts else pd.DataFrame()
-    
-    # Gộp lại
     df_fact = pd.concat([mcq_fact, essay_fact], ignore_index=True)
     
-    print(f"  -> Đã tạo {len(df_fact):,} dòng FACT (MCQ: {len(mcq_fact):,}, Essay: {len(essay_fact):,})")
+    print(f"  -> Đã tạo {len(df_fact):,} dòng FACT")
     
     if df_fact.empty:
         print("  ❌ Không có dữ liệu!")
         return 0
     
-    # ========== 2. INSERT BẰNG executemany (dùng cursor cũ) ==========
-    print("  -> Insert vào database...")
+    # ========== CHỈ INSERT - KHÔNG CHECK GÌ CẢ ==========
+    print("  -> Đang insert (bỏ qua mọi kiểm tra)...")
     
-    # Disable constraints
+    # Tắt tất cả ràng buộc
     cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT NOCHECK CONSTRAINT ALL")
+    cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT DISABLE TRIGGER ALL")
     cursor.connection.commit()
     
-    # Chuyển DataFrame thành list of tuples
-    data = [tuple(row) for row in df_fact[['SubmissionID', 'MaCauHoi', 'MaSV', 'MaLopHP', 'TraLoiSo', 'TraLoiText']].values]
+    # Chuyển thành list of tuples
+    data = df_fact.values.tolist()
     
-    # Insert batch
-    total = 0
-    for i in range(0, len(data), BATCH_SIZE):
-        batch = data[i:i+BATCH_SIZE]
-        cursor.executemany("""
-            INSERT INTO FACT_TRA_LOI_KHAO_SAT 
-            (SubmissionID, MaCauHoi, MaSV, MaLopHP, TraLoiSo, TraLoiText)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, batch)
-        cursor.connection.commit()
-        total += len(batch)
-        if (i // BATCH_SIZE + 1) % 5 == 0:
-            print(f"    -> Inserted {total:,}/{len(data):,} rows")
+    # INSERT 1 LẦN DUY NHẤT
+    cursor.executemany("""
+        INSERT INTO FACT_TRA_LOI_KHAO_SAT 
+        (SubmissionID, MaCauHoi, MaSV, MaLopHP, TraLoiSo, TraLoiText)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, data)
+    cursor.connection.commit()
     
-    # Re-enable constraints
+    print(f"     ✅ Đã insert {len(data):,} dòng!")
+    
+    # Bật lại ràng buộc
+    cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT ENABLE TRIGGER ALL")
     cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT CHECK CONSTRAINT ALL")
     cursor.connection.commit()
     
-    print(f"  ✅ FACT done: {total:,} dòng ({time.time()-start:.2f}s)")
-    return total
+    print(f"  ✅ FACT done: {len(data):,} dòng ({time.time()-start:.2f}s)")
+    return len(data)
     
 def load_fact_direct(cursor, df_fact: pd.DataFrame) -> int:
     """Load FACT trực tiếp từ DataFrame đã được format sẵn"""

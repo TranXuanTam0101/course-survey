@@ -521,6 +521,13 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
     print("  -> Transform...")
     start = time.time()
     
+    # ========== LƯU LẠI DỮ LIỆU GỐC CHO FACT ==========
+    # Tạo bản sao các cột cần thiết cho FACT trước khi transform
+    fact_columns = ['MaSV', 'LopHP', 'MaGV', 'CauHoi', 'GiaTri', 'Cau13', 'Cau14', 'Cau15', 'Cau16']
+    existing_fact_cols = [col for col in fact_columns if col in df.columns]
+    df_fact_raw = df[existing_fact_cols].copy()
+    print(f"  -> Đã lưu {len(existing_fact_cols)} cột cho FACT")
+    
     # ========== 1. XÁC ĐỊNH CHUYÊN NGÀNH TỪ LOP ==========
     cn_info = df['Lop'].apply(determine_ma_chuyen_nganh)
     df['MaChuyenNganh_Lop'] = cn_info.apply(lambda x: x[0] if x[0] else None)
@@ -592,8 +599,102 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
         FILE_NAME
     )
     
+    # ========== 6. TẠO DATAFRAME CHO FACT ==========
+    print("  -> Tạo DataFrame cho FACT...")
+    
+    # Tạo SubmissionID cho fact_raw
+    df_fact_raw['SubmissionID'] = (
+        df_fact_raw['MaSV'].fillna('UNKNOWN').astype(str) + "_" + 
+        df_fact_raw['LopHP'].fillna('UNKNOWN').astype(str) + "_" + 
+        df_fact_raw['MaGV'].fillna('UNKNOWN').astype(str) + "_" + 
+        FILE_NAME
+    )
+    
+    # 6a. Xử lý câu trắc nghiệm (1-12)
+    mcq_rows = []
+    for _, row in df_fact_raw.iterrows():
+        if pd.notna(row.get('CauHoi')) and pd.notna(row.get('GiaTri')):
+            try:
+                ma_cau = int(float(row['CauHoi']))
+                if 1 <= ma_cau <= 12:
+                    mcq_rows.append({
+                        'SubmissionID': str(row['SubmissionID'])[:100],
+                        'MaCauHoi': ma_cau,
+                        'MaSV': str(row['MaSV'])[:20],
+                        'MaLopHP': str(row['LopHP'])[:50],
+                        'TraLoiSo': int(float(row['GiaTri'])),
+                        'TraLoiText': None
+                    })
+            except:
+                pass
+    
+    print(f"     - Câu trắc nghiệm: {len(mcq_rows)} dòng")
+    
+    # 6b. Xử lý câu tự luận (13-16) - chỉ lấy unique submission
+    essay_rows = []
+    unique_submissions = df_fact_raw.drop_duplicates(subset=['SubmissionID'])
+    print(f"     - Unique submissions: {len(unique_submissions)}")
+    
+    for _, row in unique_submissions.iterrows():
+        submission_id = str(row['SubmissionID'])[:100]
+        ma_sv = str(row['MaSV'])[:20]
+        ma_lop_hp = str(row['LopHP'])[:50]
+        
+        # Cau13
+        if pd.notna(row.get('Cau13')) and str(row['Cau13']).strip():
+            essay_rows.append({
+                'SubmissionID': submission_id,
+                'MaCauHoi': 13,
+                'MaSV': ma_sv,
+                'MaLopHP': ma_lop_hp,
+                'TraLoiSo': None,
+                'TraLoiText': str(row['Cau13']).strip()[:4000]
+            })
+        
+        # Cau14
+        if pd.notna(row.get('Cau14')) and str(row['Cau14']).strip():
+            essay_rows.append({
+                'SubmissionID': submission_id,
+                'MaCauHoi': 14,
+                'MaSV': ma_sv,
+                'MaLopHP': ma_lop_hp,
+                'TraLoiSo': None,
+                'TraLoiText': str(row['Cau14']).strip()[:4000]
+            })
+        
+        # Cau15
+        if pd.notna(row.get('Cau15')) and str(row['Cau15']).strip():
+            essay_rows.append({
+                'SubmissionID': submission_id,
+                'MaCauHoi': 15,
+                'MaSV': ma_sv,
+                'MaLopHP': ma_lop_hp,
+                'TraLoiSo': None,
+                'TraLoiText': str(row['Cau15']).strip()[:4000]
+            })
+        
+        # Cau16
+        if pd.notna(row.get('Cau16')) and str(row['Cau16']).strip():
+            essay_rows.append({
+                'SubmissionID': submission_id,
+                'MaCauHoi': 16,
+                'MaSV': ma_sv,
+                'MaLopHP': ma_lop_hp,
+                'TraLoiSo': None,
+                'TraLoiText': str(row['Cau16']).strip()[:4000]
+            })
+    
+    print(f"     - Câu tự luận: {len(essay_rows)} dòng")
+    
+    # 6c. Gộp lại
+    df_fact = pd.DataFrame(mcq_rows + essay_rows)
+    print(f"     - Tổng số dòng cho FACT: {len(df_fact)}")
+    
+    # Thêm df_fact vào df gốc (để trả về)
+    df['_fact_data'] = [df_fact] * len(df)  # Lưu tạm
+    
     print(f"  ✅ Transform: {time.time()-start:.2f}s")
-    return df
+    return df, df_fact
 
 # ================= LOAD TO DATABASE =================
 def get_existing_ids_cached(cursor, table: str, id_col: str) -> set:
@@ -758,6 +859,52 @@ def load_fact(cursor, df: pd.DataFrame) -> int:
     print(f"  ✅ FACT done: {total:,} rows ({time.time()-start:.2f}s)")
     return total
     
+def load_fact_direct(cursor, df_fact: pd.DataFrame) -> int:
+    """Load FACT trực tiếp từ DataFrame đã được format sẵn"""
+    if df_fact.empty:
+        print("  ❌ DataFrame FACT rỗng!")
+        return 0
+    
+    print(f"  -> Insert FACT: {len(df_fact)} dòng")
+    start = time.time()
+    
+    # Disable constraints
+    cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT NOCHECK CONSTRAINT ALL")
+    cursor.connection.commit()
+    
+    # Chuẩn bị data
+    data = []
+    for _, row in df_fact.iterrows():
+        data.append((
+            str(row['SubmissionID'])[:100],
+            int(row['MaCauHoi']),
+            str(row['MaSV'])[:20],
+            str(row['MaLopHP'])[:50],
+            row['TraLoiSo'] if pd.notna(row['TraLoiSo']) else None,
+            str(row['TraLoiText'])[:4000] if pd.notna(row['TraLoiText']) else None
+        ))
+    
+    # Insert batch
+    total = 0
+    for i in range(0, len(data), BATCH_SIZE):
+        batch = data[i:i+BATCH_SIZE]
+        cursor.executemany("""
+            INSERT INTO FACT_TRA_LOI_KHAO_SAT 
+            (SubmissionID, MaCauHoi, MaSV, MaLopHP, TraLoiSo, TraLoiText)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, batch)
+        cursor.connection.commit()
+        total += len(batch)
+        if (i // BATCH_SIZE + 1) % 10 == 0:
+            print(f"    -> Inserted {total:,}/{len(data):,} rows")
+    
+    # Re-enable constraints
+    cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT CHECK CONSTRAINT ALL")
+    cursor.connection.commit()
+    
+    print(f"  ✅ FACT done: {total:,} dòng ({time.time()-start:.2f}s)")
+    return total
+
 def extract_dimensions_from_df(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.DataFrame) -> dict:
     """Trích xuất các bảng Dimension từ DataFrame đã xử lý - KHÔNG LỌC BỎ DÒNG"""
     print("  -> Extracting dimensions...")
@@ -900,9 +1047,9 @@ def load_to_database(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Da
         conn.commit()
         print(f"  ✅ DIM_SINH_VIEN: {count} new")
         
-        # 10. FACT
+        # 10. FACT - Dùng df_fact đã được transform sẵn
         print("\n  --- FACT ---")
-        count = load_fact(cursor, df)
+        count = load_fact_direct(cursor, df_fact)  # Hàm mới bên dưới
         conn.commit()
         print(f"  ✅ FACT: {count:,} dòng")
         
@@ -955,7 +1102,7 @@ def main():
     
     print("\n🔄 3. TRANSFORM")
     start = time.time()
-    df = transform_data(df, hp_master, cn_master)
+    df, df_fact = transform_data(df, hp_master, cn_master)  # Nhận cả df_fact
     print(f"  ✅ Transform: {time.time()-start:.2f}s")
     
     # ========== SAVE PARQUET (BACKUP) ==========
@@ -965,12 +1112,17 @@ def main():
     output_filename = f"{FILE_NAME}_processed_{timestamp}.parquet"
     local_path = f"/tmp/{output_filename}"
     df.to_parquet(local_path, index=False, compression='snappy')
-    print(f"  ✅ Đã lưu backup: {local_path} ({time.time()-start:.2f}s)")
+    
+    # Lưu riêng fact data để debug
+    fact_path = f"/tmp/{FILE_NAME}_fact_{timestamp}.parquet"
+    df_fact.to_parquet(fact_path, index=False, compression='snappy')
+    print(f"  ✅ Đã lưu backup: {local_path}")
+    print(f"  ✅ Đã lưu fact data: {fact_path}")
     
     # ========== LOAD TO DATABASE ==========
     print("\n💾 5. LOAD TO DATABASE")
     start = time.time()
-    load_to_database(df, hp_master, cn_master)  
+    load_to_database(df, df_fact, hp_master, cn_master)  # Truyền thêm df_fact
     print(f"  ✅ Load: {time.time()-start:.2f}s")
     
     total = time.time() - total_start
@@ -978,7 +1130,7 @@ def main():
     print(f"🎉 HOÀN THÀNH! Tổng thời gian: {total:.1f}s")
     print(f"📁 Backup file: {local_path}")
     print(f"📊 Số dòng đã xử lý: {len(df):,}")
+    print(f"📊 Số dòng FACT: {len(df_fact):,}")
     print("=" * 60)
-
 if __name__ == "__main__":
     main()

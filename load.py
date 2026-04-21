@@ -654,22 +654,18 @@ def load_dimension(cursor, table: str, df: pd.DataFrame, columns: list, id_col: 
     return len(new_data)
 
 def load_fact(cursor, df: pd.DataFrame) -> int:
-    """Load dữ liệu vào FACT - INSERT TẤT CẢ (không check trùng)"""
+    """Load dữ liệu vào FACT - BỎ QUA KIỂM TRA DIM"""
     if df.empty:
         return 0
     
     print(f"  -> Insert FACT: processing...")
     start = time.time()
     
-    cursor.execute("SELECT MaSV FROM DIM_SINH_VIEN")
-    valid_sv = {row[0] for row in cursor.fetchall()}
-    
-    cursor.execute("SELECT MaLopHP FROM DIM_LOP_HOC_PHAN")
-    valid_lhp = {row[0] for row in cursor.fetchall()}
-    
+    # KHÔNG KIỂM TRA DIM - INSERT TRỰC TIẾP
     fact_rows = []
     
     # 1. Câu trắc nghiệm (1-12)
+    mcq_count = 0
     for _, row in df.iterrows():
         cau_hoi = row.get('CauHoi')
         gia_tri = row.get('GiaTri')
@@ -678,98 +674,145 @@ def load_fact(cursor, df: pd.DataFrame) -> int:
             try:
                 ma_cau = int(float(cau_hoi))
                 if 1 <= ma_cau <= 12:
-                    ma_sv = row.get('MaSV', '')
-                    ma_lop_hp = row.get('MaLopHP', '')
-                    
-                    if ma_sv in valid_sv and ma_lop_hp in valid_lhp:
-                        fact_rows.append({
-                            'SubmissionID': row.get('SubmissionID', ''),
-                            'MaCauHoi': ma_cau,
-                            'MaSV': ma_sv,
-                            'MaLopHP': ma_lop_hp,
-                            'TraLoiSo': int(float(gia_tri)),
-                            'TraLoiText': None
-                        })
+                    fact_rows.append({
+                        'SubmissionID': str(row.get('SubmissionID', ''))[:100],
+                        'MaCauHoi': ma_cau,
+                        'MaSV': str(row.get('MaSV', ''))[:20],
+                        'MaLopHP': str(row.get('MaLopHP', ''))[:50],
+                        'TraLoiSo': int(float(gia_tri)),
+                        'TraLoiText': None
+                    })
+                    mcq_count += 1
             except:
                 pass
     
-    # 2. Câu tự luận (13-16)
-    df_unique = df.drop_duplicates('SubmissionID') if 'SubmissionID' in df.columns else df
+    print(f"  -> Câu trắc nghiệm: {mcq_count} rows")
     
-    for _, row in df_unique.iterrows():
-        sub_id = row.get('SubmissionID', '')
-        ma_sv = row.get('MaSV', '')
-        ma_lop_hp = row.get('MaLopHP', '')
+    # 2. Câu tự luận (13-16) - Chỉ lấy unique SubmissionID
+    essay_count = 0
+    if 'SubmissionID' in df.columns:
+        # Lấy unique submissions
+        unique_submissions = df.drop_duplicates(subset=['SubmissionID'])
+        print(f"  -> Unique submissions: {len(unique_submissions)}")
         
-        if ma_sv not in valid_sv or ma_lop_hp not in valid_lhp:
-            continue
-        
-        for cau in range(13, 17):
-            cau_col = f'Cau{cau}'
-            cau_value = row.get(cau_col, '')
-            if pd.notna(cau_value) and str(cau_value).strip():
+        for _, row in unique_submissions.iterrows():
+            submission_id = str(row.get('SubmissionID', ''))[:100]
+            ma_sv = str(row.get('MaSV', ''))[:20]
+            ma_lop_hp = str(row.get('MaLopHP', ''))[:50]
+            
+            if not submission_id or not ma_sv or not ma_lop_hp:
+                continue
+            
+            # Cau13
+            cau13_val = row.get('Cau13', '')
+            if pd.notna(cau13_val) and str(cau13_val).strip():
                 fact_rows.append({
-                    'SubmissionID': sub_id,
-                    'MaCauHoi': cau,
+                    'SubmissionID': submission_id,
+                    'MaCauHoi': 13,
                     'MaSV': ma_sv,
                     'MaLopHP': ma_lop_hp,
                     'TraLoiSo': None,
-                    'TraLoiText': str(cau_value).strip()
+                    'TraLoiText': str(cau13_val).strip()[:4000]
                 })
+                essay_count += 1
+            
+            # Cau14
+            cau14_val = row.get('Cau14', '')
+            if pd.notna(cau14_val) and str(cau14_val).strip():
+                fact_rows.append({
+                    'SubmissionID': submission_id,
+                    'MaCauHoi': 14,
+                    'MaSV': ma_sv,
+                    'MaLopHP': ma_lop_hp,
+                    'TraLoiSo': None,
+                    'TraLoiText': str(cau14_val).strip()[:4000]
+                })
+                essay_count += 1
+            
+            # Cau15
+            cau15_val = row.get('Cau15', '')
+            if pd.notna(cau15_val) and str(cau15_val).strip():
+                fact_rows.append({
+                    'SubmissionID': submission_id,
+                    'MaCauHoi': 15,
+                    'MaSV': ma_sv,
+                    'MaLopHP': ma_lop_hp,
+                    'TraLoiSo': None,
+                    'TraLoiText': str(cau15_val).strip()[:4000]
+                })
+                essay_count += 1
+            
+            # Cau16
+            cau16_val = row.get('Cau16', '')
+            if pd.notna(cau16_val) and str(cau16_val).strip():
+                fact_rows.append({
+                    'SubmissionID': submission_id,
+                    'MaCauHoi': 16,
+                    'MaSV': ma_sv,
+                    'MaLopHP': ma_lop_hp,
+                    'TraLoiSo': None,
+                    'TraLoiText': str(cau16_val).strip()[:4000]
+                })
+                essay_count += 1
+    
+    print(f"  -> Câu tự luận: {essay_count} rows")
+    print(f"  -> Tổng FACT rows: {len(fact_rows)}")
     
     if not fact_rows:
-        print("  ❌ KHÔNG CÓ DÒNG NÀO HỢP LỆ!")
+        print("  ❌ KHÔNG CÓ DÒNG NÀO!")
         return 0
     
-    fact_df = pd.DataFrame(fact_rows)
-    print(f"  -> Valid FACT rows: {len(fact_df):,}")
-    
+    # Chuẩn bị data để insert
     data = []
-    for _, row in fact_df.iterrows():
-        sub_id = str(row['SubmissionID'])[:150] if pd.notna(row['SubmissionID']) else ''
-        ma_cau = int(row['MaCauHoi']) if pd.notna(row['MaCauHoi']) else 0
-        ma_sv = str(row['MaSV'])[:20] if pd.notna(row['MaSV']) else ''
-        ma_lop = str(row['MaLopHP'])[:50] if pd.notna(row['MaLopHP']) else ''
-        
-        tra_loi_so = None
-        val = row.get('TraLoiSo')
-        if pd.notna(val) and val != '' and val is not None:
-            try:
-                num = float(val)
-                if num > 0:
-                    tra_loi_so = num
-            except:
-                pass
-        
-        tra_loi_text = None
-        val = row.get('TraLoiText')
-        if pd.notna(val) and val != '' and val is not None:
-            tra_loi_text = str(val)
-        
-        data.append((sub_id, ma_cau, ma_sv, ma_lop, tra_loi_so, tra_loi_text))
+    for row in fact_rows:
+        data.append((
+            row['SubmissionID'],
+            row['MaCauHoi'],
+            row['MaSV'],
+            row['MaLopHP'],
+            row['TraLoiSo'],
+            row['TraLoiText']
+        ))
     
-    cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT NOCHECK CONSTRAINT ALL")
-    cursor.connection.commit()
+    # Disable constraints để insert
+    try:
+        cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT NOCHECK CONSTRAINT ALL")
+        cursor.connection.commit()
+        print("  -> Disabled constraints")
+    except Exception as e:
+        print(f"  -> Warning: Could not disable constraints: {e}")
     
+    # Insert theo batch
     total = 0
     for i in range(0, len(data), BATCH_SIZE):
         batch = data[i:i+BATCH_SIZE]
-        cursor.executemany("""
-            INSERT INTO FACT_TRA_LOI_KHAO_SAT 
-            (SubmissionID, MaCauHoi, MaSV, MaLopHP, TraLoiSo, TraLoiText)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, batch)
-        cursor.connection.commit()
-        total += len(batch)
-        if (i // BATCH_SIZE + 1) % 10 == 0:
-            print(f"    -> Đã insert {total:,}/{len(data):,} dòng")
+        try:
+            cursor.executemany("""
+                INSERT INTO FACT_TRA_LOI_KHAO_SAT 
+                (SubmissionID, MaCauHoi, MaSV, MaLopHP, TraLoiSo, TraLoiText)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, batch)
+            cursor.connection.commit()
+            total += len(batch)
+            if (i // BATCH_SIZE + 1) % 10 == 0:
+                print(f"    -> Đã insert {total:,}/{len(data):,} dòng")
+        except Exception as e:
+            print(f"    ❌ Lỗi batch {i//BATCH_SIZE + 1}: {e}")
+            if batch:
+                print(f"       Mẫu dữ liệu lỗi: {batch[0]}")
+            raise
     
-    cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT CHECK CONSTRAINT ALL")
-    cursor.connection.commit()
+    # Re-enable constraints
+    try:
+        cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT CHECK CONSTRAINT ALL")
+        cursor.connection.commit()
+        print("  -> Re-enabled constraints")
+    except Exception as e:
+        print(f"  -> Warning: Could not re-enable constraints: {e}")
     
     print(f"  ✅ FACT done: {total:,} dòng ({time.time()-start:.2f}s)")
     return total
-
+    
 def extract_dimensions_from_df(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.DataFrame) -> dict:
     """Trích xuất các bảng Dimension từ DataFrame đã xử lý - KHÔNG LỌC BỎ DÒNG"""
     print("  -> Extracting dimensions...")

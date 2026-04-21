@@ -57,7 +57,7 @@ jobs:
           SURVEY_FILE: ${{ github.event.inputs.survey_file }}
           CONNECTION_STRING: ${{ secrets.AZURE_CONNECTION_STRING }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-        run: python load.py
+        run: python chua_etl.py
       
       - name: Summary
         if: always()

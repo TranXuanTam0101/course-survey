@@ -862,7 +862,7 @@ def load_to_database(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Da
         
         # 10. FACT 
         print("\n  --- FACT ---")
-        count = load_fact(cursor, df)
+        count = load_fact(cursor, df, conn)
         conn.commit()
         print(f"  ✅ FACT: {count:,} dòng")
         

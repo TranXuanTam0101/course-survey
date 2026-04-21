@@ -659,12 +659,13 @@ def load_dimension(cursor, table: str, df: pd.DataFrame, columns: list, id_col: 
     return len(new_data)
     
 def load_fact(cursor, df: pd.DataFrame) -> int:
-    """Load FACT đơn giản"""
+    """Load FACT - Phiên bản vectorized siêu nhanh"""
     if df.empty:
         print("  ❌ DataFrame rỗng!")
         return 0
     
     print(f"  -> Bắt đầu xử lý FACT...")
+    start = time.time()
     
     # Disable constraints
     cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT NOCHECK CONSTRAINT ALL")
@@ -672,61 +673,74 @@ def load_fact(cursor, df: pd.DataFrame) -> int:
     
     all_data = []
     
-    # Lấy unique submissions cho câu tự luận
-    unique_subs = df.drop_duplicates('SubmissionID')
-    print(f"  -> Số submission unique: {len(unique_subs)}")
+    # ========== 1. XỬ LÝ CÂU TỰ LUẬN (13-16) ==========
+    print("  -> Xử lý câu tự luận...")
     
-    # Xử lý từng submission
-    for idx, row in unique_subs.iterrows():
-        sub_id = str(row['SubmissionID'])[:100]
-        ma_sv = str(row['MaSV'])[:20]
-        ma_lop_hp = str(row['MaLopHP'])[:50]
-        
-        # Thêm 4 câu tự luận (13-16)
-        for cau in range(13, 17):
-            col_name = f'Cau{cau}'
-            text_val = row.get(col_name, '')
-            if pd.notna(text_val) and str(text_val).strip():
-                all_data.append((
-                    sub_id, cau, ma_sv, ma_lop_hp, 
-                    None,  # TraLoiSo
-                    str(text_val).strip()[:4000]  # TraLoiText
-                ))
-        
-        # Progress
-        if (idx + 1) % 1000 == 0:
-            print(f"     Đã xử lý {idx+1}/{len(unique_subs)} submissions, {len(all_data)} dòng fact")
+    # Lấy unique submissions
+    unique_subs = df.drop_duplicates('SubmissionID').copy()
+    print(f"     Số submission unique: {len(unique_subs):,}")
     
-    # Xử lý câu trắc nghiệm (1-12) - mỗi dòng là 1 câu
-    print(f"  -> Xử lý câu trắc nghiệm...")
-    mcq_count = 0
-    for idx, row in df.iterrows():
-        if pd.notna(row.get('CauHoi')) and pd.notna(row.get('GiaTri')):
-            try:
-                ma_cau = int(float(row['CauHoi']))
-                if 1 <= ma_cau <= 12:
+    # Xử lý 4 câu tự luận bằng vectorization
+    for cau in range(13, 17):
+        col_name = f'Cau{cau}'
+        if col_name in unique_subs.columns:
+            # Lọc các dòng có dữ liệu
+            mask = unique_subs[col_name].notna() & (unique_subs[col_name].astype(str).str.strip() != '')
+            filtered = unique_subs[mask]
+            
+            if not filtered.empty:
+                # Tạo danh sách tuples
+                for _, row in filtered.iterrows():
                     all_data.append((
                         str(row['SubmissionID'])[:100],
-                        ma_cau,
+                        cau,
                         str(row['MaSV'])[:20],
                         str(row['MaLopHP'])[:50],
-                        int(float(row['GiaTri'])),  # TraLoiSo
-                        None  # TraLoiText
+                        None,
+                        str(row[col_name]).strip()[:4000]
                     ))
-                    mcq_count += 1
+        
+        print(f"       - Câu {cau}: {len([x for x in all_data if x[1] == cau]):,} dòng")
+    
+    essay_count = len([x for x in all_data if x[1] >= 13])
+    print(f"     Tổng câu tự luận: {essay_count:,} dòng")
+    
+    # ========== 2. XỬ LÝ CÂU TRẮC NGHIỆM (1-12) ==========
+    print("  -> Xử lý câu trắc nghiệm...")
+    
+    # Lọc các dòng có câu hỏi 1-12
+    mcq_df = df[df['CauHoi'].notna() & df['GiaTri'].notna()].copy()
+    
+    # Chuyển đổi kiểu dữ liệu
+    mcq_df['MaCauHoi'] = mcq_df['CauHoi'].astype(float).astype(int)
+    mcq_df = mcq_df[(mcq_df['MaCauHoi'] >= 1) & (mcq_df['MaCauHoi'] <= 12)]
+    
+    if not mcq_df.empty:
+        # Tạo danh sách tuples
+        for _, row in mcq_df.iterrows():
+            try:
+                all_data.append((
+                    str(row['SubmissionID'])[:100],
+                    int(row['MaCauHoi']),
+                    str(row['MaSV'])[:20],
+                    str(row['MaLopHP'])[:50],
+                    int(float(row['GiaTri'])),
+                    None
+                ))
             except:
                 pass
-        
-        if (idx + 1) % 10000 == 0:
-            print(f"     Đã xử lý {idx+1}/{len(df)} dòng MCQ, {mcq_count} câu")
     
-    print(f"  -> Tổng số dòng FACT: {len(all_data):,} (MCQ: {mcq_count}, Essay: {len(all_data)-mcq_count})")
+    mcq_count = len([x for x in all_data if x[1] <= 12])
+    print(f"     Câu trắc nghiệm: {mcq_count:,} dòng")
+    
+    print(f"  -> Tổng số dòng FACT: {len(all_data):,}")
     
     if not all_data:
         print("  ❌ Không có dữ liệu!")
         return 0
     
-    # Insert batch
+    # ========== 3. INSERT BATCH ==========
+    print("  -> Insert vào database...")
     total = 0
     for i in range(0, len(all_data), BATCH_SIZE):
         batch = all_data[i:i+BATCH_SIZE]
@@ -737,14 +751,14 @@ def load_fact(cursor, df: pd.DataFrame) -> int:
         """, batch)
         cursor.connection.commit()
         total += len(batch)
-        if (i // BATCH_SIZE + 1) % 10 == 0:
+        if (i // BATCH_SIZE + 1) % 5 == 0:
             print(f"    -> Inserted {total:,}/{len(all_data):,} rows")
     
     # Re-enable constraints
     cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT CHECK CONSTRAINT ALL")
     cursor.connection.commit()
     
-    print(f"  ✅ FACT done: {total:,} dòng")
+    print(f"  ✅ FACT done: {total:,} dòng ({time.time()-start:.2f}s)")
     return total
     
 def load_fact_direct(cursor, df_fact: pd.DataFrame) -> int:
@@ -1007,13 +1021,11 @@ def main():
     load_to_database(df, hp_master, cn_master)  # Chỉ truyền df, không truyền df_fact
     print(f"  ✅ Load: {time.time()-start:.2f}s")
     
-    total = time.time() - total_start
+      total = time.time() - total_start
     print("\n" + "=" * 60)
     print(f"🎉 HOÀN THÀNH! Tổng thời gian: {total:.1f}s")
     print(f"📁 Backup DIM file: {dims_path}")
-    print(f"📁 Backup FACT file: {fact_path}")
     print(f"📊 Số dòng DIM đã xử lý: {len(df):,}")
-    print(f"📊 Số dòng FACT: {len(df_fact):,}")
     print("=" * 60)
     
 if __name__ == "__main__":

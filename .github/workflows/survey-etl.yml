@@ -28,25 +28,11 @@ jobs:
         with:
           python-version: '3.10'
           cache: 'pip'  
-      
+          
       - name: Install dependencies
         run: |
-          {
-            echo "[1/2] Installing ODBC Driver..."
             sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 mssql-tools18
-            echo "✅ ODBC Driver done"
-          } &
-          
-          {
-            echo "[2/2] Installing Python deps..."
-            python -m pip install --upgrade pip -q
-            pip install -q pandas numpy pyodbc azure-storage-blob
-            echo "✅ Python deps done"
-          } &
-          
-          wait
-          
-          echo "🎉 ALL DEPENDENCIES INSTALLED!"
+            pip install -r requirements.txt
     
       - name: Run ETL Pipeline
         env:
@@ -56,11 +42,3 @@ jobs:
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
         run: python ETL-RUN.py
       
-      - name: Summary
-        if: always()
-        run: |
-          echo "## ETL Pipeline Summary" >> $GITHUB_STEP_SUMMARY
-          echo "| Parameter | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "| Semester | ${{ github.event.inputs.semester }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Survey File | ${{ github.event.inputs.survey_file }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Status | ${{ job.status }} |" >> $GITHUB_STEP_SUMMARY

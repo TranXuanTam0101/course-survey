@@ -4,7 +4,7 @@
 SURVEY ETL - EXTRACT & TRANSFORM
 - Multiprocessing parse
 - DP + Sequential Scoring cho câu tự luận
-- Lưu kết quả ra file Parquet để Load job đọc
+- Lưu kết quả ra file Parquet trên Azure Blob
 """
 
 import os
@@ -39,6 +39,7 @@ print(f"🚀 Multiprocessing with {NUM_WORKERS} workers, chunk size: {CHUNK_SIZE
 CONTAINER_NAME = SEMESTER
 RAWDATA_PATH = "rawdata"
 TAILIEU_PATH = "tailieu"
+PROCESSED_DATA_PATH = "processed-data"
 
 # ========== TRỌNG SỐ ==========
 WEIGHTS_CAU13 = {
@@ -430,14 +431,22 @@ def derive_ma_hoc_ky() -> str:
     return f"HK{hoc_ky}_{year_part}"
 
 def determine_ma_chuyen_nganh(lop: str) -> tuple:
+    """Trả về (MaChuyenNganh, TenKhoa_MacDinh, MaKhoa_MacDinh)"""
     lop_upper = lop.upper()
     lop_normalized = normalize_lop(lop)
+    
+    # Xử lý lớp dạng K22, K23, K24,...
     if _lop_pattern.match(lop_normalized):
-        return f"K{lop_normalized[3:5]}", None, None
+        ma_chuyen_nganh = f"K{lop_normalized[3:5]}"
+        # Với các lớp K, mặc định thuộc Trường ĐHKT
+        return ma_chuyen_nganh, "Trường ĐHKT", "TĐHKT"
+    
     if lop_upper.startswith('CTS-') or lop_upper.startswith('CTS'):
         return "CTS", "Trường ĐHKT", "TĐHKT"
+    
     if 'QT' in lop_upper:
         return "QT", "Phòng Đào Tạo", "PĐT"
+    
     return "TĐHKT", "Trường ĐHKT", "TĐHKT"
 
 def download_blob_to_string(blob_service: BlobServiceClient, blob_path: str) -> str:
@@ -448,10 +457,13 @@ def download_blob_to_string(blob_service: BlobServiceClient, blob_path: str) -> 
         return ""
 
 def load_hp_master(blob_service: BlobServiceClient) -> pd.DataFrame:
+    """File tài liệu: Ánh xạ MaHP -> TenKhoa, MaKhoa"""
     path = f"{TAILIEU_PATH}/HP-Khoa.csv"
     print(f"  -> Đọc HP-Khoa: {CONTAINER_NAME}/{path}")
     content = download_blob_to_string(blob_service, path)
-    if not content: return pd.DataFrame()
+    if not content:
+        print("  ⚠️ Không tìm thấy file HP-Khoa.csv, sẽ dùng logic fallback")
+        return pd.DataFrame()
     df = pd.read_csv(io.StringIO(content))
     if len(df.columns) >= 4:
         df = df.iloc[:, 1:4]
@@ -461,10 +473,13 @@ def load_hp_master(blob_service: BlobServiceClient) -> pd.DataFrame:
     return df
 
 def load_cn_master(blob_service: BlobServiceClient) -> pd.DataFrame:
+    """File tài liệu: Ánh xạ MaChuyenNganh -> TenChuyenNganh"""
     path = f"{TAILIEU_PATH}/TenChuyenNganh-Khoa.csv"
     print(f"  -> Đọc TenChuyenNganh-Khoa: {CONTAINER_NAME}/{path}")
     content = download_blob_to_string(blob_service, path)
-    if not content: return pd.DataFrame()
+    if not content:
+        print("  ⚠️ Không tìm thấy file TenChuyenNganh-Khoa.csv, sẽ dùng logic fallback")
+        return pd.DataFrame()
     df = pd.read_csv(io.StringIO(content))
     if len(df.columns) >= 4:
         df = df.iloc[:, 1:4]
@@ -490,51 +505,110 @@ def parse_survey_parallel(content: str) -> pd.DataFrame:
     return df
 
 def transform_data_fast(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.DataFrame) -> dict:
-    print("  -> Transform (FAST)...")
+    print("  -> Transform...")
     start = time.time()
     ma_hoc_ky = derive_ma_hoc_ky()
     nam_hoc = SEMESTER
     hoc_ky = int(ma_hoc_ky[2]) if ma_hoc_ky[2].isdigit() else 2
     print(f"  -> MaHocKy: {ma_hoc_ky}")
     
+    # ========== 1. XÁC ĐỊNH THÔNG TIN TỪ LOP ==========
     cn_info = df['Lop'].apply(determine_ma_chuyen_nganh)
-    df['MaChuyenNganh_TuLop'] = cn_info.apply(lambda x: x[0])
-    df['TenKhoa_MacDinh'] = cn_info.apply(lambda x: x[1])
-    df['MaKhoa_MacDinh'] = cn_info.apply(lambda x: x[2])
+    df['MaChuyenNganh'] = cn_info.apply(lambda x: x[0])      # Mã chuyên ngành từ Lop
+    df['TenKhoa_ChuyenNganh'] = cn_info.apply(lambda x: x[1]) # Tên khoa từ logic
+    df['MaKhoa_ChuyenNganh'] = cn_info.apply(lambda x: x[2]) # Mã khoa từ logic
     df['MaLop'] = df['Lop']
     
+    # ========== 2. XỬ LÝ MaKhoa, TenKhoa TỪ FILE HP ==========
     if not hp_master.empty:
         hp_unique = hp_master.drop_duplicates(subset=['MaHP'])
-        hp_dict = hp_unique.set_index('MaHP')[['TenHP', 'MaKhoa', 'TenKhoa']].to_dict('index')
-        df['TenHP_m'] = df['MaHP'].map(lambda x: hp_dict.get(x, {}).get('TenHP'))
-        df['MaKhoa_m'] = df['MaHP'].map(lambda x: hp_dict.get(x, {}).get('MaKhoa'))
-        df['TenKhoa_m'] = df['MaHP'].map(lambda x: hp_dict.get(x, {}).get('TenKhoa'))
-        df['TenHP'] = df['TenHP_m'].fillna(df['TenHP'])
-        df['TenKhoa'] = df['TenKhoa_m'].fillna(df['TenKhoa_MacDinh']).fillna('Trường ĐHKT')
-        df['MaKhoa'] = df['MaKhoa_m'].fillna(df['TenKhoa'].apply(create_ma_khoa))
-        df['MaKhoa'] = df['MaKhoa'].fillna(df['MaKhoa_MacDinh']).fillna('TĐHKT')
-        df.drop(['TenHP_m', 'MaKhoa_m', 'TenKhoa_m', 'TenKhoa_MacDinh', 'MaKhoa_MacDinh'], 
+        hp_dict = hp_unique.set_index('MaHP')[['MaKhoa', 'TenKhoa']].to_dict('index')
+        
+        # Gán MaKhoa, TenKhoa cho từng dòng dựa trên MaHP
+        df['MaKhoa_TuHP'] = df['MaHP'].map(lambda x: hp_dict.get(x, {}).get('MaKhoa'))
+        df['TenKhoa_TuHP'] = df['MaHP'].map(lambda x: hp_dict.get(x, {}).get('TenKhoa'))
+        
+        # Ưu tiên dùng từ HP, fallback dùng từ logic của chuyên ngành
+        df['TenKhoa'] = df['TenKhoa_TuHP'].fillna(df['TenKhoa_ChuyenNganh']).fillna('Trường ĐHKT')
+        df['MaKhoa'] = df['MaKhoa_TuHP'].fillna(df['MaKhoa_ChuyenNganh']).fillna('TĐHKT')
+        
+        df.drop(['MaKhoa_TuHP', 'TenKhoa_TuHP', 'TenKhoa_ChuyenNganh', 'MaKhoa_ChuyenNganh'], 
                 axis=1, inplace=True, errors='ignore')
     else:
-        df['MaKhoa'] = df['MaKhoa_MacDinh'].fillna('TĐHKT')
-        df['TenKhoa'] = df['TenKhoa_MacDinh'].fillna('Trường ĐHKT')
+        df['MaKhoa'] = df['MaKhoa_ChuyenNganh'].fillna('TĐHKT')
+        df['TenKhoa'] = df['TenKhoa_ChuyenNganh'].fillna('Trường ĐHKT')
+        df.drop(['TenKhoa_ChuyenNganh', 'MaKhoa_ChuyenNganh'], axis=1, inplace=True, errors='ignore')
     
-    df['MaChuyenNganh'] = df['MaChuyenNganh_TuLop'].fillna(df['MaKhoa'])
-    df.drop(['MaChuyenNganh_TuLop'], axis=1, inplace=True, errors='ignore')
+    # ========== 3. TẠO DIM_KHOA ==========
+    dims['DIM_KHOA'] = df[['MaKhoa', 'TenKhoa']].drop_duplicates('MaKhoa')
     
+    # Thêm default khoas
+    default_khoas = pd.DataFrame([
+        {'MaKhoa': 'TĐHKT', 'TenKhoa': 'Trường ĐHKT'},
+        {'MaKhoa': 'PĐT', 'TenKhoa': 'Phòng Đào Tạo'},
+        {'MaKhoa': 'BNNNCN', 'TenKhoa': 'Bộ môn NNCN'},
+        {'MaKhoa': 'TĐHNN', 'TenKhoa': 'Trường ĐHNN'},
+        {'MaKhoa': 'LUAT', 'TenKhoa': 'Luật'},
+        {'MaKhoa': 'MKT', 'TenKhoa': 'Marketing'}
+    ])
+    dims['DIM_KHOA'] = pd.concat([dims['DIM_KHOA'], default_khoas]).drop_duplicates('MaKhoa').reset_index(drop=True)
+    
+    # ========== 4. TẠO DIM_CHUYEN_NGANH (dùng MaKhoa từ logic) ==========
+    # Lấy mapping MaChuyenNganh -> MaKhoa từ dữ liệu đã xử lý
+    # Lưu ý: MaKhoa_ChuyenNganh đã được xác định từ logic Lop
+    chuyen_nganh_khoa_map = df[['MaChuyenNganh', 'MaKhoa']].drop_duplicates('MaChuyenNganh')
+    
+    dims['DIM_CHUYEN_NGANH'] = pd.DataFrame({
+        'MaChuyenNganh': df['MaChuyenNganh'].unique()
+    })
+    dims['DIM_CHUYEN_NGANH'] = dims['DIM_CHUYEN_NGANH'].merge(
+        chuyen_nganh_khoa_map, on='MaChuyenNganh', how='left'
+    )
+    
+    # Bổ sung TenChuyenNganh từ file tài liệu (nếu có)
     if not cn_master.empty:
         cn_unique = cn_master.drop_duplicates(subset=['MaChuyenNganh'])
         cn_map = cn_unique.set_index('MaChuyenNganh')['TenChuyenNganh'].to_dict()
-        df['TenChuyenNganh'] = df['MaChuyenNganh'].map(cn_map)
-    df['TenChuyenNganh'] = df['TenChuyenNganh'].fillna('Chuyên ngành ' + df['MaChuyenNganh'])
+        dims['DIM_CHUYEN_NGANH']['TenChuyenNganh'] = dims['DIM_CHUYEN_NGANH']['MaChuyenNganh'].map(cn_map)
+    dims['DIM_CHUYEN_NGANH']['TenChuyenNganh'] = dims['DIM_CHUYEN_NGANH']['TenChuyenNganh'].fillna(
+        'Chuyên ngành ' + dims['DIM_CHUYEN_NGANH']['MaChuyenNganh']
+    )
     
+    # Đảm bảo MaKhoa tồn tại trong DIM_KHOA
+    valid_ma_khoa = set(dims['DIM_KHOA']['MaKhoa'].unique())
+    dims['DIM_CHUYEN_NGANH']['MaKhoa'] = dims['DIM_CHUYEN_NGANH']['MaKhoa'].apply(
+        lambda x: x if x in valid_ma_khoa else 'TĐHKT'
+    )
+    dims['DIM_CHUYEN_NGANH']['MaCTDT'] = 'CTDT_CHINHQUY'
+    
+    # ========== 5. CÁC DIMENSION CÒN LẠI ==========
+    # DIM_HOC_PHAN
+    dims['DIM_HOC_PHAN'] = df[['MaHP', 'TenHP', 'MaKhoa']].drop_duplicates('MaHP')
+    
+    # DIM_GIANG_VIEN
+    dims['DIM_GIANG_VIEN'] = df[['MaGV', 'HoDemGV', 'TenGV']].drop_duplicates('MaGV')
+    
+    # DIM_LOP_HOC_PHAN
     df['MaLopHP'] = df['LopHP']
+    dims['DIM_LOP_HOC_PHAN'] = df[['MaLopHP', 'LopHP', 'MaHP', 'MaGV']].drop_duplicates('MaLopHP')
+    dims['DIM_LOP_HOC_PHAN']['MaHocKy'] = ma_hoc_ky
     
+    # DIM_LOP_SINH_VIEN
+    dims['DIM_LOP_SINH_VIEN'] = df[['MaLop', 'Lop', 'MaChuyenNganh']].drop_duplicates('MaLop')
+    
+    # DIM_SINH_VIEN
+    dims['DIM_SINH_VIEN'] = df[['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop']].drop_duplicates('MaSV')
+    
+    # DIM_HOC_KY
+    dims['DIM_HOC_KY'] = pd.DataFrame([{'MaHocKy': ma_hoc_ky, 'NamHoc': nam_hoc, 'HocKy': hoc_ky}])
+    
+    # ========== 6. TẠO FACT ==========
     print("  -> Tạo FACT...")
     fact_start = time.time()
     df['SubmissionID'] = df['MaSV'].astype(str) + "_" + df['LopHP'].astype(str) + "_" + df['MaGV'].astype(str) + "_" + FILE_NAME
     
     fact_rows = []
+    # Câu trắc nghiệm (1-12)
     for _, row in df.iterrows():
         cau_hoi = row.get('CauHoi')
         gia_tri = row.get('GiaTri')
@@ -553,79 +627,78 @@ def transform_data_fast(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd
             except:
                 pass
     
+    # Câu tự luận (13-16)
     df_unique = df.drop_duplicates('SubmissionID')
     for _, row in df_unique.iterrows():
         sub_id = row['SubmissionID']
         ma_sv = row['MaSV']
         ma_lop_hp = row['MaLopHP']
-        cau13 = row.get('Cau13', '')
-        cau14 = row.get('Cau14', '')
-        cau15 = row.get('Cau15', '')
-        cau16 = row.get('Cau16', '')
-        if pd.notna(cau13) and str(cau13).strip():
-            fact_rows.append({'SubmissionID': sub_id, 'MaCauHoi': 13, 'MaSV': ma_sv, 'MaLopHP': ma_lop_hp, 'TraLoiSo': None, 'TraLoiText': str(cau13).strip()})
-        if pd.notna(cau14) and str(cau14).strip():
-            fact_rows.append({'SubmissionID': sub_id, 'MaCauHoi': 14, 'MaSV': ma_sv, 'MaLopHP': ma_lop_hp, 'TraLoiSo': None, 'TraLoiText': str(cau14).strip()})
-        if pd.notna(cau15) and str(cau15).strip():
-            fact_rows.append({'SubmissionID': sub_id, 'MaCauHoi': 15, 'MaSV': ma_sv, 'MaLopHP': ma_lop_hp, 'TraLoiSo': None, 'TraLoiText': str(cau15).strip()})
-        if pd.notna(cau16) and str(cau16).strip():
-            fact_rows.append({'SubmissionID': sub_id, 'MaCauHoi': 16, 'MaSV': ma_sv, 'MaLopHP': ma_lop_hp, 'TraLoiSo': None, 'TraLoiText': str(cau16).strip()})
+        for cau in range(13, 17):
+            cau_col = f'Cau{cau}'
+            cau_value = row.get(cau_col, '')
+            if pd.notna(cau_value) and str(cau_value).strip():
+                fact_rows.append({
+                    'SubmissionID': sub_id,
+                    'MaCauHoi': cau,
+                    'MaSV': ma_sv,
+                    'MaLopHP': ma_lop_hp,
+                    'TraLoiSo': None,
+                    'TraLoiText': str(cau_value).strip()
+                })
     
-    fact_df = pd.DataFrame(fact_rows)
-    if fact_df.empty:
-        fact_df = pd.DataFrame(columns=['SubmissionID', 'MaCauHoi', 'MaSV', 'MaLopHP', 'TraLoiSo', 'TraLoiText'])
+    dims['FACT'] = pd.DataFrame(fact_rows)
+    if dims['FACT'].empty:
+        dims['FACT'] = pd.DataFrame(columns=['SubmissionID', 'MaCauHoi', 'MaSV', 'MaLopHP', 'TraLoiSo', 'TraLoiText'])
     
     print(f"      -> Tạo FACT: {time.time()-fact_start:.2f}s")
-    print(f"  -> Fact: {len(fact_df):,} dòng")
-    
-    dims = {
-        'DIM_HOC_KY': pd.DataFrame([{'MaHocKy': ma_hoc_ky, 'NamHoc': nam_hoc, 'HocKy': hoc_ky}]),
-        'DIM_KHOA': df[['MaKhoa', 'TenKhoa']].drop_duplicates('MaKhoa'),
-        'DIM_CHUYEN_NGANH': df[['MaChuyenNganh', 'TenChuyenNganh', 'MaKhoa']].drop_duplicates('MaChuyenNganh'),
-        'DIM_HOC_PHAN': df[['MaHP', 'TenHP', 'MaKhoa']].drop_duplicates('MaHP'),
-        'DIM_GIANG_VIEN': df[['MaGV', 'HoDemGV', 'TenGV']].drop_duplicates('MaGV'),
-        'DIM_LOP_HOC_PHAN': df[['MaLopHP', 'LopHP', 'MaHP', 'MaGV']].drop_duplicates('MaLopHP'),
-        'DIM_LOP_SINH_VIEN': df[['MaLop', 'Lop', 'MaChuyenNganh']].drop_duplicates('MaLop'),
-        'DIM_SINH_VIEN': df[['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop']].drop_duplicates('MaSV')
-    }
-    
-    dims['DIM_CHUYEN_NGANH']['MaCTDT'] = 'CTDT_CHINHQUY'
-    dims['DIM_LOP_HOC_PHAN']['MaHocKy'] = ma_hoc_ky
-    
-    default_khoas = pd.DataFrame([
-        {'MaKhoa': 'TĐHKT', 'TenKhoa': 'Trường ĐHKT'},
-        {'MaKhoa': 'PĐT', 'TenKhoa': 'Phòng Đào Tạo'},
-        {'MaKhoa': 'BNNNCN', 'TenKhoa': 'Bộ môn NNCN'},
-        {'MaKhoa': 'TĐHNN', 'TenKhoa': 'Trường ĐHNN'},
-        {'MaKhoa': 'LUAT', 'TenKhoa': 'Luật'},
-        {'MaKhoa': 'MKT', 'TenKhoa': 'Marketing'}
-    ])
-    dims['DIM_KHOA'] = pd.concat([dims['DIM_KHOA'], default_khoas]).drop_duplicates('MaKhoa').reset_index(drop=True)
-    dims['FACT'] = fact_df
-    
+    print(f"  -> Fact: {len(dims['FACT']):,} dòng")
     print(f"  ✅ Transform: {time.time()-start:.2f}s")
+    
     return dims
 
-def save_dims_to_parquet(dims: dict, output_dir: str = "/tmp/etl_output"):
-    """Lưu tất cả dimensions và fact ra file parquet"""
-    os.makedirs(output_dir, exist_ok=True)
+def save_dims_to_blob_parquet(blob_service: BlobServiceClient, dims: dict, semester: str, file_name: str):
+    """Lưu các dimension và fact lên Azure Blob dạng Parquet"""
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    output_prefix = f"{PROCESSED_DATA_PATH}/{semester}/{file_name}_{timestamp}"
+    
+    print(f"  -> Upload lên blob: {output_prefix}")
+    
+    # Tạo container processed-data nếu chưa có
+    container_client = blob_service.get_container_client(PROCESSED_DATA_PATH)
+    if not container_client.exists():
+        container_client.create_container()
+        print(f"  -> Đã tạo container {PROCESSED_DATA_PATH}")
     
     for name, df in dims.items():
-        filepath = os.path.join(output_dir, f"{name}.parquet")
-        df.to_parquet(filepath, index=False)
-        print(f"  💾 Saved {name}: {len(df):,} rows to {filepath}")
+        # Lưu DataFrame ra buffer Parquet
+        buffer = io.BytesIO()
+        df.to_parquet(buffer, index=False)
+        buffer.seek(0)
+        
+        # Upload lên blob
+        blob_path = f"{output_prefix}/{name}.parquet"
+        blob_client = container_client.get_blob_client(blob_path)
+        blob_client.upload_blob(buffer, overwrite=True)
+        print(f"  💾 Uploaded {name}: {len(df):,} rows to {blob_path}")
     
     # Lưu metadata
-    meta = {
-        'semester': SEMESTER,
+    metadata = {
+        'semester': semester,
         'survey_file': SURVEY_FILE,
-        'file_name': FILE_NAME,
-        'timestamp': datetime.now().isoformat()
+        'file_name': file_name,
+        'timestamp': timestamp,
+        'dimensions': list(dims.keys())
     }
-    with open(os.path.join(output_dir, "metadata.pkl"), 'wb') as f:
-        pickle.dump(meta, f)
+    metadata_buffer = io.BytesIO()
+    pickle.dump(metadata, metadata_buffer)
+    metadata_buffer.seek(0)
     
-    return output_dir
+    metadata_path = f"{output_prefix}/metadata.pkl"
+    blob_client = container_client.get_blob_client(metadata_path)
+    blob_client.upload_blob(metadata_buffer, overwrite=True)
+    print(f"  💾 Uploaded metadata to {metadata_path}")
+    
+    return output_prefix
 
 def main():
     total_start = time.time()
@@ -635,6 +708,7 @@ def main():
     print(f"Semester: {SEMESTER}")
     print(f"File: {SURVEY_FILE}")
     print(f"Workers: {NUM_WORKERS}, Chunk: {CHUNK_SIZE}")
+    print(f"Output: https://coursesurveystorage.blob.core.windows.net/{PROCESSED_DATA_PATH}/")
     print("=" * 60)
     
     try:
@@ -669,20 +743,17 @@ def main():
     dims = transform_data_fast(df, hp_master, cn_master)
     print(f"  ✅ Transform: {time.time()-start:.2f}s")
     
-    print("\n💾 4. SAVE TO PARQUET")
+    print("\n💾 4. UPLOAD TO BLOB (Parquet)")
     start = time.time()
-    output_dir = save_dims_to_parquet(dims)
-    print(f"  ✅ Saved to: {output_dir} ({time.time()-start:.2f}s)")
+    output_path = save_dims_to_blob_parquet(blob_service, dims, SEMESTER, FILE_NAME)
+    print(f"  ✅ Uploaded to: {output_path} ({time.time()-start:.2f}s)")
     
     total = time.time() - total_start
     print("\n" + "=" * 60)
     print(f"🎉 EXTRACT & TRANSFORM HOÀN THÀNH! Tổng thời gian: {total:.1f}s")
-    print(f"📁 Output directory: {output_dir}")
+    print(f"📁 Output path: {output_path}")
+    print(f"🔗 URL: https://coursesurveystorage.blob.core.windows.net/{PROCESSED_DATA_PATH}/")
     print("=" * 60)
-    
-    # Set environment variable cho job tiếp theo
-    with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-        f.write(f"output_dir={output_dir}\n")
 
 if __name__ == "__main__":
     main()

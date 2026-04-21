@@ -695,11 +695,11 @@ def load_fact(conn, cursor, df_fact: pd.DataFrame) -> int:
     return total
 
 def extract_dimensions_from_df(df: pd.DataFrame) -> dict:
-    """Trích xuất các bảng Dimension từ df_original"""
+    """Trích xuất các bảng DIM từ DataFrame duy nhất"""
     print("  -> Extracting dimensions...")
     dims = {}
     
-    # DIM_KHOA
+    # DIM_KHOA - gộp từ cả MaKhoa_CN và MaKhoa_HP
     khoa_cn = df[['MaKhoa_CN', 'TenKhoa_CN']].dropna(subset=['MaKhoa_CN']).drop_duplicates('MaKhoa_CN')
     khoa_cn.columns = ['MaKhoa', 'TenKhoa']
     khoa_hp = df[['MaKhoa_HP', 'TenKhoa_HP']].dropna(subset=['MaKhoa_HP']).drop_duplicates('MaKhoa_HP')
@@ -708,46 +708,53 @@ def extract_dimensions_from_df(df: pd.DataFrame) -> dict:
     print(f"    -> DIM_KHOA: {len(dims['DIM_KHOA'])} rows")
     
     # DIM_CHUYEN_NGANH
-    dims['DIM_CHUYEN_NGANH'] = df[['MaChuyenNganh', 'TenChuyenNganh', 'MaKhoa_CN']].drop_duplicates('MaChuyenNganh')
+    dims['DIM_CHUYEN_NGANH'] = df[['MaChuyenNganh', 'TenChuyenNganh', 'MaKhoa_CN']].dropna(subset=['MaChuyenNganh']).drop_duplicates('MaChuyenNganh')
     dims['DIM_CHUYEN_NGANH'].columns = ['MaChuyenNganh', 'TenChuyenNganh', 'MaKhoa']
     dims['DIM_CHUYEN_NGANH']['MaCTDT'] = 'CTDT_CHINHQUY'
-    dims['DIM_CHUYEN_NGANH']['MaKhoa'] = dims['DIM_CHUYEN_NGANH']['MaKhoa'].fillna('TĐHKT')
     print(f"    -> DIM_CHUYEN_NGANH: {len(dims['DIM_CHUYEN_NGANH'])} rows")
     
     # DIM_HOC_PHAN
-    dims['DIM_HOC_PHAN'] = df[['MaHP', 'TenHP', 'MaKhoa_HP']].drop_duplicates('MaHP')
+    dims['DIM_HOC_PHAN'] = df[['MaHP', 'TenHP', 'MaKhoa_HP']].dropna(subset=['MaHP']).drop_duplicates('MaHP')
     dims['DIM_HOC_PHAN'].columns = ['MaHP', 'TenHP', 'MaKhoa']
-    dims['DIM_HOC_PHAN']['MaKhoa'] = dims['DIM_HOC_PHAN']['MaKhoa'].fillna('TĐHKT')
     print(f"    -> DIM_HOC_PHAN: {len(dims['DIM_HOC_PHAN'])} rows")
     
     # DIM_GIANG_VIEN
-    dims['DIM_GIANG_VIEN'] = df[['MaGV', 'HoDemGV', 'TenGV']].drop_duplicates('MaGV')
+    dims['DIM_GIANG_VIEN'] = df[['MaGV', 'HoDemGV', 'TenGV']].dropna(subset=['MaGV']).drop_duplicates('MaGV')
     print(f"    -> DIM_GIANG_VIEN: {len(dims['DIM_GIANG_VIEN'])} rows")
     
     # DIM_LOP_HOC_PHAN
-    dims['DIM_LOP_HOC_PHAN'] = df[['MaLopHP', 'LopHP', 'MaHP', 'MaGV']].drop_duplicates('MaLopHP')
+    dims['DIM_LOP_HOC_PHAN'] = df[['MaLopHP', 'LopHP', 'MaHP', 'MaGV']].dropna(subset=['MaLopHP']).drop_duplicates('MaLopHP')
     print(f"    -> DIM_LOP_HOC_PHAN: {len(dims['DIM_LOP_HOC_PHAN'])} rows")
     
     # DIM_LOP_SINH_VIEN
-    dims['DIM_LOP_SINH_VIEN'] = df[['MaLop', 'Lop', 'MaChuyenNganh']].drop_duplicates('MaLop')
+    dims['DIM_LOP_SINH_VIEN'] = df[['MaLop', 'Lop', 'MaChuyenNganh']].dropna(subset=['MaLop']).drop_duplicates('MaLop')
     print(f"    -> DIM_LOP_SINH_VIEN: {len(dims['DIM_LOP_SINH_VIEN'])} rows")
     
     # DIM_SINH_VIEN
-    dims['DIM_SINH_VIEN'] = df[['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop']].drop_duplicates('MaSV')
+    dims['DIM_SINH_VIEN'] = df[['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop']].dropna(subset=['MaSV']).drop_duplicates('MaSV')
     print(f"    -> DIM_SINH_VIEN: {len(dims['DIM_SINH_VIEN'])} rows")
     
     return dims
 
-def load_to_database(df_original: pd.DataFrame, df_fact: pd.DataFrame):
-    """Load toàn bộ dữ liệu vào database"""
+def load_to_database(df_final: pd.DataFrame):
+    """Load toàn bộ dữ liệu vào database từ 1 DataFrame duy nhất"""
     print("  -> Load...")
     start = time.time()
     
     ma_hoc_ky, nam_hoc, hoc_ky = derive_ma_hoc_ky()
     print(f"  -> MaHocKy: {ma_hoc_ky} (NamHoc: {nam_hoc}, HocKy: {hoc_ky})")
     
-    dims = extract_dimensions_from_df(df_original)
+    # Trích xuất DIM từ df_final (dùng drop_duplicates)
+    dims = extract_dimensions_from_df(df_final)
     
+    # Thêm DIM_HOC_KY
+    dims['DIM_HOC_KY'] = pd.DataFrame([{'MaHocKy': ma_hoc_ky, 'NamHoc': nam_hoc, 'HocKy': hoc_ky}])
+    
+    # Thêm MaHocKy vào DIM_LOP_HOC_PHAN
+    if 'DIM_LOP_HOC_PHAN' in dims:
+        dims['DIM_LOP_HOC_PHAN']['MaHocKy'] = ma_hoc_ky
+    
+    # Đảm bảo DIM_KHOA có đủ MaKhoa mặc định
     default_khoas = pd.DataFrame([
         {'MaKhoa': 'TĐHKT', 'TenKhoa': 'Trường ĐHKT'},
         {'MaKhoa': 'PĐT', 'TenKhoa': 'Phòng Đào Tạo'},
@@ -755,21 +762,17 @@ def load_to_database(df_original: pd.DataFrame, df_fact: pd.DataFrame):
     ])
     dims['DIM_KHOA'] = pd.concat([dims['DIM_KHOA'], default_khoas]).drop_duplicates('MaKhoa').reset_index(drop=True)
     
-    dims['DIM_HOC_KY'] = pd.DataFrame([{'MaHocKy': ma_hoc_ky, 'NamHoc': nam_hoc, 'HocKy': hoc_ky}])
-    
-    if 'DIM_LOP_HOC_PHAN' in dims:
-        dims['DIM_LOP_HOC_PHAN']['MaHocKy'] = ma_hoc_ky
-    
     conn = pyodbc.connect(CONN_STR)
     cursor = conn.cursor()
     cursor.fast_executemany = True
     
     try:
-        count = load_dimension(cursor, 'DIM_HOC_KY', dims.get('DIM_HOC_KY', pd.DataFrame()),
+        # Load các bảng DIM
+        count = load_dimension(cursor, 'DIM_HOC_KY', dims['DIM_HOC_KY'],
                                ['MaHocKy', 'NamHoc', 'HocKy'], 'MaHocKy')
         print(f"  ✅ DIM_HOC_KY: {count} new")
         
-        count = load_dimension(cursor, 'DIM_KHOA', dims.get('DIM_KHOA', pd.DataFrame()),
+        count = load_dimension(cursor, 'DIM_KHOA', dims['DIM_KHOA'],
                                ['MaKhoa', 'TenKhoa'], 'MaKhoa')
         print(f"  ✅ DIM_KHOA: {count} new")
         
@@ -780,32 +783,35 @@ def load_to_database(df_original: pd.DataFrame, df_fact: pd.DataFrame):
         conn.commit()
         print("  ✅ DIM_CTDT: ensured")
         
-        count = load_dimension(cursor, 'DIM_CHUYEN_NGANH', dims.get('DIM_CHUYEN_NGANH', pd.DataFrame()),
+        count = load_dimension(cursor, 'DIM_CHUYEN_NGANH', dims['DIM_CHUYEN_NGANH'],
                                ['MaChuyenNganh', 'TenChuyenNganh', 'MaKhoa', 'MaCTDT'], 'MaChuyenNganh')
         print(f"  ✅ DIM_CHUYEN_NGANH: {count} new")
         
-        count = load_dimension(cursor, 'DIM_HOC_PHAN', dims.get('DIM_HOC_PHAN', pd.DataFrame()),
+        count = load_dimension(cursor, 'DIM_HOC_PHAN', dims['DIM_HOC_PHAN'],
                                ['MaHP', 'TenHP', 'MaKhoa'], 'MaHP')
         print(f"  ✅ DIM_HOC_PHAN: {count} new")
         
-        count = load_dimension(cursor, 'DIM_GIANG_VIEN', dims.get('DIM_GIANG_VIEN', pd.DataFrame()),
+        count = load_dimension(cursor, 'DIM_GIANG_VIEN', dims['DIM_GIANG_VIEN'],
                                ['MaGV', 'HoDemGV', 'TenGV'], 'MaGV')
         print(f"  ✅ DIM_GIANG_VIEN: {count} new")
         
-        count = load_dimension(cursor, 'DIM_LOP_HOC_PHAN', dims.get('DIM_LOP_HOC_PHAN', pd.DataFrame()),
+        count = load_dimension(cursor, 'DIM_LOP_HOC_PHAN', dims['DIM_LOP_HOC_PHAN'],
                                ['MaLopHP', 'LopHP', 'MaHP', 'MaGV', 'MaHocKy'], 'MaLopHP')
         print(f"  ✅ DIM_LOP_HOC_PHAN: {count} new")
         
-        count = load_dimension(cursor, 'DIM_LOP_SINH_VIEN', dims.get('DIM_LOP_SINH_VIEN', pd.DataFrame()),
+        count = load_dimension(cursor, 'DIM_LOP_SINH_VIEN', dims['DIM_LOP_SINH_VIEN'],
                                ['MaLop', 'Lop', 'MaChuyenNganh'], 'MaLop')
         print(f"  ✅ DIM_LOP_SINH_VIEN: {count} new")
         
-        count = load_dimension(cursor, 'DIM_SINH_VIEN', dims.get('DIM_SINH_VIEN', pd.DataFrame()),
+        count = load_dimension(cursor, 'DIM_SINH_VIEN', dims['DIM_SINH_VIEN'],
                                ['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop'], 'MaSV')
         print(f"  ✅ DIM_SINH_VIEN: {count} new")
         
+        # Load FACT - từ df_final
         print("\n  --- FACT ---")
-        count = load_fact(conn, cursor, df_fact)
+        fact_cols = ['SubmissionID', 'MaCauHoi', 'MaSV', 'MaLopHP', 'TraLoiSo', 'TraLoiText']
+        fact_df = df_final[fact_cols].copy()
+        count = load_fact(conn, cursor, fact_df)
         print(f"  ✅ FACT: {count:,} dòng")
         
         print(f"\n  ✅ Load hoàn tất: {time.time()-start:.2f}s")
@@ -858,7 +864,7 @@ def main():
     
     print("\n🔄 3. TRANSFORM")
     start = time.time()
-    df_original, df_fact = transform_data(df, hp_master, cn_master)
+    df_final = transform_data(df, hp_master, cn_master)
     print(f"  ✅ Transform: {time.time()-start:.2f}s")
     
     print("\n💾 4. SAVE PARQUET (BACKUP)")
@@ -871,7 +877,7 @@ def main():
     
     print("\n💾 5. LOAD TO DATABASE")
     start = time.time()
-    load_to_database(df_original, df_fact)
+    load_to_database(df_final)
     print(f"  ✅ Load: {time.time()-start:.2f}s")
     
     total = time.time() - total_start

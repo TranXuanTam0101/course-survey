@@ -864,28 +864,30 @@ def main():
     
     print("\n🔄 3. TRANSFORM")
     start = time.time()
-    df_final = transform_data(df, hp_master, cn_master)
+    df_final = transform_data(df, hp_master, cn_master) 
     print(f"  ✅ Transform: {time.time()-start:.2f}s")
     
+    # ========== SAVE PARQUET (BACKUP) ==========
     print("\n💾 4. SAVE PARQUET (BACKUP)")
     start = time.time()
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    output_filename = f"{FILE_NAME}_fact_{timestamp}.parquet"
+    output_filename = f"{FILE_NAME}_final_{timestamp}.parquet"
     local_path = f"/tmp/{output_filename}"
-    df_fact.to_parquet(local_path, index=False, compression='snappy')
+    df_final.to_parquet(local_path, index=False, compression='snappy')  
     print(f"  ✅ Đã lưu backup: {local_path} ({time.time()-start:.2f}s)")
     
+    # ========== LOAD TO DATABASE ==========
     print("\n💾 5. LOAD TO DATABASE")
     start = time.time()
-    load_to_database(df_final)
+    load_to_database(df_final)  # ← SỬA: df_fact → df_final
     print(f"  ✅ Load: {time.time()-start:.2f}s")
     
     total = time.time() - total_start
     print("\n" + "=" * 60)
     print(f"🎉 HOÀN THÀNH! Tổng thời gian: {total:.1f}s")
     print(f"📁 Backup file: {local_path}")
-    print(f"📊 Dòng FACT: {len(df_fact):,}")
+    print(f"📊 Tổng số dòng: {len(df_final):,}")
     print("=" * 60)
-
+    
 if __name__ == "__main__":
     main()

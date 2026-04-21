@@ -686,11 +686,12 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
     
     print(f"     - Câu tự luận: {len(essay_rows)} dòng")
     
-    # 6c. Gộp lại thành df_fact
+    # 6c. Gộp lại
     df_fact = pd.DataFrame(mcq_rows + essay_rows)
     print(f"     - Tổng số dòng cho FACT: {len(df_fact)}")
+    
     print(f"  ✅ Transform: {time.time()-start:.2f}s")
-    return df, df_fact
+    return df, df_fact  # Trả về cả hai
 
 # ================= LOAD TO DATABASE =================
 def get_existing_ids_cached(cursor, table: str, id_col: str) -> set:
@@ -749,65 +750,6 @@ def load_dimension(cursor, table: str, df: pd.DataFrame, columns: list, id_col: 
     _EXISTING_CACHE[f"{table}.{id_col}"].update(new_data[id_col].tolist())
     
     return len(new_data)
-def load_fact_direct(cursor, df_fact: pd.DataFrame) -> int:
-    """Load FACT trực tiếp từ DataFrame đã được format sẵn"""
-    if df_fact.empty:
-        print("  ❌ DataFrame FACT rỗng!")
-        return 0
-    
-    print(f"  -> Insert FACT: {len(df_fact)} dòng")
-    start = time.time()
-    
-    # Disable constraints
-    try:
-        cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT NOCHECK CONSTRAINT ALL")
-        cursor.connection.commit()
-        print("  -> Disabled constraints")
-    except Exception as e:
-        print(f"  -> Warning: Could not disable constraints: {e}")
-    
-    # Chuẩn bị data
-    data = []
-    for _, row in df_fact.iterrows():
-        data.append((
-            str(row['SubmissionID'])[:100],
-            int(row['MaCauHoi']),
-            str(row['MaSV'])[:20],
-            str(row['MaLopHP'])[:50],
-            row['TraLoiSo'] if pd.notna(row['TraLoiSo']) else None,
-            str(row['TraLoiText'])[:4000] if pd.notna(row['TraLoiText']) else None
-        ))
-    
-    # Insert batch
-    total = 0
-    for i in range(0, len(data), BATCH_SIZE):
-        batch = data[i:i+BATCH_SIZE]
-        try:
-            cursor.executemany("""
-                INSERT INTO FACT_TRA_LOI_KHAO_SAT 
-                (SubmissionID, MaCauHoi, MaSV, MaLopHP, TraLoiSo, TraLoiText)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, batch)
-            cursor.connection.commit()
-            total += len(batch)
-            if (i // BATCH_SIZE + 1) % 10 == 0:
-                print(f"    -> Inserted {total:,}/{len(data):,} rows")
-        except Exception as e:
-            print(f"    ❌ Lỗi batch {i//BATCH_SIZE + 1}: {e}")
-            if batch:
-                print(f"       Mẫu dữ liệu lỗi: {batch[0]}")
-            raise
-    
-    # Re-enable constraints
-    try:
-        cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT CHECK CONSTRAINT ALL")
-        cursor.connection.commit()
-        print("  -> Re-enabled constraints")
-    except Exception as e:
-        print(f"  -> Warning: Could not re-enable constraints: {e}")
-    
-    print(f"  ✅ FACT done: {total:,} dòng ({time.time()-start:.2f}s)")
-    return total
     
 def load_fact(cursor, df: pd.DataFrame) -> int:
     """Load FACT - KHÔNG KIỂM TRA DIM, INSERT TRỰC TIẾP"""
@@ -914,7 +856,52 @@ def load_fact(cursor, df: pd.DataFrame) -> int:
     print(f"  ✅ FACT done: {total:,} rows ({time.time()-start:.2f}s)")
     return total
     
-
+def load_fact_direct(cursor, df_fact: pd.DataFrame) -> int:
+    """Load FACT trực tiếp từ DataFrame đã được format sẵn"""
+    if df_fact.empty:
+        print("  ❌ DataFrame FACT rỗng!")
+        return 0
+    
+    print(f"  -> Insert FACT: {len(df_fact)} dòng")
+    start = time.time()
+    
+    # Disable constraints
+    cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT NOCHECK CONSTRAINT ALL")
+    cursor.connection.commit()
+    
+    # Chuẩn bị data
+    data = []
+    for _, row in df_fact.iterrows():
+        data.append((
+            str(row['SubmissionID'])[:100],
+            int(row['MaCauHoi']),
+            str(row['MaSV'])[:20],
+            str(row['MaLopHP'])[:50],
+            row['TraLoiSo'] if pd.notna(row['TraLoiSo']) else None,
+            str(row['TraLoiText'])[:4000] if pd.notna(row['TraLoiText']) else None
+        ))
+    
+    # Insert batch
+    total = 0
+    for i in range(0, len(data), BATCH_SIZE):
+        batch = data[i:i+BATCH_SIZE]
+        cursor.executemany("""
+            INSERT INTO FACT_TRA_LOI_KHAO_SAT 
+            (SubmissionID, MaCauHoi, MaSV, MaLopHP, TraLoiSo, TraLoiText)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, batch)
+        cursor.connection.commit()
+        total += len(batch)
+        if (i // BATCH_SIZE + 1) % 10 == 0:
+            print(f"    -> Inserted {total:,}/{len(data):,} rows")
+    
+    # Re-enable constraints
+    cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT CHECK CONSTRAINT ALL")
+    cursor.connection.commit()
+    
+    print(f"  ✅ FACT done: {total:,} dòng ({time.time()-start:.2f}s)")
+    return total
+    
 def extract_dimensions_from_df(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.DataFrame) -> dict:
     """Trích xuất các bảng Dimension từ DataFrame đã xử lý - KHÔNG LỌC BỎ DÒNG"""
     print("  -> Extracting dimensions...")

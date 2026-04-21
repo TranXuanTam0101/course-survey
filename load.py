@@ -689,10 +689,7 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
     # 6c. Gộp lại thành df_fact
     df_fact = pd.DataFrame(mcq_rows + essay_rows)
     print(f"     - Tổng số dòng cho FACT: {len(df_fact)}")
-    
     print(f"  ✅ Transform: {time.time()-start:.2f}s")
-    
-    # Trả về cả df (cho DIM) và df_fact (cho FACT)
     return df, df_fact
 
 # ================= LOAD TO DATABASE =================
@@ -1115,7 +1112,7 @@ def main():
     
     print("\n🔄 3. TRANSFORM")
     start = time.time()
-    df, df_fact = transform_data(df, hp_master, cn_master)  # Nhận cả 2 DataFrame
+    df, df_fact = transform_data(df, hp_master, cn_master)
     print(f"  ✅ Transform: {time.time()-start:.2f}s")
     
     # ========== SAVE PARQUET (BACKUP) ==========
@@ -1123,7 +1120,6 @@ def main():
     start = time.time()
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     
-    # Lưu df cho DIM (không có nested DataFrame)
     dims_path = f"/tmp/{FILE_NAME}_dims_{timestamp}.parquet"
     df.to_parquet(dims_path, index=False, compression='snappy')
     print(f"  ✅ Đã lưu DIM data: {dims_path}")

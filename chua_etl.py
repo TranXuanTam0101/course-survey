@@ -1,4 +1,3 @@
-đoạn code dữ liệu sau xử lý những gì hãy nêu rõ chi tiết
 
 import os
 import sys

@@ -118,20 +118,18 @@ CREATE TABLE DIM_LOP_HOC_PHAN (
 -- =====================================================
 -- 11. FACT_TRA_LOI_KHAO_SAT
 -- =====================================================
+-- Tạo bảng FACT mới với cấu trúc 1 dòng/submission
 CREATE TABLE FACT_TRA_LOI_KHAO_SAT (
-    SubmissionID VARCHAR(100) NOT NULL,
-    MaCauHoi INT NOT NULL,
-    MaSV VARCHAR(20) NOT NULL,
-    MaLopHP VARCHAR(50) NOT NULL,
-    TraLoiSo FLOAT NULL,
-    TraLoiText NVARCHAR(MAX) NULL,
-    CONSTRAINT PK_FACT_TRA_LOI_KHAO_SAT PRIMARY KEY (SubmissionID, MaCauHoi),
-    CONSTRAINT FK_Fact_CauHoi FOREIGN KEY (MaCauHoi) 
-        REFERENCES DIM_CAU_HOI(MaCauHoi),
-    CONSTRAINT FK_Fact_SinhVien FOREIGN KEY (MaSV) 
-        REFERENCES DIM_SINH_VIEN(MaSV),
-    CONSTRAINT FK_Fact_LopHocPhan FOREIGN KEY (MaLopHP) 
-        REFERENCES DIM_LOP_HOC_PHAN(MaLopHP)
+    SubmissionID varchar(100) PRIMARY KEY,
+    MaSV varchar(20) FOREIGN KEY REFERENCES DIM_SINH_VIEN(MaSV),
+    MaLopHP varchar(50) FOREIGN KEY REFERENCES DIM_LOP_HOC_PHAN(MaLopHP),
+    
+    -- 12 câu trắc nghiệm (1-12)
+    C1 int, C2 int, C3 int, C4 int, C5 int, C6 int,
+    C7 int, C8 int, C9 int, C10 int, C11 int, C12 int,
+    
+    -- 4 câu tự luận (13-16)
+    C13 nvarchar(4000), C14 nvarchar(4000), C15 nvarchar(4000), C16 nvarchar(4000)
 );
 
 -- =====================================================
@@ -139,7 +137,6 @@ CREATE TABLE FACT_TRA_LOI_KHAO_SAT (
 -- =====================================================
 CREATE INDEX IX_FACT_MaSV ON FACT_TRA_LOI_KHAO_SAT(MaSV);
 CREATE INDEX IX_FACT_MaLopHP ON FACT_TRA_LOI_KHAO_SAT(MaLopHP);
-CREATE INDEX IX_FACT_MaCauHoi ON FACT_TRA_LOI_KHAO_SAT(MaCauHoi);
 
 -- =====================================================
 -- INSERT DIM_CAU_HOI (16 câu)

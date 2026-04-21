@@ -622,9 +622,101 @@ def transform_data_fast(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd
     df['TenChuyenNganh'] = df['TenChuyenNganh'].fillna('Chuyên ngành ' + df['MaChuyenNganh'])
     
     df['MaLopHP'] = df['LopHP']
+    
+    # ========== TẠO FACT ĐÚNG LOGIC ==========
+    print("  -> Tạo FACT...")
+    fact_start = time.time()
+    
+    # Tạo SubmissionID
     df['SubmissionID'] = df['MaSV'].astype(str) + "_" + df['LopHP'].astype(str) + "_" + df['MaGV'].astype(str) + "_" + FILE_NAME
     
-    # Tạo Dimensions
+    fact_rows = []
+    
+    # 1. Tất cả các dòng: Lấy CauHoi và GiaTri (câu 1-12) - GIỮ NGUYÊN
+    for _, row in df.iterrows():
+        cau_hoi = row.get('CauHoi')
+        gia_tri = row.get('GiaTri')
+        
+        if pd.notna(cau_hoi) and pd.notna(gia_tri):
+            try:
+                ma_cau = int(float(cau_hoi))
+                if 1 <= ma_cau <= 12:
+                    fact_rows.append({
+                        'SubmissionID': row['SubmissionID'],
+                        'MaCauHoi': ma_cau,
+                        'MaSV': row['MaSV'],           # ← GIỮ NGUYÊN
+                        'MaLopHP': row['MaLopHP'],     # ← GIỮ NGUYÊN (LopHP)
+                        'TraLoiSo': int(float(gia_tri)),  # ← GIỮ NGUYÊN (GiaTri)
+                        'TraLoiText': None
+                    })
+            except:
+                pass
+    
+    # 2. Lấy dòng đầu tiên của mỗi SubmissionID để lấy câu tự luận (13-16)
+    df_unique = df.drop_duplicates('SubmissionID')
+    
+    for _, row in df_unique.iterrows():
+        sub_id = row['SubmissionID']
+        ma_sv = row['MaSV']
+        ma_lop_hp = row['MaLopHP']
+        
+        # Lấy 4 câu tự luận theo đúng thứ tự từ trái sang phải
+        cau13 = row.get('Cau13', '')
+        cau14 = row.get('Cau14', '')
+        cau15 = row.get('Cau15', '')
+        cau16 = row.get('Cau16', '')
+        
+        # Tạo 4 dòng cho câu 13-16
+        if pd.notna(cau13) and str(cau13).strip():
+            fact_rows.append({
+                'SubmissionID': sub_id,
+                'MaCauHoi': 13,
+                'MaSV': ma_sv,
+                'MaLopHP': ma_lop_hp,
+                'TraLoiSo': None,
+                'TraLoiText': str(cau13).strip()
+            })
+        
+        if pd.notna(cau14) and str(cau14).strip():
+            fact_rows.append({
+                'SubmissionID': sub_id,
+                'MaCauHoi': 14,
+                'MaSV': ma_sv,
+                'MaLopHP': ma_lop_hp,
+                'TraLoiSo': None,
+                'TraLoiText': str(cau14).strip()
+            })
+        
+        if pd.notna(cau15) and str(cau15).strip():
+            fact_rows.append({
+                'SubmissionID': sub_id,
+                'MaCauHoi': 15,
+                'MaSV': ma_sv,
+                'MaLopHP': ma_lop_hp,
+                'TraLoiSo': None,
+                'TraLoiText': str(cau15).strip()
+            })
+        
+        if pd.notna(cau16) and str(cau16).strip():
+            fact_rows.append({
+                'SubmissionID': sub_id,
+                'MaCauHoi': 16,
+                'MaSV': ma_sv,
+                'MaLopHP': ma_lop_hp,
+                'TraLoiSo': None,
+                'TraLoiText': str(cau16).strip()
+            })
+    
+    fact_df = pd.DataFrame(fact_rows)
+    
+    if fact_df.empty:
+        fact_df = pd.DataFrame(columns=['SubmissionID', 'MaCauHoi', 'MaSV', 'MaLopHP', 'TraLoiSo', 'TraLoiText'])
+    
+    print(f"      -> Tạo FACT: {time.time()-fact_start:.2f}s")
+    print(f"  -> Fact: {len(fact_df):,} dòng (câu 1-12: từ tất cả dòng, câu 13-16: từ dòng đầu tiên mỗi SubmissionID)")
+    print(f"  ✅ Transform: {time.time()-start:.2f}s")
+    
+    # Tạo Dimensions (giữ nguyên)
     dims = {
         'DIM_HOC_KY': pd.DataFrame([{'MaHocKy': ma_hoc_ky, 'NamHoc': nam_hoc, 'HocKy': hoc_ky}]),
         'DIM_KHOA': df[['MaKhoa', 'TenKhoa']].drop_duplicates('MaKhoa'),
@@ -649,49 +741,6 @@ def transform_data_fast(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd
         {'MaKhoa': 'MKT', 'TenKhoa': 'Marketing'}
     ])
     dims['DIM_KHOA'] = pd.concat([dims['DIM_KHOA'], default_khoas]).drop_duplicates('MaKhoa').reset_index(drop=True)
-    
-    # ========== TẠO FACT ==========
-    print("  -> Tạo FACT (melt)...")
-    fact_start = time.time()
-    
-    # 1. Câu trắc nghiệm (1-12)
-    trac_nghiem_df = df[['SubmissionID', 'MaSV', 'MaLopHP', 'CauHoi', 'GiaTri']].copy()
-    trac_nghiem_df = trac_nghiem_df[
-        trac_nghiem_df['CauHoi'].notna() & trac_nghiem_df['GiaTri'].notna()
-    ]
-    trac_nghiem_df['MaCauHoi'] = trac_nghiem_df['CauHoi'].astype(int)
-    trac_nghiem_df['TraLoiSo'] = trac_nghiem_df['GiaTri'].astype(float).astype(int)
-    trac_nghiem_df['TraLoiText'] = None
-    
-    trac_nghiem_df = trac_nghiem_df[
-        (trac_nghiem_df['MaCauHoi'] >= 1) & (trac_nghiem_df['MaCauHoi'] <= 12) &
-        (trac_nghiem_df['TraLoiSo'] >= 1) & (trac_nghiem_df['TraLoiSo'] <= 5)
-    ]
-    trac_nghiem_df = trac_nghiem_df[['SubmissionID', 'MaCauHoi', 'MaSV', 'MaLopHP', 'TraLoiSo', 'TraLoiText']]
-    
-    # 2. Câu tự luận (13-16)
-    df_unique = df.drop_duplicates('SubmissionID')[['SubmissionID', 'MaSV', 'MaLopHP', 'Cau13', 'Cau14', 'Cau15', 'Cau16']].copy()
-    
-    tu_luan_df = df_unique.melt(
-        id_vars=['SubmissionID', 'MaSV', 'MaLopHP'],
-        value_vars=['Cau13', 'Cau14', 'Cau15', 'Cau16'],
-        var_name='CauHoi_str',
-        value_name='TraLoiText'
-    )
-    
-    cau_map = {'Cau13': 13, 'Cau14': 14, 'Cau15': 15, 'Cau16': 16}
-    tu_luan_df['MaCauHoi'] = tu_luan_df['CauHoi_str'].map(cau_map)
-    tu_luan_df['TraLoiSo'] = None
-    
-    tu_luan_df = tu_luan_df[tu_luan_df['TraLoiText'].notna() & (tu_luan_df['TraLoiText'] != '')]
-    tu_luan_df = tu_luan_df[['SubmissionID', 'MaCauHoi', 'MaSV', 'MaLopHP', 'TraLoiSo', 'TraLoiText']]
-    
-    # 3. Gộp lại
-    fact_df = pd.concat([trac_nghiem_df, tu_luan_df], ignore_index=True)
-    
-    print(f"      -> Tạo FACT: {time.time()-fact_start:.2f}s")
-    print(f"  -> Fact: {len(fact_df):,} dòng (TN: {len(trac_nghiem_df):,}, TL: {len(tu_luan_df):,})")
-    print(f"  ✅ Transform: {time.time()-start:.2f}s")
     
     dims['FACT'] = fact_df
     return dims

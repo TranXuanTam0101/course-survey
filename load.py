@@ -686,14 +686,13 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
     
     print(f"     - Câu tự luận: {len(essay_rows)} dòng")
     
-    # 6c. Gộp lại
+    # 6c. Gộp lại thành df_fact
     df_fact = pd.DataFrame(mcq_rows + essay_rows)
     print(f"     - Tổng số dòng cho FACT: {len(df_fact)}")
     
-    # Thêm df_fact vào df gốc (để trả về)
-    df['_fact_data'] = [df_fact] * len(df)  # Lưu tạm
-    
     print(f"  ✅ Transform: {time.time()-start:.2f}s")
+    
+    # Trả về cả df (cho DIM) và df_fact (cho FACT)
     return df, df_fact
 
 # ================= LOAD TO DATABASE =================
@@ -1102,35 +1101,38 @@ def main():
     
     print("\n🔄 3. TRANSFORM")
     start = time.time()
-    df, df_fact = transform_data(df, hp_master, cn_master)  # Nhận cả df_fact
+    df, df_fact = transform_data(df, hp_master, cn_master)  # Nhận cả 2 DataFrame
     print(f"  ✅ Transform: {time.time()-start:.2f}s")
     
     # ========== SAVE PARQUET (BACKUP) ==========
     print("\n💾 4. SAVE PARQUET (BACKUP)")
     start = time.time()
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    output_filename = f"{FILE_NAME}_processed_{timestamp}.parquet"
-    local_path = f"/tmp/{output_filename}"
-    df.to_parquet(local_path, index=False, compression='snappy')
     
-    # Lưu riêng fact data để debug
+    # Lưu df cho DIM (không có nested DataFrame)
+    dims_path = f"/tmp/{FILE_NAME}_dims_{timestamp}.parquet"
+    df.to_parquet(dims_path, index=False, compression='snappy')
+    print(f"  ✅ Đã lưu DIM data: {dims_path}")
+    
+    # Lưu df_fact cho FACT
     fact_path = f"/tmp/{FILE_NAME}_fact_{timestamp}.parquet"
     df_fact.to_parquet(fact_path, index=False, compression='snappy')
-    print(f"  ✅ Đã lưu backup: {local_path}")
-    print(f"  ✅ Đã lưu fact data: {fact_path}")
+    print(f"  ✅ Đã lưu FACT data: {fact_path}")
     
     # ========== LOAD TO DATABASE ==========
     print("\n💾 5. LOAD TO DATABASE")
     start = time.time()
-    load_to_database(df, df_fact, hp_master, cn_master)  # Truyền thêm df_fact
+    load_to_database(df, df_fact, hp_master, cn_master)
     print(f"  ✅ Load: {time.time()-start:.2f}s")
     
     total = time.time() - total_start
     print("\n" + "=" * 60)
     print(f"🎉 HOÀN THÀNH! Tổng thời gian: {total:.1f}s")
-    print(f"📁 Backup file: {local_path}")
-    print(f"📊 Số dòng đã xử lý: {len(df):,}")
+    print(f"📁 Backup DIM file: {dims_path}")
+    print(f"📁 Backup FACT file: {fact_path}")
+    print(f"📊 Số dòng DIM đã xử lý: {len(df):,}")
     print(f"📊 Số dòng FACT: {len(df_fact):,}")
     print("=" * 60)
+    
 if __name__ == "__main__":
     main()

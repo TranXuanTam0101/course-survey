@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SURVEY ETL - TIỀN XỬ LÝ & XUẤT CSV (ĐẦY ĐỦ DP + SCORING)
-- Giữ nguyên logic tiền xử lý (Weights, DP, Scoring)
-- Xuất kết quả ra CSV và upload lên processed-data
+SURVEY ETL - TIỀN XỬ LÝ & XUẤT PARQUET (SIÊU NHANH)
 """
 
 import os
@@ -28,7 +26,6 @@ if not SEMESTER or not SURVEY_FILE:
 
 FILE_NAME = os.path.splitext(os.path.basename(SURVEY_FILE))[0]
 
-# Số CPU cores sử dụng
 NUM_WORKERS = max(1, mp.cpu_count() - 1)
 CHUNK_SIZE = 10000
 
@@ -39,7 +36,7 @@ RAWDATA_PATH = "rawdata"
 TAILIEU_PATH = "tailieu"
 PROCESSED_PATH = "processed-data"
 
-# ========== TRỌNG SỐ ==========
+# ========== TRỌNG SỐ (GIỮ NGUYÊN) ==========
 WEIGHTS_CAU13 = {
     'chuẩn đầu ra': 5.0, 'mục tiêu môn học': 4.5, 'đáp ứng chương trình': 4.0,
     'nội dung': 3.0, 'học phần': 3.0, 'chương trình': 2.5, 'môn học': 2.5,
@@ -111,7 +108,7 @@ def create_ma_khoa(ten_khoa: str) -> str:
                 initials.append(first_char)
     return ''.join(initials) if initials else "UNKNOWN"
 
-# ========== CÁC HÀM XỬ LÝ CÂU TỰ LUẬN ==========
+# ========== CÁC HÀM XỬ LÝ CÂU TỰ LUẬN (GIỮ NGUYÊN) ==========
 def calculate_weighted_score(text, column_name):
     if not text or not isinstance(text, str):
         return 0.0
@@ -429,7 +426,6 @@ def derive_ma_hoc_ky() -> str:
     return f"HK{hoc_ky}_{year_part}"
 
 def determine_ma_chuyen_nganh(lop: str) -> tuple:
-    """Trả về (MaChuyenNganh, TenKhoa_MacDinh, MaKhoa_MacDinh)"""
     lop_upper = lop.upper()
     lop_normalized = normalize_lop(lop)
     
@@ -451,24 +447,11 @@ def download_blob_to_string(blob_service: BlobServiceClient, blob_path: str) -> 
     except:
         return ""
 
-def upload_to_blob(blob_service: BlobServiceClient, df: pd.DataFrame, output_filename: str):
-    try:
-        output = df.to_csv(index=False, encoding='utf-8-sig')
-        blob_path = f"{PROCESSED_PATH}/{output_filename}"
-        client = blob_service.get_container_client(CONTAINER_NAME).get_blob_client(blob_path)
-        client.upload_blob(output, overwrite=True)
-        print(f"  ✅ Đã upload: {CONTAINER_NAME}/{blob_path}")
-        return True
-    except Exception as e:
-        print(f"  -> Lỗi upload: {e}")
-        return False
-
 def load_hp_master(blob_service: BlobServiceClient) -> pd.DataFrame:
     path = f"{TAILIEU_PATH}/HP-Khoa.csv"
     print(f"  -> Đọc HP-Khoa: {CONTAINER_NAME}/{path}")
     content = download_blob_to_string(blob_service, path)
     if not content:
-        print("  ⚠️ Không tìm thấy file HP-Khoa.csv")
         return pd.DataFrame()
     df = pd.read_csv(io.StringIO(content))
     if len(df.columns) >= 4:
@@ -483,7 +466,6 @@ def load_cn_master(blob_service: BlobServiceClient) -> pd.DataFrame:
     print(f"  -> Đọc TenChuyenNganh-Khoa: {CONTAINER_NAME}/{path}")
     content = download_blob_to_string(blob_service, path)
     if not content:
-        print("  ⚠️ Không tìm thấy file TenChuyenNganh-Khoa.csv")
         return pd.DataFrame()
     df = pd.read_csv(io.StringIO(content))
     if len(df.columns) >= 4:
@@ -513,14 +495,12 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
     print("  -> Transform...")
     start = time.time()
     
-    # Xác định Chuyên ngành từ Lop
     cn_info = df['Lop'].apply(determine_ma_chuyen_nganh)
     df['MaChuyenNganh_TuLop'] = cn_info.apply(lambda x: x[0])
     df['TenKhoa_MacDinh'] = cn_info.apply(lambda x: x[1])
     df['MaKhoa_MacDinh'] = cn_info.apply(lambda x: x[2])
     df['MaLop'] = df['Lop'].apply(normalize_lop)
     
-    # Merge với HP-Khoa
     if not hp_master.empty:
         hp_unique = hp_master.drop_duplicates(subset=['MaHP'])
         hp_dict = hp_unique.set_index('MaHP')[['TenHP', 'MaKhoa', 'TenKhoa']].to_dict('index')
@@ -542,7 +522,6 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
     df['MaChuyenNganh'] = df['MaChuyenNganh_TuLop'].fillna(df['MaKhoa'])
     df.drop(['MaChuyenNganh_TuLop'], axis=1, inplace=True, errors='ignore')
     
-    # TenChuyenNganh từ cn_master
     if not cn_master.empty:
         cn_unique = cn_master.drop_duplicates(subset=['MaChuyenNganh'])
         cn_map = cn_unique.set_index('MaChuyenNganh')['TenChuyenNganh'].to_dict()
@@ -563,7 +542,7 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
 def main():
     total_start = time.time()
     print("=" * 60)
-    print("🚀 SURVEY ETL - TIỀN XỬ LÝ & XUẤT CSV")
+    print("🚀 SURVEY ETL - TIỀN XỬ LÝ & XUẤT PARQUET")
     print("=" * 60)
     print(f"Semester: {SEMESTER}")
     print(f"File: {SURVEY_FILE}")
@@ -575,24 +554,18 @@ def main():
         print(f"❌ Lỗi kết nối Azure: {e}")
         sys.exit(1)
     
-    # ========== EXTRACT ==========
     print("\n📥 1. EXTRACT")
     start = time.time()
-    
     hp_master = load_hp_master(blob_service)
     cn_master = load_cn_master(blob_service)
-    
     survey_path = f"{RAWDATA_PATH}/{SURVEY_FILE}"
-    print(f"  -> Đọc survey: {CONTAINER_NAME}/{survey_path}")
     survey_content = download_blob_to_string(blob_service, survey_path)
-    
     print(f"  ✅ Extract: {time.time()-start:.2f}s")
     
     if not survey_content:
         print("❌ Không thể đọc file survey!")
         sys.exit(1)
     
-    # ========== PARSE ==========
     print("\n📝 2. PARSE")
     start = time.time()
     df = parse_survey_parallel(survey_content)
@@ -602,24 +575,34 @@ def main():
         print("❌ Không có dữ liệu!")
         sys.exit(1)
     
-    # ========== TRANSFORM ==========
     print("\n🔄 3. TRANSFORM")
     start = time.time()
     df = transform_data(df, hp_master, cn_master)
     print(f"  ✅ Transform: {time.time()-start:.2f}s")
     
-    # ========== SAVE & UPLOAD ==========
-    print("\n💾 4. SAVE & UPLOAD")
+    # ========== SAVE & UPLOAD PARQUET ==========
+    print("\n💾 4. SAVE & UPLOAD (PARQUET)")
     start = time.time()
     
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    output_filename = f"{FILE_NAME}_processed_{timestamp}.csv"
+    output_filename = f"{FILE_NAME}_processed_{timestamp}.parquet"
     
-    upload_to_blob(blob_service, df, output_filename)
-    
+    # Lưu Parquet local - SIÊU NHANH
     local_path = f"/tmp/{output_filename}"
-    df.to_csv(local_path, index=False, encoding='utf-8-sig')
-    print(f"  ✅ Đã lưu local: {local_path}")
+    save_start = time.time()
+    df.to_parquet(local_path, index=False, compression='snappy')
+    print(f"  ✅ Đã lưu local: {local_path} ({time.time()-save_start:.2f}s)")
+    
+    # Upload lên Azure Blob
+    upload_start = time.time()
+    try:
+        with open(local_path, 'rb') as f:
+            blob_path = f"{PROCESSED_PATH}/{output_filename}"
+            client = blob_service.get_container_client(CONTAINER_NAME).get_blob_client(blob_path)
+            client.upload_blob(f.read(), overwrite=True)
+        print(f"  ✅ Đã upload: {CONTAINER_NAME}/{blob_path} ({time.time()-upload_start:.2f}s)")
+    except Exception as e:
+        print(f"  -> Lỗi upload: {e}")
     
     print(f"  ✅ Save & Upload: {time.time()-start:.2f}s")
     

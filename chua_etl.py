@@ -666,15 +666,14 @@ def load_fact(cursor, df: pd.DataFrame) -> int:
     print(f"  -> Chuẩn bị dữ liệu FACT...")
     start = time.time()
     
-    # TỐI ƯU: Lấy unique submissions một lần
+    # Lấy unique submissions
     unique_subs = df[['SubmissionID', 'MaSV', 'MaLopHP', 'Cau13', 'Cau14', 'Cau15', 'Cau16']].drop_duplicates('SubmissionID')
     print(f"  -> Số submission unique: {len(unique_subs):,}")
     
-    # TỐI ƯU: Dùng groupby thay vì vòng lặp iterrows
+    # TỐI ƯU: Gom nhóm câu trắc nghiệm bằng groupby (nhanh hơn iterrows)
+    answer_dict = {}
     mcq_data = df[df['CauHoi'].notna() & df['GiaTri'].notna()].copy()
     
-    # Tạo dictionary bằng groupby (nhanh hơn iterrows rất nhiều)
-    answer_dict = {}
     if not mcq_data.empty:
         # Chuyển đổi kiểu dữ liệu
         mcq_data['CauHoi_int'] = mcq_data['CauHoi'].astype(float).astype(int)
@@ -682,14 +681,20 @@ def load_fact(cursor, df: pd.DataFrame) -> int:
         # Lọc câu 1-12
         mcq_data = mcq_data[mcq_data['CauHoi_int'].between(1, 12)]
         
-        # Dùng groupby để gom nhóm (nhanh hơn iterrows)
+        # Dùng groupby để gom nhóm
         for sub_id, group in mcq_data.groupby('SubmissionID'):
-            answer_dict[sub_id] = dict(zip(group['CauHoi_int'], group['GiaTri_int']))
+            answer_dict[sub_id] = {}
+            for _, g_row in group.iterrows():
+                answer_dict[sub_id][g_row['CauHoi_int']] = g_row['GiaTri_int']
     
-    # TỐI ƯU: Tạo dữ liệu insert bằng list comprehension
-    fact_data = [
-        (
-            str(row['SubmissionID'])[:100],
+    # Tạo dữ liệu insert (giữ nguyên logic cũ)
+    fact_data = []
+    for _, row in unique_subs.iterrows():
+        sub_id = row['SubmissionID']
+        answers = answer_dict.get(sub_id, {})
+        
+        fact_data.append((
+            str(sub_id)[:100],
             str(row['MaSV'])[:20] if row['MaSV'] else '',
             str(row['MaLopHP'])[:50] if row['MaLopHP'] else '',
             answers.get(1), answers.get(2), answers.get(3), answers.get(4),
@@ -699,10 +704,7 @@ def load_fact(cursor, df: pd.DataFrame) -> int:
             str(row.get('Cau14', ''))[:4000] if pd.notna(row.get('Cau14')) else None,
             str(row.get('Cau15', ''))[:4000] if pd.notna(row.get('Cau15')) else None,
             str(row.get('Cau16', ''))[:4000] if pd.notna(row.get('Cau16')) else None,
-        )
-        for row in unique_subs.itertuples()
-        for answers in [answer_dict.get(row.SubmissionID, {})]
-    ]
+        ))
     
     print(f"  -> Đã tạo {len(fact_data):,} dòng FACT")
     
@@ -718,7 +720,7 @@ def load_fact(cursor, df: pd.DataFrame) -> int:
     cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT DISABLE TRIGGER ALL")
     cursor.connection.commit()
     
-    # TỐI ƯU: Tăng batch size lên 20000 để giảm số lần commit
+    # Insert batch
     batch_size = 20000
     total = 0
     for i in range(0, len(fact_data), batch_size):

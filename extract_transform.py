@@ -426,19 +426,30 @@ def derive_ma_hoc_ky() -> str:
     return f"HK{hoc_ky}_{year_part}"
 
 def determine_ma_chuyen_nganh(lop: str) -> tuple:
+    """
+    Xác định MaChuyenNganh, TenChuyenNganh, TenKhoa_CN, MaKhoa_CN từ Lop
+    
+    Returns:
+        (MaChuyenNganh, TenChuyenNganh, TenKhoa_CN, MaKhoa_CN)
+        Trả về None cho các giá trị không xác định được
+    """
     lop_upper = lop.upper()
     lop_normalized = normalize_lop(lop)
     
+    # TH1: Lop khớp pattern ^\d{2}K\d{2}$
     if _lop_pattern.match(lop_normalized):
-        return f"K{lop_normalized[3:5]}", "Trường ĐHKT", "TĐHKT"
+        ma_cn = f"K{lop_normalized[3:5]}"
+        return ma_cn, f"Chuyên ngành {ma_cn}", None, None  # Sẽ tra từ TenChuyenNganh-Khoa.csv sau
     
-    if lop_upper.startswith('CTS-') or lop_upper.startswith('CTS'):
-        return "CTS", "Trường ĐHKT", "TĐHKT"
-    
+    # TH2: Lop chứa 'QT'
     if 'QT' in lop_upper:
-        return "QT", "Phòng Đào Tạo", "PĐT"
+        return "QT", "Chuyên ngành QT", "Phòng Đào Tạo", "PĐT"
     
-    return "TĐHKT", "Trường ĐHKT", "TĐHKT"
+    # TH3: Lop chứa 'CTS' hoặc bắt đầu bằng CTS
+    if 'CTS' in lop_upper or lop_upper.startswith('CTS-') or lop_upper.startswith('CTS'):
+        return "CTS", "Chuyên ngành CTS", "Trường ĐHKT", "TĐHKT"
+    
+    return None, None, None, None
 
 def download_blob_to_string(blob_service: BlobServiceClient, blob_path: str) -> str:
     try:
@@ -495,40 +506,70 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
     print("  -> Transform...")
     start = time.time()
     
+    # ========== 1. XÁC ĐỊNH CHUYÊN NGÀNH TỪ LOP ==========
     cn_info = df['Lop'].apply(determine_ma_chuyen_nganh)
-    df['MaChuyenNganh_TuLop'] = cn_info.apply(lambda x: x[0])
-    df['TenKhoa_MacDinh'] = cn_info.apply(lambda x: x[1])
-    df['MaKhoa_MacDinh'] = cn_info.apply(lambda x: x[2])
-    df['MaLop'] = df['Lop'].apply(normalize_lop)
+    df['MaChuyenNganh_Lop'] = cn_info.apply(lambda x: x[0] if x[0] else None)
+    df['TenChuyenNganh_Lop'] = cn_info.apply(lambda x: x[1] if x[1] else None)
+    df['TenKhoa_CN_Lop'] = cn_info.apply(lambda x: x[2] if x[2] else None)
+    df['MaKhoa_CN_Lop'] = cn_info.apply(lambda x: x[3] if x[3] else None)
     
-    if not hp_master.empty:
-        hp_unique = hp_master.drop_duplicates(subset=['MaHP'])
-        hp_dict = hp_unique.set_index('MaHP')[['TenHP', 'MaKhoa', 'TenKhoa']].to_dict('index')
-        df['TenHP_HP'] = df['MaHP'].map(lambda x: hp_dict.get(x, {}).get('TenHP'))
-        df['MaKhoa_HP'] = df['MaHP'].map(lambda x: hp_dict.get(x, {}).get('MaKhoa'))
-        df['TenKhoa_HP'] = df['MaHP'].map(lambda x: hp_dict.get(x, {}).get('TenKhoa'))
-        
-        df['TenHP'] = df['TenHP_HP'].fillna(df['TenHP'])
-        df['TenKhoa'] = df['TenKhoa_HP'].fillna(df['TenKhoa_MacDinh']).fillna('Trường ĐHKT')
-        df['MaKhoa'] = df['MaKhoa_HP'].fillna(df['MaKhoa_MacDinh']).fillna('TĐHKT')
-        
-        df.drop(['TenHP_HP', 'MaKhoa_HP', 'TenKhoa_HP', 'TenKhoa_MacDinh', 'MaKhoa_MacDinh'], 
-                axis=1, inplace=True, errors='ignore')
-    else:
-        df['MaKhoa'] = df['MaKhoa_MacDinh'].fillna('TĐHKT')
-        df['TenKhoa'] = df['TenKhoa_MacDinh'].fillna('Trường ĐHKT')
-        df.drop(['TenKhoa_MacDinh', 'MaKhoa_MacDinh'], axis=1, inplace=True, errors='ignore')
-    
-    df['MaChuyenNganh'] = df['MaChuyenNganh_TuLop'].fillna(df['MaKhoa'])
-    df.drop(['MaChuyenNganh_TuLop'], axis=1, inplace=True, errors='ignore')
-    
+    # ========== 2. LÀM GIÀU TỪ TenChuyenNganh-Khoa.csv ==========
     if not cn_master.empty:
         cn_unique = cn_master.drop_duplicates(subset=['MaChuyenNganh'])
-        cn_map = cn_unique.set_index('MaChuyenNganh')['TenChuyenNganh'].to_dict()
-        df['TenChuyenNganh'] = df['MaChuyenNganh'].map(cn_map)
-    df['TenChuyenNganh'] = df['TenChuyenNganh'].fillna('Chuyên ngành ' + df['MaChuyenNganh'])
+        cn_dict = cn_unique.set_index('MaChuyenNganh')[['TenChuyenNganh', 'TenKhoa', 'MaKhoa']].to_dict('index')
+        
+        # Chỉ map cho những dòng có MaChuyenNganh_Lop không None
+        mask = df['MaChuyenNganh_Lop'].notna()
+        df.loc[mask, 'TenChuyenNganh_File'] = df.loc[mask, 'MaChuyenNganh_Lop'].map(
+            lambda x: cn_dict.get(x, {}).get('TenChuyenNganh') if x else None
+        )
+        df.loc[mask, 'TenKhoa_CN_File'] = df.loc[mask, 'MaChuyenNganh_Lop'].map(
+            lambda x: cn_dict.get(x, {}).get('TenKhoa') if x else None
+        )
+        df.loc[mask, 'MaKhoa_CN_File'] = df.loc[mask, 'MaChuyenNganh_Lop'].map(
+            lambda x: cn_dict.get(x, {}).get('MaKhoa') if x else None
+        )
+        
+        # Ưu tiên dùng từ file, nếu không có thì dùng giá trị từ Lop
+        df['MaChuyenNganh'] = df['MaChuyenNganh_Lop']  # Giữ nguyên MaChuyenNganh từ Lop
+        df['TenChuyenNganh'] = df['TenChuyenNganh_File'].fillna(df['TenChuyenNganh_Lop'])
+        df['TenKhoa_CN'] = df['TenKhoa_CN_File'].fillna(df['TenKhoa_CN_Lop'])
+        df['MaKhoa_CN'] = df['MaKhoa_CN_File'].fillna(df['MaKhoa_CN_Lop'])
+        
+        df.drop(['TenChuyenNganh_File', 'TenKhoa_CN_File', 'MaKhoa_CN_File'], axis=1, inplace=True, errors='ignore')
+    else:
+        # Không có file master, dùng trực tiếp từ Lop
+        df['MaChuyenNganh'] = df['MaChuyenNganh_Lop']
+        df['TenChuyenNganh'] = df['TenChuyenNganh_Lop']
+        df['TenKhoa_CN'] = df['TenKhoa_CN_Lop']
+        df['MaKhoa_CN'] = df['MaKhoa_CN_Lop']
     
+    # Xóa các cột tạm
+    df.drop(['MaChuyenNganh_Lop', 'TenChuyenNganh_Lop', 'TenKhoa_CN_Lop', 'MaKhoa_CN_Lop'], 
+            axis=1, inplace=True, errors='ignore')
+    
+    # ========== 3. XÁC ĐỊNH KHOA CỦA HỌC PHẦN TỪ HP-Khoa.csv ==========
+    if not hp_master.empty:
+        hp_unique = hp_master.drop_duplicates(subset=['MaHP'])
+        hp_dict = hp_unique.set_index('MaHP')[['TenHP', 'TenKhoa', 'MaKhoa']].to_dict('index')
+        
+        df['TenHP_File'] = df['MaHP'].map(lambda x: hp_dict.get(x, {}).get('TenHP'))
+        df['TenKhoa_HP'] = df['MaHP'].map(lambda x: hp_dict.get(x, {}).get('TenKhoa'))
+        df['MaKhoa_HP'] = df['MaHP'].map(lambda x: hp_dict.get(x, {}).get('MaKhoa'))
+        
+        df['TenHP'] = df['TenHP_File'].fillna(df['TenHP'])
+        # Nếu không có trong HP-Khoa, để NULL (không gán mặc định)
+        
+        df.drop(['TenHP_File'], axis=1, inplace=True, errors='ignore')
+    else:
+        df['TenKhoa_HP'] = None
+        df['MaKhoa_HP'] = None
+    
+    # ========== 4. CHUẨN HÓA LOP ==========
+    df['MaLop'] = df['Lop'].apply(normalize_lop)
     df['MaLopHP'] = df['LopHP']
+    
+    # ========== 5. TẠO SubmissionID ==========
     df['SubmissionID'] = (
         df['MaSV'].fillna('UNKNOWN').astype(str) + "_" + 
         df['LopHP'].fillna('UNKNOWN').astype(str) + "_" + 

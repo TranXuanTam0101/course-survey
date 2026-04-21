@@ -657,7 +657,7 @@ def load_dimension(cursor, table: str, df: pd.DataFrame, columns: list, id_col: 
     return len(new_data)
     
 def load_fact(cursor, df: pd.DataFrame) -> int:
-    """Load FACT - 1 dòng/submission - PHIÊN BẢN TỐI ƯU"""
+    """Load FACT - 1 dòng/submission, dùng executemany"""
     if df.empty:
         print("  ❌ DataFrame rỗng!")
         return 0
@@ -669,18 +669,23 @@ def load_fact(cursor, df: pd.DataFrame) -> int:
     unique_subs = df[['SubmissionID', 'MaSV', 'MaLopHP', 'Cau13', 'Cau14', 'Cau15', 'Cau16']].drop_duplicates('SubmissionID')
     print(f"  -> Số submission unique: {len(unique_subs):,}")
     
-
+    # Gom nhóm câu trắc nghiệm
     answer_dict = {}
     mcq_data = df[df['CauHoi'].notna() & df['GiaTri'].notna()].copy()
     
-    if not mcq_data.empty:
-        mcq_data['CauHoi'] = mcq_data['CauHoi'].astype(float).astype(int)
-        mcq_data['GiaTri'] = mcq_data['GiaTri'].astype(float).astype(int)
-        mcq_data = mcq_data[mcq_data['CauHoi'].between(1, 12)]
-        
-        for sub_id, group in mcq_data.groupby('SubmissionID'):
-            answer_dict[sub_id] = dict(zip(group['CauHoi'], group['GiaTri']))
+    for _, row in mcq_data.iterrows():
+        try:
+            sub_id = row['SubmissionID']
+            cau_hoi = int(float(row['CauHoi']))
+            gia_tri = int(float(row['GiaTri']))
+            if 1 <= cau_hoi <= 12:
+                if sub_id not in answer_dict:
+                    answer_dict[sub_id] = {}
+                answer_dict[sub_id][cau_hoi] = gia_tri
+        except:
+            continue
     
+    # Tạo dữ liệu insert
     fact_data = []
     for _, row in unique_subs.iterrows():
         sub_id = row['SubmissionID']
@@ -713,7 +718,7 @@ def load_fact(cursor, df: pd.DataFrame) -> int:
     cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT DISABLE TRIGGER ALL")
     cursor.connection.commit()
     
-    batch_size = len(fact_data)  
+    batch_size = 30000
     total = 0
     for i in range(0, len(fact_data), batch_size):
         batch = fact_data[i:i+batch_size]
@@ -724,10 +729,9 @@ def load_fact(cursor, df: pd.DataFrame) -> int:
              C13, C14, C15, C16)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, batch)
+        cursor.connection.commit()
         total += len(batch)
         print(f"     -> Đã insert {total:,}/{len(fact_data):,} dòng")
-    
-    cursor.connection.commit()  # Chỉ commit 1 lần
     
     # Bật lại ràng buộc
     cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT ENABLE TRIGGER ALL")

@@ -1030,6 +1030,7 @@ def load_to_database(df: pd.DataFrame, df_fact: pd.DataFrame, hp_master: pd.Data
         # 7. DIM_LOP_HOC_PHAN
         count = load_dimension(cursor, 'DIM_LOP_HOC_PHAN', dims.get('DIM_LOP_HOC_PHAN', pd.DataFrame()),
                                ['MaLopHP', 'LopHP', 'MaHP', 'MaGV', 'MaHocKy'], 'MaLopHP')
+        conn.commit()
         print(f"  ✅ DIM_LOP_HOC_PHAN: {count} new")
         
         # 8. DIM_LOP_SINH_VIEN

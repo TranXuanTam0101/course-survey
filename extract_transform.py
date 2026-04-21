@@ -507,6 +507,7 @@ def parse_survey_parallel(content: str) -> pd.DataFrame:
 def transform_data_fast(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.DataFrame) -> dict:
     print("  -> Transform...")
     start = time.time()
+    dims = {} 
     ma_hoc_ky = derive_ma_hoc_ky()
     nam_hoc = SEMESTER
     hoc_ky = int(ma_hoc_ky[2]) if ma_hoc_ky[2].isdigit() else 2

@@ -662,17 +662,15 @@ def load_dimension(cursor, table: str, df: pd.DataFrame, columns: list, id_col: 
     
     return len(new_data)
 
-def load_fact(cursor, df: pd.DataFrame) -> int:
-    """Load FACT - ULTRA FAST với temp table"""
+def load_fact_ultra_fast(conn, cursor, df: pd.DataFrame) -> int:
+    """Load FACT siêu nhanh dùng temp table"""
     if df.empty:
         return 0
     
-    print(f"  -> Insert FACT (ULTRA FAST)...")
+    print(f"  -> Insert FACT (ULTRA FAST): {len(df):,} dòng...")
     start = time.time()
     
-    conn = cursor.connection
-    
-    # 1. Tạo temp table
+    # ========== 1. TẠO TEMP TABLE (đã tương thích) ==========
     cursor.execute("""
         CREATE TABLE #TEMP_FACT (
             SubmissionID NVARCHAR(150),
@@ -684,53 +682,61 @@ def load_fact(cursor, df: pd.DataFrame) -> int:
         )
     """)
     conn.commit()
-    print(f"  -> Temp table created")
     
-    # 2. Câu trắc nghiệm (1-12)
+    # ========== 2. LẤY DỮ LIỆU CÂU 1-12 ==========
     mask_tn = df['CauHoi'].notna() & df['GiaTri'].notna()
     if mask_tn.any():
         tn_df = df.loc[mask_tn, ['SubmissionID', 'CauHoi', 'MaSV', 'MaLopHP', 'GiaTri']].copy()
         tn_df['MaCauHoi'] = tn_df['CauHoi'].astype(int)
         tn_df = tn_df[(tn_df['MaCauHoi'] >= 1) & (tn_df['MaCauHoi'] <= 12)]
-        tn_df['TraLoiSo'] = tn_df['GiaTri'].astype(int)
+        tn_df['TraLoiSo'] = tn_df['GiaTri'].astype(float)
         tn_df['TraLoiText'] = None
-        tn_df = tn_df[['SubmissionID', 'MaCauHoi', 'MaSV', 'MaLopHP', 'TraLoiSo', 'TraLoiText']]
         
-        # Bulk insert vào temp table
-        rows = [tuple(row) for row in tn_df.values]
+        rows = [(
+            str(row['SubmissionID'])[:150],
+            int(row['MaCauHoi']),
+            str(row['MaSV'])[:20],
+            str(row['MaLopHP'])[:50],
+            float(row['TraLoiSo']),
+            None
+        ) for _, row in tn_df.iterrows()]
+        
         cursor.executemany("INSERT INTO #TEMP_FACT VALUES (?,?,?,?,?,?)", rows)
         conn.commit()
-        print(f"  -> Trắc nghiệm: {len(tn_df):,} dòng")
+        print(f"  -> Trắc nghiệm: {len(rows):,} dòng")
 
-    # 3. Câu tự luận (13-16)
+    # ========== 3. LẤY DỮ LIỆU CÂU 13-16 ==========
     df_unique = df.groupby('SubmissionID', as_index=False).first()
     tl_rows = []
     for _, row in df_unique.iterrows():
+        sub_id = str(row['SubmissionID'])[:150]
+        ma_sv = str(row['MaSV'])[:20]
+        ma_lop = str(row['MaLopHP'])[:50]
+        
         for cau, col in [(13, 'Cau13'), (14, 'Cau14'), (15, 'Cau15'), (16, 'Cau16')]:
             val = row.get(col)
             if pd.notna(val) and str(val).strip():
-                tl_rows.append((
-                    row['SubmissionID'], cau, row['MaSV'], row['MaLopHP'], None, str(val).strip()
-                ))
+                tl_rows.append((sub_id, cau, ma_sv, ma_lop, None, str(val).strip()))
     
     if tl_rows:
         cursor.executemany("INSERT INTO #TEMP_FACT VALUES (?,?,?,?,?,?)", tl_rows)
         conn.commit()
         print(f"  -> Tự luận: {len(tl_rows):,} dòng")
     
-    # 4. MERGE vào FACT (chỉ insert FK hợp lệ)
+    # ========== 4. MERGE VÀO FACT CHÍNH ==========
     cursor.execute("""
         INSERT INTO FACT_TRA_LOI_KHAO_SAT 
         (SubmissionID, MaCauHoi, MaSV, MaLopHP, TraLoiSo, TraLoiText)
-        SELECT t.*
+        SELECT t.SubmissionID, t.MaCauHoi, t.MaSV, t.MaLopHP, t.TraLoiSo, t.TraLoiText
         FROM #TEMP_FACT t
         WHERE EXISTS (SELECT 1 FROM DIM_SINH_VIEN s WHERE s.MaSV = t.MaSV)
           AND EXISTS (SELECT 1 FROM DIM_LOP_HOC_PHAN l WHERE l.MaLopHP = t.MaLopHP)
     """)
+    
     inserted = cursor.rowcount
     conn.commit()
     
-    # 5. Dọn dẹp
+    # ========== 5. DỌN DẸP ==========
     cursor.execute("DROP TABLE #TEMP_FACT")
     conn.commit()
     

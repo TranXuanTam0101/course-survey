@@ -25,8 +25,6 @@ FILE_NAME = os.path.splitext(os.path.basename(SURVEY_FILE))[0]
 NUM_WORKERS = max(1, mp.cpu_count() - 1)
 CHUNK_SIZE = 10000
 
-print(f"🚀 Multiprocessing with {NUM_WORKERS} workers, chunk size: {CHUNK_SIZE}")
-
 # ODBC Connection
 CONN_STR = (
     f"DRIVER={{ODBC Driver 18 for SQL Server}};"

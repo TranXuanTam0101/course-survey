@@ -45,10 +45,9 @@ RAWDATA_PATH = "rawdata"
 TAILIEU_PATH = "tailieu"
 PROCESSED_PATH = "processed-data"
 
-# Cache cho existing IDs khi load
 _EXISTING_CACHE = {}
 
-# ========== TRỌNG SỐ (GIỮ NGUYÊN) ==========
+# ========== TRỌNG SỐ ==========
 WEIGHTS_CAU13 = {
     'chuẩn đầu ra': 5.0, 'mục tiêu môn học': 4.5, 'đáp ứng chương trình': 4.0,
     'nội dung': 3.0, 'học phần': 3.0, 'chương trình': 2.5, 'môn học': 2.5,
@@ -95,7 +94,7 @@ _date_pattern = re.compile(r'^\d{2}/\d{2}/\d{4}$')
 _ma_gv_pattern = re.compile(r'^(\d{7}|TG\d{5}|gvDacThu_TKTH)$')
 _lop_pattern = re.compile(r'^\d{2}K\d{2}$')
 
-# ========== MaKhoa ĐẶC BIỆT ==========
+# ========== MaKhoa ==========
 SPECIAL_MA_KHOA = {
     'Bộ môn NNCN': 'BNNNCN',
     'Trường ĐHNN': 'TĐHNN',
@@ -120,7 +119,7 @@ def create_ma_khoa(ten_khoa: str) -> str:
                 initials.append(first_char)
     return ''.join(initials) if initials else "UNKNOWN"
 
-# ========== CÁC HÀM XỬ LÝ CÂU TỰ LUẬN (GIỮ NGUYÊN) ==========
+# ========== CÁC HÀM XỬ LÝ CÂU TỰ LUẬN ==========
 def calculate_weighted_score(text, column_name):
     if not text or not isinstance(text, str):
         return 0.0

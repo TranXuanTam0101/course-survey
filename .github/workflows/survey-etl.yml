@@ -32,7 +32,7 @@ jobs:
       - name: Install dependencies
         run: |
             sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 mssql-tools18
-            pip install -r requirements.txt
+            pip install pandas numpy pyodbc azure-storage-blob
     
       - name: Run ETL Pipeline
         env:

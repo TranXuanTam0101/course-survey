@@ -1,4 +1,4 @@
-
+from sqlalchemy import create_engine, text
 import os
 import sys
 import re
@@ -659,107 +659,84 @@ def load_dimension(cursor, table: str, df: pd.DataFrame, columns: list, id_col: 
     return len(new_data)
     
 def load_fact(cursor, df: pd.DataFrame) -> int:
-    """Load FACT - Phiên bản vectorized siêu nhanh"""
+    """Load FACT bằng pandas to_sql - siêu nhanh"""
     if df.empty:
         print("  ❌ DataFrame rỗng!")
         return 0
     
-    print(f"  -> Bắt đầu xử lý FACT...")
+    print(f"  -> Chuẩn bị dữ liệu FACT...")
     start = time.time()
     
-    # Disable constraints
-    cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT NOCHECK CONSTRAINT ALL")
-    cursor.connection.commit()
+    # ========== 1. TẠO DATAFRAME FACT ==========
+    # Câu trắc nghiệm (1-12)
+    mcq = df[df['CauHoi'].notna() & df['GiaTri'].notna()].copy()
+    if not mcq.empty:
+        mcq['MaCauHoi'] = mcq['CauHoi'].astype(float).astype(int)
+        mcq = mcq[(mcq['MaCauHoi'] >= 1) & (mcq['MaCauHoi'] <= 12)]
+        mcq['TraLoiSo'] = mcq['GiaTri'].astype(float).astype(int)
+        mcq['TraLoiText'] = None
+        mcq_fact = mcq[['SubmissionID', 'MaCauHoi', 'MaSV', 'MaLopHP', 'TraLoiSo', 'TraLoiText']]
+    else:
+        mcq_fact = pd.DataFrame()
     
-    all_data = []
+    # Câu tự luận (13-16)
+    unique_subs = df.drop_duplicates('SubmissionID')
+    essay_parts = []
+    for cau, col in [(13, 'Cau13'), (14, 'Cau14'), (15, 'Cau15'), (16, 'Cau16')]:
+        if col in unique_subs.columns:
+            temp = unique_subs[unique_subs[col].notna() & (unique_subs[col].astype(str).str.strip() != '')].copy()
+            if not temp.empty:
+                temp['MaCauHoi'] = cau
+                temp['TraLoiSo'] = None
+                temp['TraLoiText'] = temp[col].astype(str).str.strip()
+                essay_parts.append(temp[['SubmissionID', 'MaCauHoi', 'MaSV', 'MaLopHP', 'TraLoiSo', 'TraLoiText']])
     
-    # ========== 1. XỬ LÝ CÂU TỰ LUẬN (13-16) ==========
-    print("  -> Xử lý câu tự luận...")
+    essay_fact = pd.concat(essay_parts, ignore_index=True) if essay_parts else pd.DataFrame()
     
-    # Lấy unique submissions
-    unique_subs = df.drop_duplicates('SubmissionID').copy()
-    print(f"     Số submission unique: {len(unique_subs):,}")
+    # Gộp lại
+    df_fact = pd.concat([mcq_fact, essay_fact], ignore_index=True)
     
-    # Xử lý 4 câu tự luận bằng vectorization
-    for cau in range(13, 17):
-        col_name = f'Cau{cau}'
-        if col_name in unique_subs.columns:
-            # Lọc các dòng có dữ liệu
-            mask = unique_subs[col_name].notna() & (unique_subs[col_name].astype(str).str.strip() != '')
-            filtered = unique_subs[mask]
-            
-            if not filtered.empty:
-                # Tạo danh sách tuples
-                for _, row in filtered.iterrows():
-                    all_data.append((
-                        str(row['SubmissionID'])[:100],
-                        cau,
-                        str(row['MaSV'])[:20],
-                        str(row['MaLopHP'])[:50],
-                        None,
-                        str(row[col_name]).strip()[:4000]
-                    ))
-        
-        print(f"       - Câu {cau}: {len([x for x in all_data if x[1] == cau]):,} dòng")
+    print(f"  -> Đã tạo {len(df_fact):,} dòng FACT (MCQ: {len(mcq_fact):,}, Essay: {len(essay_fact):,})")
     
-    essay_count = len([x for x in all_data if x[1] >= 13])
-    print(f"     Tổng câu tự luận: {essay_count:,} dòng")
-    
-    # ========== 2. XỬ LÝ CÂU TRẮC NGHIỆM (1-12) ==========
-    print("  -> Xử lý câu trắc nghiệm...")
-    
-    # Lọc các dòng có câu hỏi 1-12
-    mcq_df = df[df['CauHoi'].notna() & df['GiaTri'].notna()].copy()
-    
-    # Chuyển đổi kiểu dữ liệu
-    mcq_df['MaCauHoi'] = mcq_df['CauHoi'].astype(float).astype(int)
-    mcq_df = mcq_df[(mcq_df['MaCauHoi'] >= 1) & (mcq_df['MaCauHoi'] <= 12)]
-    
-    if not mcq_df.empty:
-        # Tạo danh sách tuples
-        for _, row in mcq_df.iterrows():
-            try:
-                all_data.append((
-                    str(row['SubmissionID'])[:100],
-                    int(row['MaCauHoi']),
-                    str(row['MaSV'])[:20],
-                    str(row['MaLopHP'])[:50],
-                    int(float(row['GiaTri'])),
-                    None
-                ))
-            except:
-                pass
-    
-    mcq_count = len([x for x in all_data if x[1] <= 12])
-    print(f"     Câu trắc nghiệm: {mcq_count:,} dòng")
-    
-    print(f"  -> Tổng số dòng FACT: {len(all_data):,}")
-    
-    if not all_data:
+    if df_fact.empty:
         print("  ❌ Không có dữ liệu!")
         return 0
     
-    # ========== 3. INSERT BATCH ==========
-    print("  -> Insert vào database...")
-    total = 0
-    for i in range(0, len(all_data), BATCH_SIZE):
-        batch = all_data[i:i+BATCH_SIZE]
-        cursor.executemany("""
-            INSERT INTO FACT_TRA_LOI_KHAO_SAT 
-            (SubmissionID, MaCauHoi, MaSV, MaLopHP, TraLoiSo, TraLoiText)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, batch)
-        cursor.connection.commit()
-        total += len(batch)
-        if (i // BATCH_SIZE + 1) % 5 == 0:
-            print(f"    -> Inserted {total:,}/{len(all_data):,} rows")
+    # ========== 2. INSERT BẰNG to_sql ==========
+    print("  -> Insert vào database bằng to_sql...")
     
-    # Re-enable constraints
-    cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT CHECK CONSTRAINT ALL")
-    cursor.connection.commit()
+    # Tạo connection string cho SQLAlchemy
+    conn_str = (
+        f"mssql+pyodbc://sqladmin:{DB_PASSWORD}@course-survey.database.windows.net:1433/"
+        f"course-survey-db?driver=ODBC+Driver+18+for+SQL+Server&encrypt=yes&trustservercertificate=no"
+    )
     
-    print(f"  ✅ FACT done: {total:,} dòng ({time.time()-start:.2f}s)")
-    return total
+    engine = create_engine(conn_str)
+    
+    try:
+        # Disable constraints
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE FACT_TRA_LOI_KHAO_SAT NOCHECK CONSTRAINT ALL"))
+            conn.commit()
+        
+        # Insert bằng to_sql
+        df_fact.to_sql('FACT_TRA_LOI_KHAO_SAT', engine, 
+                       if_exists='append', 
+                       index=False,
+                       method='multi',
+                       chunksize=50000)
+        
+        # Re-enable constraints
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE FACT_TRA_LOI_KHAO_SAT CHECK CONSTRAINT ALL"))
+            conn.commit()
+        
+        print(f"  ✅ FACT done: {len(df_fact):,} dòng ({time.time()-start:.2f}s)")
+        return len(df_fact)
+        
+    except Exception as e:
+        print(f"  ❌ Lỗi: {e}")
+        raise
     
 def load_fact_direct(cursor, df_fact: pd.DataFrame) -> int:
     """Load FACT trực tiếp từ DataFrame đã được format sẵn"""

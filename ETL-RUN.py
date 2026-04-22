@@ -428,20 +428,20 @@ def normalize_lop(lop: str) -> str:
     return lop.strip()
 
 def derive_ma_hoc_ky() -> tuple:
-    # Lấy số từ tên file (ví dụ: khaosat_253.csv -> "253")
+    # Lấy số từ tên file (khaosat_253.csv -> "253")
     file_number = SURVEY_FILE.replace('.csv', '').split('_')[-1]
     
-    # Tách năm học và học kỳ: 2 số đầu là năm, số cuối là học kỳ
-    year_code = file_number[:-1]      # "25" từ "253"
-    hoc_ky = int(file_number[-1])     # 3 từ "253"
+    # Tách năm học và học kỳ
+    year_code = int(file_number[:-1])    # 25
+    hoc_ky = int(file_number[-1])        # 3
     
-    # Chuyển year_code thành năm học (25 -> 2025-2026)
-    nam_bat_dau = 2000 + int(year_code)
+    # Chuyển year_code thành năm bắt đầu (25 -> 2024)
+    nam_bat_dau = 2000 + (year_code - 1)
     nam_ket_thuc = nam_bat_dau + 1
     nam_hoc = f"{nam_bat_dau}-{nam_ket_thuc}"
     
-    # Tạo mã học kỳ (HK3_2526)
-    year_part = f"{year_code}{nam_ket_thuc % 100}"
+    # Tạo mã học kỳ (HK3_2425)
+    year_part = f"{nam_bat_dau % 100}{nam_ket_thuc % 100}"  # "2425"
     ma_hoc_ky = f"HK{hoc_ky}_{year_part}"
     
     return ma_hoc_ky, nam_hoc, hoc_ky

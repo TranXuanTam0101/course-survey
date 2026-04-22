@@ -2,8 +2,6 @@ CREATE VIEW VW_TONG_HOP AS
 SELECT 
     -- Thông tin từ DIM_CAU_HOI
     ch.MaCauHoi,
-    ch.ThuTuCauHoi,
-    ch.Phan AS PhanCauHoi,
     ch.NoiDung AS NoiDungCauHoi,
     ch.LoaiTraLoi,
     
@@ -46,10 +44,7 @@ SELECT
     -- Thông tin từ DIM_KHOA (Khoa quản lý sinh viên)
     k_sv.MaKhoa AS MaKhoa_SV,
     k_sv.TenKhoa AS TenKhoa_SV,
-    
-    -- Thông tin từ DIM_CHUONG_TRINH_DAO_TAO
-    ct.MaCTDT,
-    ct.TenCTDT,
+
     
     -- Thông tin từ DIM_LOP_HOC_PHAN
     lhp.MaLopHP,

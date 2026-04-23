@@ -98,43 +98,42 @@ def extract_ma_nganh_from_ten_nganh(ten_nganh: str) -> str:
 def determine_ma_chuyen_nganh(lop: str) -> tuple:
     """
     Xác định MaChuyenNganh từ Lop
-    Ưu tiên: Pattern đặc biệt > CTS > QT > pattern thường
+    - Pattern Kxx-xxx (E, P, ACCA...): đã có trong master
+    - CTS, QT: xử lý đặc biệt
     """
     if not lop or not isinstance(lop, str):
         return None, None, None, None
     
     lop_upper = lop.upper().strip()
     
-    # TH1: Pattern có dạng 50K18-ACCA -> lấy "K18-ACCA"
-    #      hoặc 24K59-E -> lấy "K59-E"
-    match = re.search(r'\d{2}(K\d{2}[-\w]+)', lop_upper)
+    # ===== TH1: XỬ LÝ PATTERN CÓ K + 2 SỐ + HẬU TỐ (E, P, ACCA, ...) =====
+    # Ví dụ: 50K18-ACCA, 24K59-E, 24K59-P, 24K59-ACCA
+    match = re.search(r'\d{2}(K\d{2}-\w+)', lop_upper)
     if match:
-        ma_cn = match.group(1)  # "K18-ACCA", "K59-E"
+        ma_cn = match.group(1)  # "K18-ACCA", "K59-E", "K59-P"
         return ma_cn, f"Chuyên ngành {ma_cn}", None, None
     
-    # TH2: Lấy toàn bộ phần sau 2 số đầu (cho các trường hợp đặc biệt)
-    match = re.search(r'\d{2}(.+)', lop_upper)
-    if match:
-        ma_cn = match.group(1)  # "CTS-50K-QT.1", "CTS-50K", "49KQT", "50KQT"
-        
-        # Xử lý trường hợp có cả CTS và QT: ưu tiên CTS
-        if 'CTS' in ma_cn:
-            # Lấy phần trước dấu chấm hoặc toàn bộ
-            if '.' in ma_cn:
-                ma_cn = ma_cn.split('.')[0]
-            return ma_cn, f"Chuyên ngành {ma_cn}", "Trường ĐHKT", "TĐHKT"
-        
-        # Xử lý trường hợp có QT
-        if 'QT' in ma_cn:
-            # Lấy phần trước dấu chấm nếu có
-            if '.' in ma_cn:
-                ma_cn = ma_cn.split('.')[0]
-            return ma_cn, f"Chuyên ngành {ma_cn}", "Phòng Đào Tạo", "PĐT"
-        
-        # Nếu không có CTS hay QT, trả về nguyên bản
-        return ma_cn, f"Chuyên ngành {ma_cn}", None, None
+    # ===== TH2: XỬ LÝ CTS =====
+    # Ví dụ: CTS-50K, CTS-50K-QT.1, 24CTS
+    if 'CTS' in lop_upper:
+        # Nếu có dấu chấm, bỏ phần sau dấu chấm
+        if '.' in lop_upper:
+            ma_cn = lop_upper.split('.')[0]
+        else:
+            ma_cn = lop_upper
+        return "CTS", "Chuyên ngành CTS", "Trường ĐHKT", "TĐHKT"
     
-    # TH3: Pattern cũ \d{2}K\d{2}
+    # ===== TH3: XỬ LÝ QT =====
+    # Ví dụ: 49KQT, 50KQT, QT1901
+    if 'QT' in lop_upper:
+        # Nếu có dấu chấm, bỏ phần sau dấu chấm
+        if '.' in lop_upper:
+            ma_cn = lop_upper.split('.')[0]
+        else:
+            ma_cn = lop_upper
+        return "QT", "Chuyên ngành QT", "Phòng Đào Tạo", "PĐT"
+    
+    # ===== TH4: FALLBACK =====
     match = re.search(r'(\d{2}K\d{2})', lop_upper)
     if match:
         ma_cn = match.group(1)

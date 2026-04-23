@@ -602,40 +602,85 @@ def load_dim_khoa(cursor, df_hp, df_nganh):
     print(f"  ✅ DIM_KHOA: {len(new_data)} dòng mới")
     return len(new_data)
 
-def load_dim_nganh(cursor, df_nganh, df_raw):
+
+def load_chuyennganh_master(blob_service):
+    """
+    Đọc file TenChuyenNganh-Khoa.csv
+    Trả về:
+        - dim_nganh: DataFrame cho DIM_NGANH
+        - dim_chuyennganh: DataFrame cho DIM_CHUYEN_NGANH
+        - mapping: dict {MaChuyenNganh: {TenChuyenNganh, MaNganh, TenNganh, MaKhoa, TenKhoa}}
+    """
+    content = download_blob(blob_service, TAILIEU_CONTAINER, "TenChuyenNganh-Khoa.csv")
+    if not content:
+        return pd.DataFrame(), pd.DataFrame(), {}
+    
+    df = pd.read_csv(io.StringIO(content))
+    
+    # Cấu trúc file: TT, Khoa, Ngành, Khối ngành, Chuyên ngành, Mã CN, Ghi chú
+    if len(df.columns) >= 6:
+        df_clean = df.iloc[:, [1, 2, 4, 5]].copy()
+        df_clean.columns = ['TenKhoa', 'TenNganh', 'TenChuyenNganh', 'MaChuyenNganh']
+    else:
+        return pd.DataFrame(), pd.DataFrame(), {}
+    
+    # Loại bỏ dòng trống
+    df_clean = df_clean.dropna(subset=['MaChuyenNganh'])
+    df_clean = df_clean[df_clean['MaChuyenNganh'].astype(str).str.strip() != '']
+    
+    # Tạo MaKhoa từ TenKhoa (viết tắt)
+    df_clean['MaKhoa'] = df_clean['TenKhoa'].apply(create_ma_khoa)
+    
+    # Tạo MaNganh từ TenNganh (lấy chữ cái đầu viết hoa)
+    df_clean['MaNganh'] = df_clean['TenNganh'].apply(extract_ma_nganh_from_ten_nganh)
+    
+    # ===== BẢNG DIM_NGANH =====
+    dim_nganh = df_clean[['MaNganh', 'TenNganh', 'MaKhoa']].drop_duplicates('MaNganh')
+    
+    # ===== BẢNG DIM_CHUYEN_NGANH =====
+    dim_chuyennganh = df_clean[['MaChuyenNganh', 'TenChuyenNganh', 'MaNganh']].drop_duplicates('MaChuyenNganh')
+    
+    # ===== TẠO MAPPING =====
+    mapping = {}
+    for _, row in df_clean.iterrows():
+        ma_chuyen = row['MaChuyenNganh']
+        if ma_chuyen and ma_chuyen not in mapping:
+            mapping[ma_chuyen] = {
+                'TenChuyenNganh': row['TenChuyenNganh'],
+                'MaNganh': row['MaNganh'],
+                'TenNganh': row['TenNganh'],
+                'MaKhoa': row['MaKhoa'],
+                'TenKhoa': row['TenKhoa']
+            }
+    
+    print(f"  -> Đã tạo mapping cho {len(mapping)} Mã Chuyên Ngành")
+    return dim_nganh, dim_chuyennganh, mapping
+    
+
+def load_dim_nganh(cursor, df_nganh):
+    """Load DIM_NGANH CHỈ từ file master, KHÔNG từ Lop"""
     count = 0
     
-    # Từ file master
     if not df_nganh.empty:
-        data = [(row['MaNganh'], row['TenNganh'], row['MaKhoa']) for _, row in df_nganh.iterrows()]
-        existing = set()
         cursor.execute("SELECT MaNganh FROM DIM_NGANH")
         existing = {row[0] for row in cursor.fetchall()}
-        new_data = [d for d in data if d[0] not in existing]
-        if new_data:
-            count += batch_insert(cursor, 'DIM_NGANH', ['MaNganh', 'TenNganh', 'MaKhoa'], new_data, 1000)
-    
-    # Từ dữ liệu Lop
-    df_lop = df_raw[['Lop']].drop_duplicates('Lop')
-    df_lop = df_lop[df_lop['Lop'].notna() & (df_lop['Lop'] != '')]
-    
-    data_lop = []
-    for _, row in df_lop.iterrows():
-        ma_cn, ten_cn, ten_khoa, ma_khoa = determine_ma_chuyen_nganh(row['Lop'])
-        if ma_cn:
-            data_lop.append((ma_cn, f"Ngành {ma_cn}", ma_khoa if ma_khoa else "UNKNOWN"))
-    
-    if data_lop:
-        cursor.execute("SELECT MaNganh FROM DIM_NGANH")
-        existing = {row[0] for row in cursor.fetchall()}
-        new_data = [d for d in data_lop if d[0] not in existing]
-        if new_data:
-            count += batch_insert(cursor, 'DIM_NGANH', ['MaNganh', 'TenNganh', 'MaKhoa'], new_data, 1000)
+        
+        data = []
+        for _, row in df_nganh.iterrows():
+            ma_nganh = row['MaNganh']
+            if ma_nganh and ma_nganh not in existing:
+                data.append((ma_nganh, row['TenNganh'], row['MaKhoa']))
+                existing.add(ma_nganh)
+        
+        if data:
+            count = batch_insert(cursor, 'DIM_NGANH', ['MaNganh', 'TenNganh', 'MaKhoa'], data, 1000)
     
     print(f"  ✅ DIM_NGANH: {count} dòng mới")
     return count
 
-def load_dim_chuyennganh(cursor, df_chuyennganh, df_raw):
+def load_dim_chuyennganh(cursor, df_chuyennganh, df_raw, mapping):
+    """Load DIM_CHUYEN_NGANH từ file master + từ Lop (nếu có trong mapping)"""
+    
     # Đảm bảo CTDT mặc định
     cursor.execute("""
         IF NOT EXISTS (SELECT 1 FROM DIM_CHUONG_TRINH_DAO_TAO WHERE MaCTDT = 'CTDT_CHINHQUY') 
@@ -645,66 +690,94 @@ def load_dim_chuyennganh(cursor, df_chuyennganh, df_raw):
     
     count = 0
     
-    # Từ file master
-    if not df_chuyennganh.empty:
-        data = [(row['MaChuyenNganh'], row['TenChuyenNganh'], row['MaNganh'], 'CTDT_CHINHQUY') 
-                for _, row in df_chuyennganh.iterrows()]
-        cursor.execute("SELECT MaChuyenNganh FROM DIM_CHUYEN_NGANH")
-        existing = {row[0] for row in cursor.fetchall()}
-        new_data = [d for d in data if d[0] not in existing]
-        if new_data:
-            count += batch_insert(cursor, 'DIM_CHUYEN_NGANH', 
-                                 ['MaChuyenNganh', 'TenChuyenNganh', 'MaNganh', 'MaCTDT'], 
-                                 new_data, 1000)
+    # Lấy existing MaChuyenNganh trong DB
+    cursor.execute("SELECT MaChuyenNganh FROM DIM_CHUYEN_NGANH")
+    existing = {row[0] for row in cursor.fetchall()}
     
-    # Từ dữ liệu Lop
-    df_lop = df_raw[['Lop']].drop_duplicates('Lop')
-    df_lop = df_lop[df_lop['Lop'].notna() & (df_lop['Lop'] != '')]
-    
-    # Lấy danh sách MaNganh đã có
+    # Lấy danh sách MaNganh đã có trong DIM_NGANH
     cursor.execute("SELECT MaNganh FROM DIM_NGANH")
     existing_nganh = {row[0] for row in cursor.fetchall()}
     
+    # ===== 1. Từ file master =====
+    if not df_chuyennganh.empty:
+        data = []
+        for _, row in df_chuyennganh.iterrows():
+            ma_chuyen = row['MaChuyenNganh']
+            if ma_chuyen and ma_chuyen not in existing:
+                ma_nganh = row['MaNganh']
+                if ma_nganh not in existing_nganh:
+                    print(f"      ⚠️ MaNganh '{ma_nganh}' chưa có trong DIM_NGANH, bỏ qua {ma_chuyen}")
+                    continue
+                data.append((ma_chuyen, row['TenChuyenNganh'], ma_nganh, 'CTDT_CHINHQUY'))
+                existing.add(ma_chuyen)
+        
+        if data:
+            count += batch_insert(cursor, 'DIM_CHUYEN_NGANH', 
+                                 ['MaChuyenNganh', 'TenChuyenNganh', 'MaNganh', 'MaCTDT'], 
+                                 data, 1000)
+    
+    # ===== 2. Từ dữ liệu Lop (chỉ những mã có trong mapping) =====
+    df_lop = df_raw[['Lop']].drop_duplicates('Lop')
+    df_lop = df_lop[df_lop['Lop'].notna() & (df_lop['Lop'] != '')]
+    
     data_lop = []
     for _, row in df_lop.iterrows():
-        ma_cn, ten_cn, ten_khoa, ma_khoa = determine_ma_chuyen_nganh(row['Lop'])
-        if ma_cn and ma_cn in existing_nganh:
-            data_lop.append((ma_cn, ten_cn, ma_cn, 'CTDT_CHINHQUY'))
+        # Xác định MaChuyenNganh từ Lop
+        ma_cn, _, _, _ = determine_ma_chuyen_nganh(row['Lop'])
+        
+        if ma_cn and ma_cn not in existing:
+            # Kiểm tra xem ma_cn có trong mapping từ file master không
+            if ma_cn in mapping:
+                info = mapping[ma_cn]
+                ma_nganh = info['MaNganh']
+                ten_chuyen_nganh = info['TenChuyenNganh']
+                
+                # Kiểm tra MaNganh đã có trong DIM_NGANH chưa
+                if ma_nganh not in existing_nganh:
+                    print(f"      ⚠️ MaNganh '{ma_nganh}' chưa có trong DIM_NGANH, bỏ qua {ma_cn}")
+                    continue
+                
+                data_lop.append((ma_cn, ten_chuyen_nganh, ma_nganh, 'CTDT_CHINHQUY'))
+                existing.add(ma_cn)
+            else:
+                print(f"      ⚠️ MaChuyenNganh '{ma_cn}' không có trong file master, bỏ qua")
     
     if data_lop:
-        cursor.execute("SELECT MaChuyenNganh FROM DIM_CHUYEN_NGANH")
-        existing = {row[0] for row in cursor.fetchall()}
-        new_data = [d for d in data_lop if d[0] not in existing]
-        if new_data:
-            count += batch_insert(cursor, 'DIM_CHUYEN_NGANH',
-                                 ['MaChuyenNganh', 'TenChuyenNganh', 'MaNganh', 'MaCTDT'],
-                                 new_data, 1000)
+        count += batch_insert(cursor, 'DIM_CHUYEN_NGANH',
+                             ['MaChuyenNganh', 'TenChuyenNganh', 'MaNganh', 'MaCTDT'],
+                             data_lop, 1000)
     
     print(f"  ✅ DIM_CHUYEN_NGANH: {count} dòng mới")
     return count
 
-def load_dim_lop_sinh_vien(cursor, df_raw):
-    # Lấy danh sách MaChuyenNganh đã có
+def load_dim_lop_sinh_vien(cursor, df_raw, mapping):
+    """Load DIM_LOP_SINH_VIEN - chỉ insert khi MaChuyenNganh có trong mapping và đã có trong DIM_CHUYEN_NGANH"""
+    
+    # Lấy danh sách MaChuyenNganh đã có trong DIM_CHUYEN_NGANH
     cursor.execute("SELECT MaChuyenNganh FROM DIM_CHUYEN_NGANH")
     existing_chuyennganh = {row[0] for row in cursor.fetchall()}
+    
+    # Lấy danh sách MaLop đã có
+    cursor.execute("SELECT MaLop FROM DIM_LOP_SINH_VIEN")
+    existing_lop = {row[0] for row in cursor.fetchall()}
     
     df_lop = df_raw[['Lop']].drop_duplicates('Lop')
     df_lop = df_lop[df_lop['Lop'].notna() & (df_lop['Lop'] != '')]
     
     data = []
     for _, row in df_lop.iterrows():
-        ma_cn, ten_cn, ten_khoa, ma_khoa = determine_ma_chuyen_nganh(row['Lop'])
+        # Xác định MaChuyenNganh từ Lop
+        ma_cn, _, _, _ = determine_ma_chuyen_nganh(row['Lop'])
+        
         if ma_cn and ma_cn in existing_chuyennganh:
-            data.append((row['Lop'], row['Lop'], ma_cn))
+            if row['Lop'] not in existing_lop:
+                data.append((row['Lop'], row['Lop'], ma_cn))
+                existing_lop.add(row['Lop'])
     
     if data:
-        cursor.execute("SELECT MaLop FROM DIM_LOP_SINH_VIEN")
-        existing = {row[0] for row in cursor.fetchall()}
-        new_data = [d for d in data if d[0] not in existing]
-        if new_data:
-            batch_insert(cursor, 'DIM_LOP_SINH_VIEN', ['MaLop', 'Lop', 'MaChuyenNganh'], new_data, 5000)
-            print(f"  ✅ DIM_LOP_SINH_VIEN: {len(new_data)} dòng mới")
-            return len(new_data)
+        batch_insert(cursor, 'DIM_LOP_SINH_VIEN', ['MaLop', 'Lop', 'MaChuyenNganh'], data, 5000)
+        print(f"  ✅ DIM_LOP_SINH_VIEN: {len(data)} dòng mới")
+        return len(data)
     
     print(f"  ✅ DIM_LOP_SINH_VIEN: 0 dòng mới")
     return 0
@@ -808,15 +881,26 @@ def load_dim_lop_hoc_phan(cursor, df_raw, ma_hoc_ky):
     print(f"  ✅ DIM_LOP_HOC_PHAN: 0 dòng mới")
     return 0
 
-def load_all_dimensions(cursor, df_raw, df_hp_master, df_nganh, df_chuyennganh):
+def load_all_dimensions(cursor, df_raw, df_hp_master, df_nganh, df_chuyennganh, mapping):
     print("\n📥 Loading DIMENSION tables...")
     
     ma_hoc_ky, _, _ = derive_ma_hoc_ky()
     
+    # 1. DIM_KHOA
     load_dim_khoa(cursor, df_hp_master, df_nganh)
-    load_dim_nganh(cursor, df_nganh, df_raw)
-    load_dim_chuyennganh(cursor, df_chuyennganh, df_raw)
-    load_dim_lop_sinh_vien(cursor, df_raw)
+    
+    # 2. DIM_NGANH (CHỈ từ file master, KHÔNG từ Lop)
+    load_dim_nganh(cursor, df_nganh)
+    
+    # 3. DIM_CHUONG_TRINH_DAO_TAO (mặc định)
+    
+    # 4. DIM_CHUYEN_NGANH (từ file master + Lop có trong mapping)
+    load_dim_chuyennganh(cursor, df_chuyennganh, df_raw, mapping)
+    
+    # 5. DIM_LOP_SINH_VIEN
+    load_dim_lop_sinh_vien(cursor, df_raw, mapping)
+    
+    # 6. Các bảng còn lại
     load_dim_sinh_vien(cursor, df_raw)
     load_dim_giang_vien(cursor, df_raw)
     load_dim_hoc_phan(cursor, df_hp_master, df_raw)
@@ -856,7 +940,6 @@ def load_fact_tables(cursor, df_main, df_ketqua, df_tag):
     
     return count_main, count_kq, count_tag
 
-
 # ================= MAIN =================
 def main():
     total_start = time.time()
@@ -880,7 +963,7 @@ def main():
     # 2. Đọc dữ liệu master
     print("\n📥 2. Đọc dữ liệu master...")
     hp_master = load_hp_master(blob_service)
-    dim_nganh, dim_chuyennganh = load_chuyennganh_master(blob_service)
+    dim_nganh, dim_chuyennganh, mapping = load_chuyennganh_master(blob_service)
     print(f"  ✅ HP-Khoa: {len(hp_master)} dòng")
     print(f"  ✅ DIM_NGANH: {len(dim_nganh)} dòng")
     print(f"  ✅ DIM_CHUYEN_NGANH: {len(dim_chuyennganh)} dòng")
@@ -926,7 +1009,7 @@ def main():
     
     try:
         # 8. Load DIMENSION
-        load_all_dimensions(cursor, df_main, hp_master, dim_nganh, dim_chuyennganh)
+        load_all_dimensions(cursor, df_raw, hp_master, dim_nganh, dim_chuyennganh, mapping)
         
         # 9. Load FACT
         count_main, count_kq, count_tag = load_fact_tables(cursor, df_main, df_ketqua, df_tag)

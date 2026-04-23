@@ -98,46 +98,36 @@ def extract_ma_nganh_from_ten_nganh(ten_nganh: str) -> str:
 def determine_ma_chuyen_nganh(lop: str) -> tuple:
     """
     Xác định MaChuyenNganh từ Lop
-    - Pattern Kxx-xxx (E, P, ACCA...): đã có trong master
-    - CTS, QT: xử lý đặc biệt
+    - Có ACCA: Kxx-ACCA (tự sinh)
+    - Có CTS: trả về CTS (xử lý cứng)
+    - Có QT: trả về QT (xử lý cứng)
+    - Còn lại: Kxx (tự sinh)
     """
     if not lop or not isinstance(lop, str):
         return None, None, None, None
     
     lop_upper = lop.upper().strip()
     
-    # ===== TH1: XỬ LÝ PATTERN CÓ K + 2 SỐ + HẬU TỐ (E, P, ACCA, ...) =====
-    # Ví dụ: 50K18-ACCA, 24K59-E, 24K59-P, 24K59-ACCA
-    match = re.search(r'\d{2}(K\d{2}-\w+)', lop_upper)
-    if match:
-        ma_cn = match.group(1)  # "K18-ACCA", "K59-E", "K59-P"
-        return ma_cn, f"Chuyên ngành {ma_cn}", None, None
+    # ===== TH1: CÓ ACCA =====
+    if 'ACCA' in lop_upper:
+        match = re.search(r'K(\d{2})', lop_upper)
+        if match:
+            ma_cn = f"K{match.group(1)}-ACCA"
+            return ma_cn, None, None, None
     
-    # ===== TH2: XỬ LÝ CTS =====
-    # Ví dụ: CTS-50K, CTS-50K-QT.1, 24CTS
+    # ===== TH2: CÓ CTS =====
     if 'CTS' in lop_upper:
-        # Nếu có dấu chấm, bỏ phần sau dấu chấm
-        if '.' in lop_upper:
-            ma_cn = lop_upper.split('.')[0]
-        else:
-            ma_cn = lop_upper
         return "CTS", "Chuyên ngành CTS", "Trường ĐHKT", "TĐHKT"
     
-    # ===== TH3: XỬ LÝ QT =====
-    # Ví dụ: 49KQT, 50KQT, QT1901
+    # ===== TH3: CÓ QT =====
     if 'QT' in lop_upper:
-        # Nếu có dấu chấm, bỏ phần sau dấu chấm
-        if '.' in lop_upper:
-            ma_cn = lop_upper.split('.')[0]
-        else:
-            ma_cn = lop_upper
         return "QT", "Chuyên ngành QT", "Phòng Đào Tạo", "PĐT"
     
-    # ===== TH4: FALLBACK =====
-    match = re.search(r'(\d{2}K\d{2})', lop_upper)
+    # ===== TH4: CÒN LẠI - LẤY Kxx =====
+    match = re.search(r'K(\d{2})', lop_upper)
     if match:
-        ma_cn = match.group(1)
-        return ma_cn, f"Chuyên ngành {ma_cn}", None, None
+        ma_cn = f"K{match.group(1)}"
+        return ma_cn, None, None, None
     
     return None, None, None, None
 
@@ -655,7 +645,7 @@ def load_dimensions_optimized(cursor, df_raw, hp_master, dim_nganh, dim_chuyenng
         print(f"     ✅ {ma_hoc_ky} đã tồn tại")
     
     # ==========================================
-    # BẢNG 8: DIM_LOP_SINH_VIEN (CÓ LOG)
+    # BẢNG 8: DIM_LOP_SINH_VIEN
     # ==========================================
     print("\n  -> 8. DIM_LOP_SINH_VIEN")
     
@@ -664,36 +654,46 @@ def load_dimensions_optimized(cursor, df_raw, hp_master, dim_nganh, dim_chuyenng
     valid_chuyennganh = {row[0] for row in cursor.fetchall()}
     print(f"     - Có {len(valid_chuyennganh)} chuyên ngành từ file master")
     
+    # Lấy danh sách MaLop đã có
     cursor.execute("SELECT MaLop FROM DIM_LOP_SINH_VIEN")
     existing_lop = {row[0] for row in cursor.fetchall()}
     
     df_lop_unique = df_raw[['Lop']].drop_duplicates('Lop').dropna()
     
     data_lop = []
-    skipped_lop_details = []
-    
     for _, row in df_lop_unique.iterrows():
         lop = row['Lop']
         if lop not in existing_lop:
-            ma_cn, _, _, _ = determine_ma_chuyen_nganh(lop)
+            ma_cn, ten_cn, ten_khoa, ma_khoa = determine_ma_chuyen_nganh(lop)
             
+            # Nếu không xác định được, bỏ qua
             if not ma_cn:
-                skipped_lop_details.append({'Lop': lop, 'LyDo': 'Không xác định được MaChuyenNganh', 'MaChuyenNganh': ma_cn})
                 continue
             
+            # Nếu mã chưa có trong DIM_CHUYEN_NGANH, tự động thêm
             if ma_cn not in valid_chuyennganh:
-                skipped_lop_details.append({'Lop': lop, 'LyDo': f"MaChuyenNganh '{ma_cn}' không có trong file master", 'MaChuyenNganh': ma_cn})
-                continue
+                # Xác định tên chuyên ngành và khoa
+                if ten_cn:
+                    # TH2, TH3: đã có từ code
+                    final_ten_cn = ten_cn
+                    final_ten_khoa = ten_khoa
+                    final_ma_khoa = ma_khoa
+                else:
+                    # TH1, TH4: tạm thời, sẽ được cập nhật từ master sau
+                    final_ten_cn = f"Chuyên ngành {ma_cn}"
+                    final_ten_khoa = None
+                    final_ma_khoa = 'TĐHKT'  # Gán mặc định
+                
+                # Thêm vào DIM_CHUYEN_NGANH
+                cursor.execute("""
+                    INSERT INTO DIM_CHUYEN_NGANH (MaChuyenNganh, TenChuyenNganh, MaNganh, MaCTDT) 
+                    VALUES (?, ?, ?, ?)
+                """, ma_cn, final_ten_cn, 'UNKNOWN', 'CTDT_CHINHQUY')
+                valid_chuyennganh.add(ma_cn)
+                print(f"        ✅ Đã tự động thêm {ma_cn} vào DIM_CHUYEN_NGANH")
             
             data_lop.append((lop, lop, ma_cn))
             existing_lop.add(lop)
-    
-    if skipped_lop_details:
-        print(f"     ⚠️ Bỏ qua {len(skipped_lop_details)} lớp:")
-        for i, detail in enumerate(skipped_lop_details[:20], 1):
-            print(f"        {i}. Lớp: '{detail['Lop']}' -> {detail['LyDo']}")
-        if len(skipped_lop_details) > 20:
-            print(f"        ... và {len(skipped_lop_details) - 20} lớp khác")
     
     if data_lop:
         batch_insert_optimized(cursor, 'DIM_LOP_SINH_VIEN', ['MaLop', 'Lop', 'MaChuyenNganh'], data_lop, 5000)

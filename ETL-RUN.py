@@ -541,7 +541,21 @@ def load_dimensions_optimized(cursor, df_raw, hp_master, dim_nganh, dim_chuyenng
     # ==========================================
     # BẢNG 3: DIM_NGANH (CHỈ TỪ TenChuyenNganh-Khoa.csv)
     # ==========================================
-    print("\n  -> 3. DIM_NGANH")
+    default_nganh = [
+        ('TĐHKT', 'Ngành Trường ĐH Kinh tế', 'TĐHKT'),
+        ('PĐT', 'Ngành Phòng Đào Tạo', 'PĐT')
+    ]
+    
+    for ma_nganh, ten_nganh, ma_khoa in default_nganh:
+        cursor.execute("SELECT MaNganh FROM DIM_NGANH WHERE MaNganh = ?", ma_nganh)
+        if not cursor.fetchone():
+            cursor.execute("""
+                INSERT INTO DIM_NGANH (MaNganh, TenNganh, MaKhoa) 
+                VALUES (?, ?, ?)
+            """, ma_nganh, ten_nganh, ma_khoa)
+            print(f"     ✅ Đã thêm {ma_nganh} vào DIM_NGANH")
+    
+    # Từ file master
     if not dim_nganh.empty:
         cursor.execute("SELECT MaNganh FROM DIM_NGANH")
         existing_nganh = {row[0] for row in cursor.fetchall()}
@@ -549,15 +563,15 @@ def load_dimensions_optimized(cursor, df_raw, hp_master, dim_nganh, dim_chuyenng
         data_nganh = []
         for _, row in dim_nganh.iterrows():
             ma_nganh = row['MaNganh']
-            if ma_nganh and ma_nganh not in existing_nganh:
+            if ma_nganh and ma_nganh not in existing_nganh and ma_nganh != 'UNKNOWN':
                 data_nganh.append((ma_nganh, row['TenNganh'], row['MaKhoa']))
                 existing_nganh.add(ma_nganh)
         
         if data_nganh:
             batch_insert_optimized(cursor, 'DIM_NGANH', ['MaNganh', 'TenNganh', 'MaKhoa'], data_nganh, 10000)
-            print(f"     ✅ Đã insert {len(data_nganh)} dòng mới")
+            print(f"     ✅ Đã insert {len(data_nganh)} dòng mới từ master")
         else:
-            print(f"     ✅ Không có dòng mới")
+            print(f"     ✅ Không có dòng mới từ master")
     else:
         print(f"     ⚠️ Không có dữ liệu từ TenChuyenNganh-Khoa.csv")
     

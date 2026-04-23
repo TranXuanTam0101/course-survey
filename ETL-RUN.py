@@ -43,6 +43,7 @@ PROCESSED_PATH = "processed-data"
 # Số lượng worker
 NUM_WORKERS = max(2, mp.cpu_count())
 CHUNK_SIZE = 50000
+BATCH_SIZE = 100000
 
 # ================= PATTERNS =================
 _date_pattern = re.compile(r'^\d{2}/\d{2}/\d{4}$')
@@ -741,6 +742,21 @@ def load_dimensions_optimized(cursor, df_raw, hp_master, dim_nganh, dim_chuyenng
     # ==========================================
     print("\n  -> 3. DIM_NGANH")
     
+    # ✅ THÊM QT VÀ CTS VÀO DIM_NGANH (THÊM ĐOẠN NÀY)
+    default_nganh = [
+        ('QT', 'Ngành Quản trị', 'PĐT'),
+        ('CTS', 'Ngành Công nghệ thông tin', 'TĐHKT')
+    ]
+    
+    for ma_nganh, ten_nganh, ma_khoa in default_nganh:
+        cursor.execute("SELECT MaNganh FROM DIM_NGANH WHERE MaNganh = ?", ma_nganh)
+        if not cursor.fetchone():
+            cursor.execute("""
+                INSERT INTO DIM_NGANH (MaNganh, TenNganh, MaKhoa) 
+                VALUES (?, ?, ?)
+            """, ma_nganh, ten_nganh, ma_khoa)
+            print(f"     ✅ Đã thêm {ma_nganh} vào DIM_NGANH")
+    
     if not dim_chuyennganh.empty:
         # Lấy tất cả MaNganh cần có
         all_ma_nganh = set(dim_chuyennganh['MaNganh'].dropna().unique())
@@ -774,6 +790,23 @@ def load_dimensions_optimized(cursor, df_raw, hp_master, dim_nganh, dim_chuyenng
     # BẢNG 4: DIM_CHUYEN_NGANH (INSERT SAU KHI ĐÃ COMMIT)
     # ==========================================
     print("\n  -> 4. DIM_CHUYEN_NGANH")
+    
+    # ✅ CẬP NHẬT QT VÀ CTS (THÊM ĐOẠN NÀY)
+    # Cập nhật MaNganh cho chuyên ngành QT
+    cursor.execute("""
+        UPDATE DIM_CHUYEN_NGANH 
+        SET MaNganh = 'QT', MaKhoa = 'PĐT'
+        WHERE MaChuyenNganh = 'QT'
+    """)
+    
+    # Cập nhật MaNganh cho chuyên ngành CTS
+    cursor.execute("""
+        UPDATE DIM_CHUYEN_NGANH 
+        SET MaNganh = 'CTS', MaKhoa = 'TĐHKT'
+        WHERE MaChuyenNganh = 'CTS'
+    """)
+    cursor.connection.commit()
+    print(f"     ✅ Đã cập nhật QT và CTS trong DIM_CHUYEN_NGANH")
     
     # Kiểm tra lại DIM_NGANH sau commit
     cursor.execute("SELECT MaNganh FROM DIM_NGANH")
@@ -1035,59 +1068,68 @@ def load_fact_tables_optimized(cursor, fact_main, fact_ketqua):
     print("\n📥 Loading FACT tables...")
     start_time = time.time()
     
-    # Tắt constraints
+    # TẮT CONSTRAINTS
     cursor.execute("ALTER TABLE FACT_GOP_Y_TU_LUAN NOCHECK CONSTRAINT ALL")
     cursor.execute("ALTER TABLE FACT_KET_QUA_DANH_GIA NOCHECK CONSTRAINT ALL")
-    cursor.connection.commit() 
+    cursor.connection.commit()
+    
     count_main = 0
     count_kq = 0
     
-    # FACT_GOP_Y_TU_LUAN
-    if not fact_main.empty:
-        # ✅ CHỈ LẤY CÁC CỘT CẦN INSERT (BỎ SentimentScore)
-        data_main = []
-        for _, row in fact_main.iterrows():
-            # Cắt NoiDungGopY nếu quá dài
-            noi_dung = row['NoiDungGopY']
-            if isinstance(noi_dung, str) and len(noi_dung) > 4000:
-                noi_dung = noi_dung[:4000]
-            
-            data_main.append((
-                row['SubmissionID'],
-                row['MaSV'],
-                row['LopHP'],
-                noi_dung,
-                row['Sentiment'],
-                row['Is_Valid'],
-                row['Tag_HocPhan'],
-                row['Tag_DayHoc'],
-                row['Tag_KiemTra'],
-                row['Tag_Khac']
-            ))
+    try:
+        # ✅ BẮT ĐẦU TRANSACTION
+        cursor.execute("BEGIN TRANSACTION")
         
-        count_main = batch_insert_optimized(cursor, 'FACT_GOP_Y_TU_LUAN',
-            ['SubmissionID', 'MaSV', 'MaLopHP', 'NoiDungGopY', 'Sentiment', 'Is_Valid',
-             'Tag_HocPhan', 'Tag_DayHoc', 'Tag_KiemTra', 'Tag_Khac'], data_main, 50000)
-        print(f"    ✅ FACT_GOP_Y_TU_LUAN: {count_main} dòng")
-    else:
-        print(f"    ⚠️ FACT_GOP_Y_TU_LUAN: không có dữ liệu")
+        # FACT_GOP_Y_TU_LUAN
+        if not fact_main.empty:
+            data_main = []
+            for _, row in fact_main.iterrows():
+                noi_dung = row['NoiDungGopY']
+                if isinstance(noi_dung, str) and len(noi_dung) > 4000:
+                    noi_dung = noi_dung[:4000]
+                data_main.append((
+                    row['SubmissionID'], row['MaSV'], row['LopHP'], noi_dung,
+                    row['Sentiment'], row['Is_Valid'],
+                    row['Tag_HocPhan'], row['Tag_DayHoc'], row['Tag_KiemTra'], row['Tag_Khac']
+                ))
+            
+            placeholders = ', '.join(['?' for _ in range(10)])
+            sql = f"INSERT INTO FACT_GOP_Y_TU_LUAN (SubmissionID, MaSV, MaLopHP, NoiDungGopY, Sentiment, Is_Valid, Tag_HocPhan, Tag_DayHoc, Tag_KiemTra, Tag_Khac) VALUES ({placeholders})"
+            
+            batch_size = 50000
+            for i in range(0, len(data_main), batch_size):
+                batch = data_main[i:i+batch_size]
+                cursor.executemany(sql, batch)
+                count_main += len(batch)
+                print(f"      -> Đã insert {count_main:,}/{len(data_main):,} dòng vào FACT_GOP_Y_TU_LUAN")
+        
+        # FACT_KET_QUA_DANH_GIA
+        if not fact_ketqua.empty:
+            data_kq = [tuple(row) for row in fact_ketqua[['SubmissionID', 'MaCauHoi', 'Diem']].to_numpy()]
+            sql2 = "INSERT INTO FACT_KET_QUA_DANH_GIA (SubmissionID, MaCauHoi, Diem) VALUES (?, ?, ?)"
+            
+            batch_size = 100000
+            for i in range(0, len(data_kq), batch_size):
+                batch = data_kq[i:i+batch_size]
+                cursor.executemany(sql2, batch)
+                count_kq += len(batch)
+                print(f"      -> Đã insert {count_kq:,}/{len(data_kq):,} dòng vào FACT_KET_QUA_DANH_GIA")
+        
+        # ✅ CHỈ COMMIT 1 LẦN DUY NHẤT
+        cursor.execute("COMMIT")
+        
+    except Exception as e:
+        cursor.execute("ROLLBACK")
+        print(f"  ❌ Lỗi: {e}")
+        raise
     
-    # FACT_KET_QUA_DANH_GIA
-    if not fact_ketqua.empty:
-        data_kq = [tuple(row) for row in fact_ketqua[['SubmissionID', 'MaCauHoi', 'Diem']].to_numpy()]
-        count_kq = batch_insert_optimized(cursor, 'FACT_KET_QUA_DANH_GIA',
-            ['SubmissionID', 'MaCauHoi', 'Diem'], data_kq, 100000)
-        print(f"    ✅ FACT_KET_QUA_DANH_GIA: {count_kq} dòng")
-    else:
-        print(f"    ⚠️ FACT_KET_QUA_DANH_GIA: không có dữ liệu")
-    
-    # Bật lại constraints
+    # BẬT LẠI CONSTRAINTS
     cursor.execute("ALTER TABLE FACT_GOP_Y_TU_LUAN CHECK CONSTRAINT ALL")
     cursor.execute("ALTER TABLE FACT_KET_QUA_DANH_GIA CHECK CONSTRAINT ALL")
     cursor.connection.commit()
     
     elapsed = time.time() - start_time
-    print(f"  ✅ FACT tables loaded in {elapsed:.1f}s")
+    print(f"  ✅ FACT tables loaded: {count_main:,} submissions, {count_kq:,} answers in {elapsed:.1f}s")
     return count_main, count_kq
 
 # ================= MAIN =================

@@ -79,8 +79,6 @@ def create_ma_khoa(ten_khoa: str) -> str:
         'Bộ môn NNCN': 'BNNNCN', 'Trường ĐHNN': 'TĐHNN', 'Luật': 'LUAT',
         'Marketing': 'MKT', 'Trường ĐHKT': 'TĐHKT', 'Phòng Đào Tạo': 'PĐT'
     }
-    if not isinstance(ten_khoa, str) or not ten_khoa:
-        return "UNKNOWN"
     for special_name, special_code in SPECIAL_MA_KHOA.items():
         if special_name.lower() in ten_khoa.lower():
             return special_code
@@ -519,10 +517,10 @@ def load_dimensions_optimized(cursor, df_raw, hp_master, dim_nganh, dim_chuyenng
         all_khoa.update(dim_nganh['MaKhoa'].unique())
         print(f"     - Từ TenChuyenNganh-Khoa.csv: {len(dim_nganh['MaKhoa'].unique())} khoa")
     
-    # Nguồn 3: Các giá trị mặc định (KHÔNG có 'UNKNOWN')
+    # Nguồn 3: Các giá trị mặc định
     default_khoa = {
-        'TĐHKT': N'Trường ĐH Kinh tế',
-        'PĐT': N'Phòng Đào Tạo'
+        'TĐHKT': 'Trường ĐH Kinh tế',
+        'PĐT': 'Phòng Đào Tạo'
     }
     all_khoa.update(default_khoa.keys())
     print(f"     - Giá trị mặc định: {len(default_khoa)} khoa (TĐHKT, PĐT)")

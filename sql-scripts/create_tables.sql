@@ -1,10 +1,10 @@
 -- ======================================================
 -- TẠO CƠ SỞ DỮ LIỆU KHẢO SÁT HỌC PHẦN
--- 12 BẢNG DIMENSION + 3 BẢNG FACT
+-- 11 BẢNG DIMENSION + 2 BẢNG FACT (ĐÃ GỘP TAG)
 -- ======================================================
 
 -- ======================================================
--- NHÓM 1: CÁC BẢNG DIMENSION (DANH MỤC) - 12 BẢNG
+-- NHÓM 1: CÁC BẢNG DIMENSION (DANH MỤC) - 11 BẢNG
 -- ======================================================
 
 -- 1. DIM_KHOA: Quản lý cấp cao nhất
@@ -103,35 +103,29 @@ INSERT INTO DIM_CAU_HOI (MaCauHoi, ThuTuCauHoi, NoiDungCauHoi, NhomTieuChi) VALU
 (11, 11, N'Việc đánh giá được thực hiện công bằng, khách quan và đảm bảo độ tin cậy', N'Kiểm tra - Đánh giá'),
 (12, 12, N'Anh/Chị hài lòng về chất lượng và hiệu quả giảng dạy của giảng viên đối với sự tiến bộ trong học tập của bản thân', N'Đánh giá tổng thể');
 
--- 12. DIM_TAG: Danh mục các nhãn NLP cho câu hỏi tự luận (13-16)
-CREATE TABLE DIM_TAG (
-    MaTag NVARCHAR(50) PRIMARY KEY,
-    TenTag NVARCHAR(255),
-    MoTaTag NVARCHAR(MAX)
-);
-
--- Insert 4 tag tương ứng 4 câu tự luận
-INSERT INTO DIM_TAG (MaTag, TenTag, MoTaTag) VALUES 
-('TAG_HP', N'Nội dung & Chuẩn đầu ra', N'Góp ý về chuẩn đầu ra, khối lượng kiến thức và giáo trình học phần - Tương ứng câu 13'),
-('TAG_DH', N'Hoạt động dạy - học', N'Góp ý về phương pháp truyền đạt, sự nhiệt tình và tương tác của giảng viên - Tương ứng câu 14'),
-('TAG_KT', N'Kiểm tra - Đánh giá', N'Góp ý về hình thức thi, độ khó của đề và tính minh bạch trong chấm điểm - Tương ứng câu 15'),
-('TAG_K', N'Góp ý khác', N'Các kiến nghị khác ngoài chuyên môn giảng dạy - Tương ứng câu 16');
-
 
 -- ======================================================
--- NHÓM 2: CÁC BẢNG FACT (DỮ LIỆU GIAO DỊCH) - 3 BẢNG
+-- NHÓM 2: CÁC BẢNG FACT (DỮ LIỆU GIAO DỊCH) - 2 BẢNG
 -- ======================================================
 
--- FACT 1: Góp ý tự luận (Bảng trung tâm)
--- Lưu kết quả NLP từ 4 câu hỏi tự luận (13,14,15,16)
+-- FACT 1: Góp ý tự luận (Bảng trung tâm - ĐÃ GỘP TAG)
+-- Lưu kết quả NLP từ toàn bộ câu hỏi tự luận (EssayText)
+-- 4 cột tag tương ứng với các nhóm góp ý
 CREATE TABLE FACT_GOP_Y_TU_LUAN (
     SubmissionID NVARCHAR(100) PRIMARY KEY,
     MaSV NVARCHAR(50) REFERENCES DIM_SINH_VIEN(MaSV),
     MaLopHP NVARCHAR(50) REFERENCES DIM_LOP_HOC_PHAN(MaLopHP),
-    NoiDungGopY NVARCHAR(MAX),   -- Toàn bộ nội dung gộp từ câu 13,14,15,16
+    NoiDungGopY NVARCHAR(MAX),   -- Toàn bộ nội dung góp ý tự luận (1 cột duy nhất)
     Sentiment NVARCHAR(50),       -- 'positive', 'negative', 'neutral'
-    Is_Valid BIT                   -- 1: Hợp lệ, 0: Dữ liệu rác/Spam
+    Is_Valid BIT,                 -- 1: Hợp lệ, 0: Dữ liệu rác/Spam
+    
+    -- 4 cột tag (bit) - gộp từ bảng DIM_TAG cũ
+    Tag_HocPhan BIT DEFAULT 0,    -- Góp ý về nội dung học phần, chuẩn đầu ra
+    Tag_DayHoc BIT DEFAULT 0,     -- Góp ý về hoạt động dạy - học
+    Tag_KiemTra BIT DEFAULT 0,    -- Góp ý về kiểm tra - đánh giá
+    Tag_Khac BIT DEFAULT 0        -- Góp ý khác hoặc không có góp ý cụ thể
 );
+
 
 -- FACT 2: Kết quả đánh giá trắc nghiệm (Dạng dọc)
 -- Mỗi dòng là 1 câu trả lời (Câu 1-12), 1 phiếu có 12 dòng
@@ -142,10 +136,3 @@ CREATE TABLE FACT_KET_QUA_DANH_GIA (
     Diem INT  -- Giá trị từ 1 đến 5
 );
 
--- FACT 3: Bảng cầu nối Tags (Multi-label Mapping)
--- Cho phép 1 góp ý có nhiều tag (vừa khen vừa chê)
-CREATE TABLE FACT_TAG_MAPPING (
-    ID_Mapping INT IDENTITY(1,1) PRIMARY KEY,
-    SubmissionID NVARCHAR(100) REFERENCES FACT_GOP_Y_TU_LUAN(SubmissionID),
-    MaTag NVARCHAR(50) REFERENCES DIM_TAG(MaTag)
-);

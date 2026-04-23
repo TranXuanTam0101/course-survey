@@ -742,10 +742,9 @@ def load_dimensions_optimized(cursor, df_raw, hp_master, dim_nganh, dim_chuyenng
     # ==========================================
     print("\n  -> 3. DIM_NGANH")
     
-    # ✅ THÊM QT VÀ CTS VÀO DIM_NGANH (THÊM ĐOẠN NÀY)
     default_nganh = [
-        ('QT', 'Ngành Quản trị', 'PĐT'),
-        ('CTS', 'Ngành Công nghệ thông tin', 'TĐHKT')
+        ('QT', 'Ngành QT', 'PĐT'),
+        ('CTS', 'Ngành CTS', 'TĐHKT')
     ]
     
     for ma_nganh, ten_nganh, ma_khoa in default_nganh:

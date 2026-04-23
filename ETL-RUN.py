@@ -602,8 +602,8 @@ def load_dimensions_optimized(cursor, df_raw, hp_master, dim_nganh, dim_chuyenng
     
     # Thêm giá trị mặc định (KHÔNG có UNKNOWN)
     default_chuyennganh = [
-        ('TĐHKT', 'Chuyên ngành Trường ĐHKT', 'UNKNOWN', 'CTDT_CHINHQUY'),
-        ('PĐT', 'Chuyên ngành Phòng Đào Tạo', 'UNKNOWN', 'CTDT_CHINHQUY')
+        ('TĐHKT', 'Chuyên ngành Trường ĐHKT', 'TĐHKT', 'CTDT_CHINHQUY'),
+        ('PĐT', 'Chuyên ngành Phòng Đào Tạo', 'PĐT', 'CTDT_CHINHQUY')
     ]
     
     for ma_cn, ten_cn, ma_nganh, ma_ctdt in default_chuyennganh:

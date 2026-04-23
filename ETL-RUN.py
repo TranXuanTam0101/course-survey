@@ -859,68 +859,83 @@ def load_dimensions_optimized(cursor, df_raw, hp_master, dim_nganh, dim_chuyenng
         print(f"     ✅ {ma_hoc_ky} đã tồn tại")
     
     # ==========================================
-    # BẢNG 8: DIM_LOP_SINH_VIEN (CÁCH 2 - KHÔNG DÙNG UNKNOWN)
+    # BẢNG 8: DIM_LOP_SINH_VIEN (DEBUG)
     # ==========================================
     print("\n  -> 8. DIM_LOP_SINH_VIEN")
     
-    # Lấy danh sách MaChuyenNganh từ file master
+    # Lấy danh sách MaChuyenNganh và MaNganh từ DIM_CHUYEN_NGANH
     cursor.execute("SELECT MaChuyenNganh, MaNganh FROM DIM_CHUYEN_NGANH")
-    valid_chuyennganh = {}
+    all_chuyennganh = {}
     for row in cursor.fetchall():
-        valid_chuyennganh[row[0]] = row[1]  # {ma_cn: ma_nganh}
+        all_chuyennganh[row[0]] = row[1]
+    print(f"     - Tổng số chuyên ngành trong DIM_CHUYEN_NGANH: {len(all_chuyennganh)}")
     
-    print(f"     - Có {len(valid_chuyennganh)} chuyên ngành từ file master")
+    # Lấy danh sách MaNganh hợp lệ
+    cursor.execute("SELECT MaNganh FROM DIM_NGANH")
+    valid_nganh = {row[0] for row in cursor.fetchall()}
+    print(f"     - Các MaNganh hợp lệ trong DIM_NGANH: {sorted(valid_nganh)}")
     
-    # Lấy danh sách MaLop đã có
+    # Kiểm tra những MaChuyenNganh nào có MaNganh không hợp lệ
+    invalid_chuyennganh = []
+    for ma_cn, ma_nganh in all_chuyennganh.items():
+        if ma_nganh not in valid_nganh:
+            invalid_chuyennganh.append((ma_cn, ma_nganh))
+    
+    if invalid_chuyennganh:
+        print(f"     ⚠️ CẢNH BÁO: Có {len(invalid_chuyennganh)} chuyên ngành có MaNganh không hợp lệ:")
+        for ma_cn, ma_nganh in invalid_chuyennganh[:10]:
+            print(f"        - {ma_cn} -> MaNganh={ma_nganh} (KHÔNG TỒN TẠI trong DIM_NGANH)")
+    
+    # Chỉ lấy những MaChuyenNganh có MaNganh hợp lệ
+    valid_chuyennganh = {ma_cn for ma_cn, ma_nganh in all_chuyennganh.items() if ma_nganh in valid_nganh}
+    print(f"     - Chỉ có {len(valid_chuyennganh)} chuyên ngành có MaNganh hợp lệ")
+    
     cursor.execute("SELECT MaLop FROM DIM_LOP_SINH_VIEN")
     existing_lop = {row[0] for row in cursor.fetchall()}
     
     df_lop_unique = df_raw[['Lop']].drop_duplicates('Lop').dropna()
+    print(f"     - Số lớp unique từ dữ liệu: {len(df_lop_unique)}")
     
     data_lop = []
+    skipped_lop = []
+    
     for _, row in df_lop_unique.iterrows():
         lop = row['Lop']
         if lop not in existing_lop:
             ma_cn, ten_cn, ten_khoa, ma_khoa = determine_ma_chuyen_nganh(lop)
             
             if not ma_cn:
+                skipped_lop.append({'lop': lop, 'lydo': 'Không xác định được ma_cn', 'ma_cn': None})
                 continue
             
-            # Nếu mã chưa có trong DIM_CHUYEN_NGANH, tự động thêm
+            # Kiểm tra ma_cn có trong danh sách hợp lệ không
             if ma_cn not in valid_chuyennganh:
-                # Xác định MaNganh phù hợp
-                if 'CTS' in ma_cn:
-                    ma_nganh = 'CTS'
-                elif 'QT' in ma_cn:
-                    ma_nganh = 'QT'
-                else:
-                    # Tìm MaNganh từ tên lớp (lấy phần đầu)
-                    ma_nganh = lop.split('K')[0] if 'K' in lop else 'TĐHKT'
-                    if len(ma_nganh) > 2:
-                        ma_nganh = ma_nganh[:2]
-                
-                if ten_cn:
-                    final_ten_cn = ten_cn
-                    final_ten_khoa = ten_khoa
-                    final_ma_khoa = ma_khoa
-                else:
-                    final_ten_cn = f"Chuyên ngành {ma_cn}"
-                    final_ten_khoa = None
-                    final_ma_khoa = 'TĐHKT'
-                
-                # Insert vào DIM_CHUYEN_NGANH với MaNganh đã xác định
-                cursor.execute("""
-                    INSERT INTO DIM_CHUYEN_NGANH (MaChuyenNganh, TenChuyenNganh, MaNganh, MaCTDT) 
-                    VALUES (?, ?, ?, ?)
-                """, ma_cn, final_ten_cn, ma_nganh, 'CTDT_CHINHQUY')
-                valid_chuyennganh[ma_cn] = ma_nganh
-                print(f"        ✅ Đã tự động thêm {ma_cn} (MaNganh={ma_nganh}) vào DIM_CHUYEN_NGANH")
+                skipped_lop.append({'lop': lop, 'lydo': f'MaChuyenNganh={ma_cn} không có MaNganh hợp lệ', 'ma_cn': ma_cn})
+                continue
             
             data_lop.append((lop, lop, ma_cn))
             existing_lop.add(lop)
     
+    # IN CHI TIẾT LỚP BỊ BỎ QUA
+    if skipped_lop:
+        print(f"     ⚠️ Bỏ qua {len(skipped_lop)} lớp:")
+        for i, item in enumerate(skipped_lop[:20], 1):
+            print(f"        {i}. Lớp: '{item['lop']}'")
+            print(f"           Lý do: {item['lydo']}")
+            if item['ma_cn']:
+                print(f"           MaChuyenNganh: {item['ma_cn']}")
+        if len(skipped_lop) > 20:
+            print(f"        ... và {len(skipped_lop) - 20} lớp khác")
+    
+    # IN CHI TIẾT LỚP SẼ INSERT
     if data_lop:
-        cursor.connection.commit()
+        print(f"     - Sẽ insert {len(data_lop)} lớp:")
+        for i, (lop, _, ma_cn) in enumerate(data_lop[:10], 1):
+            print(f"        {i}. Lớp: '{lop}' -> MaChuyenNganh: {ma_cn}")
+        if len(data_lop) > 10:
+            print(f"        ... và {len(data_lop) - 10} lớp khác")
+    
+    if data_lop:
         batch_insert_optimized(cursor, 'DIM_LOP_SINH_VIEN', ['MaLop', 'Lop', 'MaChuyenNganh'], data_lop, 5000)
         print(f"     ✅ Đã insert {len(data_lop)} dòng mới")
     else:

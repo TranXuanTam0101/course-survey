@@ -571,7 +571,8 @@ def load_dimensions_optimized(cursor, df_raw, hp_master, dim_nganh, dim_chuyenng
     # Tạo dict từ HP-Khoa.csv
     hp_dict = {}
     if not hp_master.empty:
-        hp_dict = hp_master.set_index('MaHP')[['TenHP', 'MaKhoa']].to_dict('index')
+        hp_master_unique = hp_master.drop_duplicates(subset=['MaHP'], keep='first')
+        hp_dict = hp_master_unique.set_index('MaHP')[['TenHP', 'MaKhoa']].to_dict('index')
     
     # Lấy MaHP duy nhất từ RAW
     df_hp_raw = df_raw[['MaHP', 'TenHP']].drop_duplicates('MaHP').dropna(subset=['MaHP'])
@@ -871,7 +872,6 @@ def load_fact_tables_optimized(cursor, fact_main, fact_ketqua):
 
 
 # ================= MAIN =================
-# ================= MAIN =================
 def main():
     total_start = time.time()
     print("=" * 60)
@@ -950,6 +950,8 @@ def main():
     
     # 8. Load to database
     db_start = time.time()
+    count_main = 0
+    count_kq = 0
     try:
         load_dimensions_optimized(cursor, df_raw, hp_master, dim_nganh, dim_chuyennganh, mapping)
         count_main, count_kq = load_fact_tables_optimized(cursor, fact_main, fact_ketqua)

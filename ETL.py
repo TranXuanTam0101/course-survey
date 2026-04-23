@@ -353,7 +353,7 @@ def is_valid_essay_improved(text):
     if len(meaningful_parts) == 1:
         single_part = meaningful_parts[0].lower()
         # Từ khóa cảm xúc mạnh (positive hoặc negative)
-        strong_emotion = _nlp_improved.strong_positive_set.union(_nlp_improved.strong_negative_set)
+        strong_emotion = _nlp.strong_positive_set.union(_nlp_improved.strong_negative_set)
         if any(kw in single_part for kw in strong_emotion):
             return 1
     

@@ -582,7 +582,7 @@ def batch_insert_fast(cursor, table, columns, data, batch_size=20000):
     
     return total
 
-
+batch_insert = batch_insert_fast
 
 def load_dim_khoa(cursor, df_hp, df_nganh):
     all_khoa = set()

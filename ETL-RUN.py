@@ -652,6 +652,7 @@ def load_fact_tables_optimized(cursor, fact_main, fact_ketqua):
 
 
 # ================= MAIN =================
+# ================= MAIN =================
 def main():
     total_start = time.time()
     print("=" * 60)
@@ -713,12 +714,16 @@ def main():
     if not fact_ketqua.empty:
         save_processed(blob_service, fact_ketqua, f"{FILE_NAME}_ketqua_{timestamp}.csv")
     
-    # 7. Kết nối Database
+    # 7. Kết nối Database - SỬA LỖI Ở ĐÂY
     print("\n💾 7. Kết nối SQL Database...")
     try:
+        # Tạo connection trước
         conn = pyodbc.connect(CONN_STR, autocommit=False)
-        conn.fast_executemany = True
+        
+        # Tạo cursor và set fast_executemany cho CURSOR
         cursor = conn.cursor()
+        cursor.fast_executemany = True  # ✅ ĐÚNG - gán cho cursor
+        
         print("  ✅ Kết nối SQL thành công")
     except Exception as e:
         print(f"  ❌ Lỗi kết nối SQL: {e}")

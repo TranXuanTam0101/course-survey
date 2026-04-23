@@ -1191,7 +1191,7 @@ def main():
     print(f"   - Số phiếu tự luận: {len(fact_main):,}")
     print(f"   - Số câu trắc nghiệm: {count_kq:,}")
     
-        if not fact_main.empty:
+    if not fact_main.empty:
         print("\n   - Tag phân bố:")
         print(f"      Tag_HocPhan: {fact_main['Tag_HocPhan'].sum():,}")
         print(f"      Tag_DayHoc: {fact_main['Tag_DayHoc'].sum():,}")
@@ -1203,7 +1203,7 @@ def main():
             pct = cnt/len(fact_main)*100
             print(f"      {sent}: {cnt:,} ({pct:.1f}%)")
         
-        # ✅ Thống kê SentimentScore (nếu có cột)
+        # Thống kê SentimentScore (nếu có cột)
         if 'SentimentScore' in fact_main.columns:
             print("\n   - SentimentScore thống kê:")
             print(f"      Min: {fact_main['SentimentScore'].min():.2f}")
@@ -1216,7 +1216,6 @@ def main():
     print(f"   - Transform: {transform_time:.1f}s")
     print(f"   - Database: {db_time:.1f}s")
     print("=" * 60)
-
 
 if __name__ == "__main__":
     main()

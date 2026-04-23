@@ -96,25 +96,49 @@ def extract_ma_nganh_from_ten_nganh(ten_nganh: str) -> str:
 
 
 def determine_ma_chuyen_nganh(lop: str) -> tuple:
+    """
+    Xác định MaChuyenNganh từ Lop
+    Ưu tiên: Pattern đặc biệt > CTS > QT > pattern thường
+    """
     if not lop or not isinstance(lop, str):
         return None, None, None, None
     
     lop_upper = lop.upper().strip()
     
-    # TH1: Pattern có dạng 24K59 hoặc 24K59-E hoặc 24K59-E01
-    # Lấy toàn bộ phần sau số: "K59" hoặc "K59-E" hoặc "K59-E01"
-    match = re.search(r'\d{2}(K\d{2}[-\w]*)', lop_upper)
+    # TH1: Pattern có dạng 50K18-ACCA -> lấy "K18-ACCA"
+    #      hoặc 24K59-E -> lấy "K59-E"
+    match = re.search(r'\d{2}(K\d{2}[-\w]+)', lop_upper)
     if match:
-        ma_cn = match.group(1) 
+        ma_cn = match.group(1)  # "K18-ACCA", "K59-E"
         return ma_cn, f"Chuyên ngành {ma_cn}", None, None
     
-    # TH2: Chứa 'QT'
-    if 'QT' in lop_upper:
-        return "QT", "Chuyên ngành QT", "Phòng Đào Tạo", "PĐT"
+    # TH2: Lấy toàn bộ phần sau 2 số đầu (cho các trường hợp đặc biệt)
+    match = re.search(r'\d{2}(.+)', lop_upper)
+    if match:
+        ma_cn = match.group(1)  # "CTS-50K-QT.1", "CTS-50K", "49KQT", "50KQT"
+        
+        # Xử lý trường hợp có cả CTS và QT: ưu tiên CTS
+        if 'CTS' in ma_cn:
+            # Lấy phần trước dấu chấm hoặc toàn bộ
+            if '.' in ma_cn:
+                ma_cn = ma_cn.split('.')[0]
+            return ma_cn, f"Chuyên ngành {ma_cn}", "Trường ĐHKT", "TĐHKT"
+        
+        # Xử lý trường hợp có QT
+        if 'QT' in ma_cn:
+            # Lấy phần trước dấu chấm nếu có
+            if '.' in ma_cn:
+                ma_cn = ma_cn.split('.')[0]
+            return ma_cn, f"Chuyên ngành {ma_cn}", "Phòng Đào Tạo", "PĐT"
+        
+        # Nếu không có CTS hay QT, trả về nguyên bản
+        return ma_cn, f"Chuyên ngành {ma_cn}", None, None
     
-    # TH3: Chứa 'CTS'
-    if 'CTS' in lop_upper:
-        return "CTS", "Chuyên ngành CTS", "Trường ĐHKT", "TĐHKT"
+    # TH3: Pattern cũ \d{2}K\d{2}
+    match = re.search(r'(\d{2}K\d{2})', lop_upper)
+    if match:
+        ma_cn = match.group(1)
+        return ma_cn, f"Chuyên ngành {ma_cn}", None, None
     
     return None, None, None, None
 

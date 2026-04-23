@@ -920,6 +920,7 @@ def load_dimensions_optimized(cursor, df_raw, hp_master, dim_nganh, dim_chuyenng
             existing_lop.add(lop)
     
     if data_lop:
+        cursor.connection.commit()
         batch_insert_optimized(cursor, 'DIM_LOP_SINH_VIEN', ['MaLop', 'Lop', 'MaChuyenNganh'], data_lop, 5000)
         print(f"     ✅ Đã insert {len(data_lop)} dòng mới")
     else:

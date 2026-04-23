@@ -247,16 +247,16 @@ class ImprovedVietnameseNLPRuleBased:
             
             avg_score = score / sentence_count
             
-            if avg_score > 0.15:
+            if avg_score > 0.2:
                 return 'positive'
-            elif avg_score < -0.15:
+            elif avg_score < -0.2:
                 return 'negative'
             return 'neutral'
         
         sent_score = self._analyze_sentence_score(text)
-        if sent_score > 0.15:
+        if sent_score > 0.2:
             return 'positive'
-        elif sent_score < -0.15:
+        elif sent_score < -0.2:
             return 'negative'
         return 'neutral'
     
@@ -791,7 +791,7 @@ def load_dim_sinh_vien(cursor, df_raw):
             except:
                 pass
         data.append((row['MaSV'], row['HoDem'], row['Ten'], ngay_sinh, row['Lop']))
-    
+        existing.add(ma_sv)
     if data:
         cursor.execute("SELECT MaSV FROM DIM_SINH_VIEN")
         existing = {row[0] for row in cursor.fetchall()}

@@ -491,123 +491,344 @@ def load_dimensions_optimized(cursor, df_raw, hp_master, dim_nganh, dim_chuyenng
     print("\n📥 Loading DIMENSION tables...")
     ma_hoc_ky, nam_hoc, hoc_ky = derive_ma_hoc_ky()
     
-    # Lấy unique values từ df_raw
-    unique_lop = df_raw['Lop'].dropna().unique()
-    unique_sv = df_raw[['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'Lop']].drop_duplicates('MaSV')
-    unique_gv = df_raw[['MaGV', 'HoDemGV', 'TenGV']].drop_duplicates('MaGV')
-    unique_hp = df_raw[['MaHP', 'TenHP']].drop_duplicates('MaHP')
-    unique_lophp = df_raw[['LopHP', 'MaHP', 'MaGV']].drop_duplicates('LopHP')
-    
-    # DIM_KHOA
-    cursor.execute("SELECT MaKhoa FROM DIM_KHOA")
-    existing_khoa = {row[0] for row in cursor.fetchall()}
-    # Lấy các khoa từ master
-    all_khoa = set()
-    if not hp_master.empty:
-        all_khoa.update(hp_master['MaKhoa'].unique())
-    if not dim_nganh.empty:
-        all_khoa.update(dim_nganh['MaKhoa'].unique())
-    all_khoa.update(['UNKNOWN', 'TĐHKT', 'PĐT'])
-    data_khoa = [(ma, ma) for ma in all_khoa if ma not in existing_khoa]
-    if data_khoa:
-        batch_insert_optimized(cursor, 'DIM_KHOA', ['MaKhoa', 'TenKhoa'], data_khoa, 10000)
-    print(f"  ✅ DIM_KHOA: {len(data_khoa)} dòng mới")
-    
-    # DIM_NGANH
-    if not dim_nganh.empty:
-        cursor.execute("SELECT MaNganh FROM DIM_NGANH")
-        existing_nganh = {row[0] for row in cursor.fetchall()}
-        data_nganh = [(row['MaNganh'], row['TenNganh'], row['MaKhoa']) 
-                      for _, row in dim_nganh.iterrows() if row['MaNganh'] not in existing_nganh]
-        if data_nganh:
-            batch_insert_optimized(cursor, 'DIM_NGANH', ['MaNganh', 'TenNganh', 'MaKhoa'], data_nganh, 10000)
-    print(f"  ✅ DIM_NGANH: {len(data_nganh) if 'data_nganh' in locals() else 0} dòng mới")
-    
-    # DIM_CHUONG_TRINH_DAO_TAO
+    # ==========================================
+    # BẢNG 1: DIM_CHUONG_TRINH_DAO_TAO (KHÔNG PHỤ THUỘC)
+    # ==========================================
+    print("\n  -> 1. DIM_CHUONG_TRINH_DAO_TAO")
     cursor.execute("""
         IF NOT EXISTS (SELECT 1 FROM DIM_CHUONG_TRINH_DAO_TAO WHERE MaCTDT = 'CTDT_CHINHQUY') 
         INSERT INTO DIM_CHUONG_TRINH_DAO_TAO (MaCTDT, TenCTDT) VALUES ('CTDT_CHINHQUY', N'Chính quy')
     """)
+    cursor.execute("SELECT COUNT(*) FROM DIM_CHUONG_TRINH_DAO_TAO")
+    count = cursor.fetchone()[0]
+    print(f"     ✅ {count} dòng")
     
-    # DIM_CHUYEN_NGANH
+    # ==========================================
+    # BẢNG 2: DIM_KHOA (LẤY TỪ NHIỀU NGUỒN, KHÔNG CÓ UNKNOWN)
+    # ==========================================
+    print("\n  -> 2. DIM_KHOA")
+    all_khoa = set()
+    
+    # Nguồn 1: Từ HP-Khoa.csv
+    if not hp_master.empty:
+        all_khoa.update(hp_master['MaKhoa'].unique())
+        print(f"     - Từ HP-Khoa.csv: {len(hp_master['MaKhoa'].unique())} khoa")
+    
+    # Nguồn 2: Từ TenChuyenNganh-Khoa.csv
+    if not dim_nganh.empty:
+        all_khoa.update(dim_nganh['MaKhoa'].unique())
+        print(f"     - Từ TenChuyenNganh-Khoa.csv: {len(dim_nganh['MaKhoa'].unique())} khoa")
+    
+    # Nguồn 3: Các giá trị mặc định (KHÔNG có 'UNKNOWN')
+    default_khoa = {
+        'TĐHKT': N'Trường ĐH Kinh tế',
+        'PĐT': N'Phòng Đào Tạo'
+    }
+    all_khoa.update(default_khoa.keys())
+    print(f"     - Giá trị mặc định: {len(default_khoa)} khoa (TĐHKT, PĐT)")
+    
+    # Lấy existing
+    cursor.execute("SELECT MaKhoa FROM DIM_KHOA")
+    existing_khoa = {row[0] for row in cursor.fetchall()}
+    
+    # Tạo data mới
+    data_khoa = [(ma, default_khoa.get(ma, ma)) for ma in all_khoa if ma not in existing_khoa]
+    
+    if data_khoa:
+        batch_insert_optimized(cursor, 'DIM_KHOA', ['MaKhoa', 'TenKhoa'], data_khoa, 10000)
+        print(f"     ✅ Đã insert {len(data_khoa)} dòng mới")
+    else:
+        print(f"     ✅ Không có dòng mới")
+    
+    # ==========================================
+    # BẢNG 3: DIM_NGANH (CHỈ TỪ TenChuyenNganh-Khoa.csv)
+    # ==========================================
+    print("\n  -> 3. DIM_NGANH")
+    if not dim_nganh.empty:
+        cursor.execute("SELECT MaNganh FROM DIM_NGANH")
+        existing_nganh = {row[0] for row in cursor.fetchall()}
+        
+        data_nganh = []
+        for _, row in dim_nganh.iterrows():
+            ma_nganh = row['MaNganh']
+            if ma_nganh and ma_nganh not in existing_nganh:
+                data_nganh.append((ma_nganh, row['TenNganh'], row['MaKhoa']))
+                existing_nganh.add(ma_nganh)
+        
+        if data_nganh:
+            batch_insert_optimized(cursor, 'DIM_NGANH', ['MaNganh', 'TenNganh', 'MaKhoa'], data_nganh, 10000)
+            print(f"     ✅ Đã insert {len(data_nganh)} dòng mới")
+        else:
+            print(f"     ✅ Không có dòng mới")
+    else:
+        print(f"     ⚠️ Không có dữ liệu từ TenChuyenNganh-Khoa.csv")
+    
+    # ==========================================
+    # BẢNG 4: DIM_HOC_PHAN
+    # ==========================================
+    print("\n  -> 4. DIM_HOC_PHAN")
+    cursor.execute("SELECT MaHP FROM DIM_HOC_PHAN")
+    existing_hp = {row[0] for row in cursor.fetchall()}
+    
+    # Tạo dict từ HP-Khoa.csv
+    hp_dict = {}
+    if not hp_master.empty:
+        hp_dict = hp_master.set_index('MaHP')[['TenHP', 'MaKhoa']].to_dict('index')
+    
+    # Lấy MaHP duy nhất từ RAW
+    df_hp_raw = df_raw[['MaHP', 'TenHP']].drop_duplicates('MaHP').dropna(subset=['MaHP'])
+    
+    data_hp = []
+    for _, row in df_hp_raw.iterrows():
+        ma_hp = row['MaHP']
+        if ma_hp not in existing_hp:
+            if ma_hp in hp_dict:
+                data_hp.append((ma_hp, hp_dict[ma_hp]['TenHP'], hp_dict[ma_hp]['MaKhoa']))
+            else:
+                # Không có trong master, dùng tên từ raw và MaKhoa mặc định
+                ten_hp = row['TenHP'] if pd.notna(row['TenHP']) else f"Học phần {ma_hp}"
+                data_hp.append((ma_hp, ten_hp, 'TĐHKT'))  # Gán mặc định TĐHKT thay vì UNKNOWN
+            existing_hp.add(ma_hp)
+    
+    if data_hp:
+        batch_insert_optimized(cursor, 'DIM_HOC_PHAN', ['MaHP', 'TenHP', 'MaKhoa'], data_hp, 5000)
+        print(f"     ✅ Đã insert {len(data_hp)} dòng mới")
+    else:
+        print(f"     ✅ Không có dòng mới")
+    
+    # ==========================================
+    # BẢNG 5: DIM_CHUYEN_NGANH
+    # ==========================================
+    print("\n  -> 5. DIM_CHUYEN_NGANH")
+    
+    # Thêm giá trị mặc định (KHÔNG có UNKNOWN)
+    default_chuyennganh = [
+        ('TĐHKT', N'Chuyên ngành Trường ĐHKT', 'UNKNOWN', 'CTDT_CHINHQUY'),
+        ('PĐT', N'Chuyên ngành Phòng Đào Tạo', 'UNKNOWN', 'CTDT_CHINHQUY')
+    ]
+    
+    for ma_cn, ten_cn, ma_nganh, ma_ctdt in default_chuyennganh:
+        cursor.execute("SELECT MaChuyenNganh FROM DIM_CHUYEN_NGANH WHERE MaChuyenNganh = ?", ma_cn)
+        if not cursor.fetchone():
+            cursor.execute("""
+                INSERT INTO DIM_CHUYEN_NGANH (MaChuyenNganh, TenChuyenNganh, MaNganh, MaCTDT) 
+                VALUES (?, ?, ?, ?)
+            """, ma_cn, ten_cn, ma_nganh, ma_ctdt)
+            print(f"     ✅ Đã thêm {ma_cn} vào DIM_CHUYEN_NGANH")
+    
+    # Từ file master
     if not dim_chuyennganh.empty:
         cursor.execute("SELECT MaChuyenNganh FROM DIM_CHUYEN_NGANH")
         existing_cn = {row[0] for row in cursor.fetchall()}
-        data_cn = [(row['MaChuyenNganh'], row['TenChuyenNganh'], row['MaNganh'], 'CTDT_CHINHQUY')
-                   for _, row in dim_chuyennganh.iterrows() if row['MaChuyenNganh'] not in existing_cn]
+        
+        data_cn = []
+        for _, row in dim_chuyennganh.iterrows():
+            ma_chuyen = row['MaChuyenNganh']
+            if ma_chuyen and ma_chuyen not in existing_cn:
+                data_cn.append((ma_chuyen, row['TenChuyenNganh'], row['MaNganh'], 'CTDT_CHINHQUY'))
+                existing_cn.add(ma_chuyen)
+        
         if data_cn:
             batch_insert_optimized(cursor, 'DIM_CHUYEN_NGANH', 
                                   ['MaChuyenNganh', 'TenChuyenNganh', 'MaNganh', 'MaCTDT'], data_cn, 5000)
-    print(f"  ✅ DIM_CHUYEN_NGANH: {len(data_cn) if 'data_cn' in locals() else 0} dòng mới")
+            print(f"     ✅ Đã insert {len(data_cn)} dòng mới từ master")
+        else:
+            print(f"     ✅ Không có dòng mới từ master")
     
-    # DIM_LOP_SINH_VIEN
+    # ==========================================
+    # BẢNG 6: DIM_GIANG_VIEN
+    # ==========================================
+    print("\n  -> 6. DIM_GIANG_VIEN")
+    cursor.execute("SELECT MaGV FROM DIM_GIANG_VIEN")
+    existing_gv = {row[0] for row in cursor.fetchall()}
+    
+    df_gv = df_raw[['MaGV', 'HoDemGV', 'TenGV']].drop_duplicates('MaGV').dropna(subset=['MaGV'])
+    
+    data_gv = []
+    for _, row in df_gv.iterrows():
+        if row['MaGV'] not in existing_gv:
+            data_gv.append((row['MaGV'], row['HoDemGV'] or '', row['TenGV'] or ''))
+            existing_gv.add(row['MaGV'])
+    
+    if data_gv:
+        batch_insert_optimized(cursor, 'DIM_GIANG_VIEN', ['MaGV', 'HoDemGV', 'TenGV'], data_gv, 50000)
+        print(f"     ✅ Đã insert {len(data_gv)} dòng mới")
+    else:
+        print(f"     ✅ Không có dòng mới")
+    
+    # ==========================================
+    # BẢNG 7: DIM_HOC_KY
+    # ==========================================
+    print("\n  -> 7. DIM_HOC_KY")
+    cursor.execute("SELECT MaHocKy FROM DIM_HOC_KY WHERE MaHocKy = ?", ma_hoc_ky)
+    if not cursor.fetchone():
+        cursor.execute("INSERT INTO DIM_HOC_KY (MaHocKy, NamHoc, HocKy) VALUES (?, ?, ?)", 
+                      ma_hoc_ky, nam_hoc, hoc_ky)
+        print(f"     ✅ Đã thêm {ma_hoc_ky}")
+    else:
+        print(f"     ✅ {ma_hoc_ky} đã tồn tại")
+    
+    # ==========================================
+    # BẢNG 8: DIM_LOP_SINH_VIEN (PHỤ THUỘC DIM_CHUYEN_NGANH)
+    # ==========================================
+    print("\n  -> 8. DIM_LOP_SINH_VIEN")
+    
+    # Lấy danh sách MaChuyenNganh hợp lệ
+    cursor.execute("SELECT MaChuyenNganh FROM DIM_CHUYEN_NGANH")
+    valid_chuyennganh = {row[0] for row in cursor.fetchall()}
+    print(f"     - Có {len(valid_chuyennganh)} chuyên ngành hợp lệ")
+    
     cursor.execute("SELECT MaLop FROM DIM_LOP_SINH_VIEN")
     existing_lop = {row[0] for row in cursor.fetchall()}
-    data_lop = [(lop, lop, 'UNKNOWN') for lop in unique_lop if lop not in existing_lop]
+    
+    df_lop_unique = df_raw[['Lop']].drop_duplicates('Lop').dropna()
+    
+    data_lop = []
+    skipped_lop = []
+    
+    for _, row in df_lop_unique.iterrows():
+        lop = row['Lop']
+        if lop not in existing_lop:
+            ma_cn, _, _, _ = determine_ma_chuyen_nganh(lop)
+            
+            # Nếu không xác định được hoặc không tồn tại, bỏ qua (không insert)
+            if not ma_cn or ma_cn not in valid_chuyennganh:
+                skipped_lop.append(lop)
+                continue
+            
+            data_lop.append((lop, lop, ma_cn))
+            existing_lop.add(lop)
+    
     if data_lop:
         batch_insert_optimized(cursor, 'DIM_LOP_SINH_VIEN', ['MaLop', 'Lop', 'MaChuyenNganh'], data_lop, 5000)
-    print(f"  ✅ DIM_LOP_SINH_VIEN: {len(data_lop)} dòng mới")
+        print(f"     ✅ Đã insert {len(data_lop)} dòng mới")
+    else:
+        print(f"     ✅ Không có dòng mới")
     
-    # DIM_SINH_VIEN
+    if skipped_lop:
+        print(f"     ⚠️ Bỏ qua {len(skipped_lop)} lớp không xác định được chuyên ngành")
+    
+    # ==========================================
+    # BẢNG 9: DIM_SINH_VIEN (PHỤ THUỘC DIM_LOP_SINH_VIEN)
+    # ==========================================
+    print("\n  -> 9. DIM_SINH_VIEN")
+    
+    # Lấy danh sách MaLop hợp lệ
+    cursor.execute("SELECT MaLop FROM DIM_LOP_SINH_VIEN")
+    valid_lop = {row[0] for row in cursor.fetchall()}
+    print(f"     - Có {len(valid_lop)} lớp hợp lệ")
+    
     cursor.execute("SELECT MaSV FROM DIM_SINH_VIEN")
     existing_sv = {row[0] for row in cursor.fetchall()}
+    
+    df_sv = df_raw[['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'Lop']].drop_duplicates('MaSV').dropna(subset=['MaSV'])
+    
     data_sv = []
-    for _, row in unique_sv.iterrows():
-        if row['MaSV'] not in existing_sv:
+    skipped_sv = []
+    
+    for _, row in df_sv.iterrows():
+        ma_sv = row['MaSV']
+        lop = row['Lop']
+        
+        if ma_sv not in existing_sv:
+            # Chỉ insert nếu lớp tồn tại trong DIM_LOP_SINH_VIEN
+            if lop not in valid_lop:
+                skipped_sv.append(ma_sv)
+                continue
+            
             ngay_sinh = None
             if row['NgaySinh']:
                 try:
                     ngay_sinh = datetime.strptime(row['NgaySinh'], '%d/%m/%Y').date()
                 except:
                     pass
-            data_sv.append((row['MaSV'], row['HoDem'], row['Ten'], ngay_sinh, row['Lop']))
+            
+            data_sv.append((ma_sv, row['HoDem'] or '', row['Ten'] or '', ngay_sinh, lop))
+            existing_sv.add(ma_sv)
+    
     if data_sv:
         batch_insert_optimized(cursor, 'DIM_SINH_VIEN', ['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop'], data_sv, 5000)
-    print(f"  ✅ DIM_SINH_VIEN: {len(data_sv)} dòng mới")
+        print(f"     ✅ Đã insert {len(data_sv)} dòng mới")
+    else:
+        print(f"     ✅ Không có dòng mới")
     
-    # DIM_GIANG_VIEN
-    cursor.execute("SELECT MaGV FROM DIM_GIANG_VIEN")
-    existing_gv = {row[0] for row in cursor.fetchall()}
-    data_gv = [(row['MaGV'], row['HoDemGV'], row['TenGV']) 
-               for _, row in unique_gv.iterrows() if row['MaGV'] not in existing_gv]
-    if data_gv:
-        batch_insert_optimized(cursor, 'DIM_GIANG_VIEN', ['MaGV', 'HoDemGV', 'TenGV'], data_gv, 50000)
-    print(f"  ✅ DIM_GIANG_VIEN: {len(data_gv)} dòng mới")
+    if skipped_sv:
+        print(f"     ⚠️ Bỏ qua {len(skipped_sv)} sinh viên có lớp không hợp lệ")
     
-    # DIM_HOC_PHAN
+    # ==========================================
+    # BẢNG 10: DIM_LOP_HOC_PHAN (PHỤ THUỘC DIM_HOC_PHAN, DIM_GIANG_VIEN, DIM_HOC_KY)
+    # ==========================================
+    print("\n  -> 10. DIM_LOP_HOC_PHAN")
+    
+    # Lấy danh sách các khóa ngoại hợp lệ
     cursor.execute("SELECT MaHP FROM DIM_HOC_PHAN")
-    existing_hp = {row[0] for row in cursor.fetchall()}
-    hp_dict = {}
-    if not hp_master.empty:
-        hp_dict = hp_master.set_index('MaHP')[['TenHP', 'MaKhoa']].to_dict('index')
-    data_hp = []
-    for _, row in unique_hp.iterrows():
-        if row['MaHP'] not in existing_hp:
-            if row['MaHP'] in hp_dict:
-                data_hp.append((row['MaHP'], hp_dict[row['MaHP']]['TenHP'], hp_dict[row['MaHP']]['MaKhoa']))
-            else:
-                data_hp.append((row['MaHP'], row['TenHP'] or f"Học phần {row['MaHP']}", 'UNKNOWN'))
-    if data_hp:
-        batch_insert_optimized(cursor, 'DIM_HOC_PHAN', ['MaHP', 'TenHP', 'MaKhoa'], data_hp, 5000)
-    print(f"  ✅ DIM_HOC_PHAN: {len(data_hp)} dòng mới")
+    valid_hp = {row[0] for row in cursor.fetchall()}
     
-    # DIM_HOC_KY
-    cursor.execute("SELECT MaHocKy FROM DIM_HOC_KY WHERE MaHocKy = ?", ma_hoc_ky)
-    if not cursor.fetchone():
-        cursor.execute("INSERT INTO DIM_HOC_KY (MaHocKy, NamHoc, HocKy) VALUES (?, ?, ?)", ma_hoc_ky, nam_hoc, hoc_ky)
-    print(f"  ✅ DIM_HOC_KY: {ma_hoc_ky}")
+    cursor.execute("SELECT MaGV FROM DIM_GIANG_VIEN")
+    valid_gv = {row[0] for row in cursor.fetchall()}
     
-    # DIM_LOP_HOC_PHAN
+    cursor.execute("SELECT MaHocKy FROM DIM_HOC_KY")
+    valid_hocky = {row[0] for row in cursor.fetchall()}
+    
+    print(f"     - Có {len(valid_hp)} học phần hợp lệ")
+    print(f"     - Có {len(valid_gv)} giảng viên hợp lệ")
+    print(f"     - Có {len(valid_hocky)} học kỳ hợp lệ")
+    
     cursor.execute("SELECT MaLopHP FROM DIM_LOP_HOC_PHAN")
     existing_lhp = {row[0] for row in cursor.fetchall()}
-    data_lhp = [(row['LopHP'], row['LopHP'], row['MaHP'], row['MaGV'], ma_hoc_ky) 
-                for _, row in unique_lophp.iterrows() if row['LopHP'] not in existing_lhp]
+    
+    df_lhp = df_raw[['LopHP', 'MaHP', 'MaGV']].drop_duplicates('LopHP').dropna(subset=['LopHP'])
+    
+    data_lhp = []
+    skipped_lhp = []
+    
+    for _, row in df_lhp.iterrows():
+        lop_hp = row['LopHP']
+        ma_hp = row['MaHP']
+        ma_gv = row['MaGV']
+        
+        if lop_hp not in existing_lhp:
+            # Chỉ insert nếu các khóa ngoại tồn tại
+            if ma_hp not in valid_hp:
+                skipped_lhp.append((lop_hp, f"MaHP={ma_hp} không tồn tại"))
+                continue
+            if ma_gv not in valid_gv:
+                skipped_lhp.append((lop_hp, f"MaGV={ma_gv} không tồn tại"))
+                continue
+            if ma_hoc_ky not in valid_hocky:
+                skipped_lhp.append((lop_hp, f"MaHocKy={ma_hoc_ky} không tồn tại"))
+                continue
+            
+            data_lhp.append((lop_hp, lop_hp, ma_hp, ma_gv, ma_hoc_ky))
+            existing_lhp.add(lop_hp)
+    
     if data_lhp:
         batch_insert_optimized(cursor, 'DIM_LOP_HOC_PHAN', 
                               ['MaLopHP', 'LopHP', 'MaHP', 'MaGV', 'MaHocKy'], data_lhp, 5000)
-    print(f"  ✅ DIM_LOP_HOC_PHAN: {len(data_lhp)} dòng mới")
+        print(f"     ✅ Đã insert {len(data_lhp)} dòng mới")
+    else:
+        print(f"     ✅ Không có dòng mới")
     
+    if skipped_lhp:
+        print(f"     ⚠️ Bỏ qua {len(skipped_lhp)} lớp học phần do khóa ngoại không hợp lệ")
+        for skip in skipped_lhp[:5]:  # In 5 ví dụ đầu
+            print(f"        - {skip[0]}: {skip[1]}")
+    
+    # COMMIT SAU KHI HOÀN TẤT
     cursor.connection.commit()
+    
+    # TỔNG KẾT
+    print("\n  " + "=" * 50)
+    print("  📊 TỔNG KẾT DIMENSION:")
+    print(f"     - DIM_KHOA: {len(all_khoa)} khoa")
+    print(f"     - DIM_NGANH: {len(data_nganh) if 'data_nganh' in locals() else 0} ngành mới")
+    print(f"     - DIM_HOC_PHAN: {len(data_hp)} học phần mới")
+    print(f"     - DIM_CHUYEN_NGANH: {len(data_cn) if 'data_cn' in locals() else 0} chuyên ngành mới")
+    print(f"     - DIM_GIANG_VIEN: {len(data_gv)} giảng viên mới")
+    print(f"     - DIM_LOP_SINH_VIEN: {len(data_lop)} lớp mới")
+    print(f"     - DIM_SINH_VIEN: {len(data_sv)} sinh viên mới")
+    print(f"     - DIM_LOP_HOC_PHAN: {len(data_lhp)} lớp học phần mới")
+    print("  " + "=" * 50)
     print("  ✅ All DIMENSION tables loaded!")
 
 

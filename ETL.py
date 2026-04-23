@@ -8,8 +8,7 @@ import numpy as np
 import pyodbc
 from datetime import datetime
 from azure.storage.blob import BlobServiceClient
-from concurrent.futures import ThreadPoolExecutor
-from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import multiprocessing as mp
 
 # ================= CONFIG =================

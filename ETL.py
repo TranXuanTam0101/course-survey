@@ -637,26 +637,58 @@ def load_dim_giang_vien(cursor, df_raw):
     return 0
 
 def load_dim_hoc_phan(cursor, df_hp_master, df_raw):
+    """
+    Load DIM_HOC_PHAN:
+    1. Lấy MaHP từ file RAW (làm gốc)
+    2. Tra trong HP-Khoa.csv để lấy TenHP và MaKhoa
+    3. Nếu không có trong HP-Khoa, dùng TenHP từ RAW và MaKhoa = 'UNKNOWN'
+    4. KHÔNG lấy tất cả từ HP-Khoa, chỉ lấy những mã xuất hiện trong RAW
+    """
     count = 0
-    if not df_hp_master.empty:
-        data = [(row['MaHP'], row['TenHP'], row['MaKhoa']) for _, row in df_hp_master.iterrows()]
-        cursor.execute("SELECT MaHP FROM DIM_HOC_PHAN")
-        existing = {row[0] for row in cursor.fetchall()}
-        new_data = [d for d in data if d[0] not in existing]
-        if new_data:
-            count += batch_insert(cursor, 'DIM_HOC_PHAN', ['MaHP', 'TenHP', 'MaKhoa'], new_data, 5000)
     
+    # Lấy danh sách MaHP đã có trong DB
+    cursor.execute("SELECT MaHP FROM DIM_HOC_PHAN")
+    existing_in_db = {row[0] for row in cursor.fetchall()}
+    
+    # Tạo dict từ HP-Khoa.csv để tra cứu nhanh
+    hp_dict = {}
+    if not df_hp_master.empty:
+        for _, row in df_hp_master.iterrows():
+            ma_hp = row['MaHP']
+            if ma_hp and ma_hp not in hp_dict:
+                hp_dict[ma_hp] = {
+                    'TenHP': row['TenHP'],
+                    'MaKhoa': row['MaKhoa']
+                }
+    
+    # Lấy MaHP duy nhất từ RAW (làm gốc)
     df_hp_raw = df_raw[['MaHP', 'TenHP']].drop_duplicates('MaHP')
     df_hp_raw = df_hp_raw[df_hp_raw['MaHP'].notna() & (df_hp_raw['MaHP'] != '')]
-    data_raw = [(row['MaHP'], row['TenHP'], 'UNKNOWN') for _, row in df_hp_raw.iterrows()]
-    cursor.execute("SELECT MaHP FROM DIM_HOC_PHAN")
-    existing = {row[0] for row in cursor.fetchall()}
-    new_data = [d for d in data_raw if d[0] not in existing]
-    if new_data:
-        count += batch_insert(cursor, 'DIM_HOC_PHAN', ['MaHP', 'TenHP', 'MaKhoa'], new_data, 5000)
+    
+    data = []
+    for _, row in df_hp_raw.iterrows():
+        ma_hp = row['MaHP']
+        
+        if ma_hp and ma_hp not in existing_in_db:
+            # Tra trong HP-Khoa.csv
+            if ma_hp in hp_dict:
+                ten_hp = hp_dict[ma_hp]['TenHP']
+                ma_khoa = hp_dict[ma_hp]['MaKhoa']
+            else:
+                # Không có trong HP-Khoa, dùng từ RAW
+                ten_hp = row['TenHP'] if pd.notna(row['TenHP']) else f"Học phần {ma_hp}"
+                ma_khoa = 'UNKNOWN'
+            
+            data.append((ma_hp, ten_hp, ma_khoa))
+            existing_in_db.add(ma_hp)
+    
+    if data:
+        print(f"      -> Insert {len(data)} học phần (chỉ từ RAW) vào DIM_HOC_PHAN")
+        count = batch_insert(cursor, 'DIM_HOC_PHAN', ['MaHP', 'TenHP', 'MaKhoa'], data, 5000)
     
     print(f"  ✅ DIM_HOC_PHAN: {count} dòng mới")
     return count
+    
 
 def load_dim_hoc_ky(cursor):
     ma_hoc_ky, nam_hoc, hoc_ky = derive_ma_hoc_ky()

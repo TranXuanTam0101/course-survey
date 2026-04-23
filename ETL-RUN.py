@@ -482,6 +482,7 @@ def batch_insert_optimized(cursor, table, columns, data, batch_size=100000):
         total += len(batch)
         if total % 100000 == 0:
             print(f"      -> Đã insert {total:,}/{len(data):,} dòng vào {table}")
+    cursor.connection.commit()
     return total
 
 
@@ -852,7 +853,7 @@ def load_fact_tables_optimized(cursor, fact_main, fact_ketqua):
     # Tắt constraints
     cursor.execute("ALTER TABLE FACT_GOP_Y_TU_LUAN NOCHECK CONSTRAINT ALL")
     cursor.execute("ALTER TABLE FACT_KET_QUA_DANH_GIA NOCHECK CONSTRAINT ALL")
-    
+    cursor.connection.commit() 
     count_main = 0
     count_kq = 0
     

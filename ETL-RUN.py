@@ -645,13 +645,16 @@ def load_dimensions_optimized(cursor, df_raw, hp_master, dim_nganh, dim_chuyenng
         print(f"     ✅ {ma_hoc_ky} đã tồn tại")
     
     # ==========================================
-    # BẢNG 8: DIM_LOP_SINH_VIEN
+    # BẢNG 8: DIM_LOP_SINH_VIEN (CÁCH 2 - KHÔNG DÙNG UNKNOWN)
     # ==========================================
     print("\n  -> 8. DIM_LOP_SINH_VIEN")
     
     # Lấy danh sách MaChuyenNganh từ file master
-    cursor.execute("SELECT MaChuyenNganh FROM DIM_CHUYEN_NGANH")
-    valid_chuyennganh = {row[0] for row in cursor.fetchall()}
+    cursor.execute("SELECT MaChuyenNganh, MaNganh FROM DIM_CHUYEN_NGANH")
+    valid_chuyennganh = {}
+    for row in cursor.fetchall():
+        valid_chuyennganh[row[0]] = row[1]  # {ma_cn: ma_nganh}
+    
     print(f"     - Có {len(valid_chuyennganh)} chuyên ngành từ file master")
     
     # Lấy danh sách MaLop đã có
@@ -666,31 +669,38 @@ def load_dimensions_optimized(cursor, df_raw, hp_master, dim_nganh, dim_chuyenng
         if lop not in existing_lop:
             ma_cn, ten_cn, ten_khoa, ma_khoa = determine_ma_chuyen_nganh(lop)
             
-            # Nếu không xác định được, bỏ qua
             if not ma_cn:
                 continue
             
             # Nếu mã chưa có trong DIM_CHUYEN_NGANH, tự động thêm
             if ma_cn not in valid_chuyennganh:
-                # Xác định tên chuyên ngành và khoa
+                # Xác định MaNganh phù hợp
+                if 'CTS' in ma_cn:
+                    ma_nganh = 'CTS'
+                elif 'QT' in ma_cn:
+                    ma_nganh = 'QT'
+                else:
+                    # Tìm MaNganh từ tên lớp (lấy phần đầu)
+                    ma_nganh = lop.split('K')[0] if 'K' in lop else 'TĐHKT'
+                    if len(ma_nganh) > 2:
+                        ma_nganh = ma_nganh[:2]
+                
                 if ten_cn:
-                    # TH2, TH3: đã có từ code
                     final_ten_cn = ten_cn
                     final_ten_khoa = ten_khoa
                     final_ma_khoa = ma_khoa
                 else:
-                    # TH1, TH4: tạm thời, sẽ được cập nhật từ master sau
                     final_ten_cn = f"Chuyên ngành {ma_cn}"
                     final_ten_khoa = None
-                    final_ma_khoa = 'TĐHKT'  # Gán mặc định
+                    final_ma_khoa = 'TĐHKT'
                 
-                # Thêm vào DIM_CHUYEN_NGANH
+                # Insert vào DIM_CHUYEN_NGANH với MaNganh đã xác định
                 cursor.execute("""
                     INSERT INTO DIM_CHUYEN_NGANH (MaChuyenNganh, TenChuyenNganh, MaNganh, MaCTDT) 
                     VALUES (?, ?, ?, ?)
-                """, ma_cn, final_ten_cn, 'UNKNOWN', 'CTDT_CHINHQUY')
-                valid_chuyennganh.add(ma_cn)
-                print(f"        ✅ Đã tự động thêm {ma_cn} vào DIM_CHUYEN_NGANH")
+                """, ma_cn, final_ten_cn, ma_nganh, 'CTDT_CHINHQUY')
+                valid_chuyennganh[ma_cn] = ma_nganh
+                print(f"        ✅ Đã tự động thêm {ma_cn} (MaNganh={ma_nganh}) vào DIM_CHUYEN_NGANH")
             
             data_lop.append((lop, lop, ma_cn))
             existing_lop.add(lop)

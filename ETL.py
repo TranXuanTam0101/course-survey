@@ -41,8 +41,8 @@ TAILIEU_CONTAINER = "tailieu"
 PROCESSED_PATH = "processed-data"
 
 # Số lượng worker
-NUM_WORKERS = max(1, mp.cpu_count() - 1)
-CHUNK_SIZE = 50000
+NUM_WORKERS = max(2, (mp.cpu_count() - 1) // 2)
+CHUNK_SIZE = 10000 
 
 # ================= PATTERNS =================
 _date_pattern = re.compile(r'^\d{2}/\d{2}/\d{4}$')
@@ -76,8 +76,6 @@ def create_ma_khoa(ten_khoa: str) -> str:
         'Bộ môn NNCN': 'BNNNCN', 'Trường ĐHNN': 'TĐHNN', 'Luật': 'LUAT',
         'Marketing': 'MKT', 'Trường ĐHKT': 'TĐHKT', 'Phòng Đào Tạo': 'PĐT'
     }
-    if not isinstance(ten_khoa, str) or not ten_khoa:
-        return "UNKNOWN"
     for special_name, special_code in SPECIAL_MA_KHOA.items():
         if special_name.lower() in ten_khoa.lower():
             return special_code
@@ -289,6 +287,7 @@ def is_valid_essay(text):
     return 1
 
 
+
 # ================= BLOB FUNCTIONS =================
 def download_blob(blob_service, container, path):
     try:
@@ -341,146 +340,118 @@ def load_chuyennganh_master(blob_service):
     
     df_clean = df_clean.dropna(subset=['MaChuyenNganh'])
     df_clean['MaKhoa'] = df_clean['TenKhoa'].apply(create_ma_khoa)
-    df_clean['MaNganh'] = df_clean['TenNganh'].apply(extract_ma_nganh_from_ten_nganh)
+    # Tạo MaNganh từ TenNganh: lấy 2 chữ cái đầu
+    df_clean['MaNganh'] = df_clean['TenNganh'].apply(
+        lambda x: ''.join([w[0].upper() for w in str(x).split() if w])[:10] if pd.notna(x) else 'UNKNOWN'
+    )
     
     dim_nganh = df_clean[['MaNganh', 'TenNganh', 'MaKhoa']].drop_duplicates('MaNganh')
     dim_chuyennganh = df_clean[['MaChuyenNganh', 'TenChuyenNganh', 'MaNganh']].drop_duplicates('MaChuyenNganh')
     return dim_nganh, dim_chuyennganh
 
 
-# ================= PARSE SURVEY DATA (XỬ LÝ ĐỒNG THỜI) =================
+# ================= PARSE SURVEY DATA (STREAMING + TỐI ƯU) =================
 def is_date_format(value):
-    return isinstance(value, str) and bool(_date_pattern.match(value.strip()))
+    return bool(_date_pattern.match(value.strip())) if isinstance(value, str) else False
 
 def is_ma_gv_format(value):
     if not isinstance(value, str):
         return False
-    value = value.strip()
-    return (len(value) == 7 and value.isdigit()) or (len(value) == 7 and value.startswith("TG")) or value == "gvDacThu_TKTH"
+    v = value.strip()
+    return (len(v) == 7 and v.isdigit()) or (len(v) == 7 and v.startswith("TG")) or v == "gvDacThu_TKTH"
 
-def parse_single_line(line: str) -> dict:
-    """
-    XỬ LÝ ĐỒNG THỜI cả 2 phần:
-    1. Phần TRƯỚC NULL: Lop, MaSV, HoDem, Ten, NgaySinh, MaHP, TenHP, MaGV, CauHoi, GiaTri
-    2. Phần SAU NULL: EssayText (toàn bộ nội dung tự luận, giữ dấu phẩy)
-    """
-    if not line or not line.strip():
-        return None
-    
-    row = [x.strip() for x in line.split(',')]
-    row_len = len(row)
-    
-    try:
-        # ========== PHẦN 1: XỬ LÝ DỮ LIỆU TRƯỚC NULL ==========
-        
-        # 1. Lấy 2 cột đầu (luôn cố định)
-        lop = row[0] if row_len > 0 else ''
-        ma_sv = row[1] if row_len > 1 else ''
-        
-        # 2. Tìm ngày sinh (bằng regex pattern)
-        ngay_sinh = ''
-        ngay_sinh_index = -1
-        for i in range(2, min(row_len, 15)):
-            if is_date_format(row[i]):
-                ngay_sinh = row[i]
-                ngay_sinh_index = i
-                break
-        
-        if ngay_sinh_index == -1:
-            return None
-        
-        # 3. Lấy họ đệm và tên (các cột giữa index 2 và ngày sinh)
-        ho_dem = ''
-        ten = ''
-        if ngay_sinh_index > 1:
-            ho_dem_ten_parts = row[2:ngay_sinh_index]
-            ho_dem_ten_str = ' '.join([p for p in ho_dem_ten_parts if p])
-            if ho_dem_ten_str:
-                parts = ho_dem_ten_str.split()
-                if parts:
-                    ten = parts[-1]
-                    ho_dem = ' '.join(parts[:-1]) if len(parts) > 1 else ''
-        
-        # 4. Lấy MaHP (cột ngay sau ngày sinh)
-        ma_hp = row[ngay_sinh_index + 1] if ngay_sinh_index + 1 < row_len else ''
-        
-        # 5. Tìm mã giảng viên (bằng regex pattern)
-        ma_gv = ''
-        ma_gv_index = -1
-        start_idx = ngay_sinh_index + 2
-        for i in range(start_idx, min(row_len, start_idx + 20)):
-            if is_ma_gv_format(row[i]):
-                ma_gv = row[i]
-                ma_gv_index = i
-                break
-        
-        if ma_gv_index == -1:
-            ma_gv_index = row_len - 4 if row_len >= 4 else ngay_sinh_index + 2
-        
-        # 6. Lấy tên học phần (các cột giữa MaHP và MaGV)
-        ten_hp = ' '.join(row[ngay_sinh_index + 2:ma_gv_index]) if ma_gv_index > ngay_sinh_index + 2 else ''
-        
-        # 7. Lấy thông tin giảng viên
-        ho_dem_gv = row[ma_gv_index + 1] if ma_gv_index + 1 < row_len else ''
-        ten_gv = row[ma_gv_index + 2] if ma_gv_index + 2 < row_len else ''
-        lop_hp = row[ma_gv_index + 3] if ma_gv_index + 3 < row_len else ''
-        
-        # 8. Lấy câu hỏi và giá trị trắc nghiệm (cặp CauHoi, GiaTri)
-        cau_hoi = row[ma_gv_index + 4] if ma_gv_index + 4 < row_len else ''
-        gia_tri = row[ma_gv_index + 5] if ma_gv_index + 5 < row_len else ''
-        
-        # ========== TÌM VỊ TRÍ NULL ==========
-        null_index = -1
-        for i in range(ma_gv_index + 6, min(row_len, ma_gv_index + 20)):
-            if i < row_len and (row[i].upper() == 'NULL' or row[i] == ''):
-                null_index = i
-                break
-        
-        # ========== PHẦN 2: XỬ LÝ DỮ LIỆU SAU NULL (CHO NLP) ==========
-        # Lấy TOÀN BỘ nội dung sau NULL, GIỮ NGUYÊN DẤU PHẨY
-        essay_text = ''
-        if null_index != -1 and null_index + 1 < row_len:
-            after_null = row[null_index + 1:]
-            essay_text = ','.join(after_null)  # Giữ nguyên dấu phẩy, không tách câu
-            essay_text = essay_text.strip()
-        
-        # Kiểm tra sơ bộ dữ liệu rác cho phần sau NULL
-        is_valid_format = is_valid_essay(essay_text)
-        
-        return {
-            # Dữ liệu trước NULL
-            'Lop': lop,
-            'MaSV': ma_sv,
-            'HoDem': ho_dem,
-            'Ten': ten,
-            'NgaySinh': ngay_sinh,
-            'MaHP': ma_hp,
-            'TenHP': ten_hp,
-            'MaGV': ma_gv,
-            'HoDemGV': ho_dem_gv,
-            'TenGV': ten_gv,
-            'LopHP': lop_hp,
-            'CauHoi': cau_hoi,
-            'GiaTri': gia_tri,
-            'Is_Valid_Format': is_valid_format,
-            
-            # Dữ liệu sau NULL (cho NLP)
-            'EssayText': essay_text
-        }
-    except Exception as e:
-        return None
-
-def parse_lines_batch(lines_batch):
-    """Xử lý một batch dòng"""
+def parse_lines_batch_fast(lines_batch):
+    """Parse batch dòng - TỐI ƯU với ít cấp phát memory"""
     results = []
     for line in lines_batch:
-        result = parse_single_line(line)
-        if result:
-            results.append(result)
+        if not line or not line.strip():
+            continue
+        
+        row = [x.strip() for x in line.split(',')]
+        row_len = len(row)
+        
+        if row_len < 15:
+            continue
+        
+        try:
+            # Lấy 2 cột đầu
+            lop = row[0]
+            ma_sv = row[1]
+            
+            # Tìm ngày sinh (tối ưu: dừng sớm)
+            ngay_sinh = ''
+            ngay_sinh_index = -1
+            for i in range(2, min(row_len, 12)):
+                if is_date_format(row[i]):
+                    ngay_sinh = row[i]
+                    ngay_sinh_index = i
+                    break
+            
+            if ngay_sinh_index == -1:
+                continue
+            
+            # Lấy họ tên
+            ho_dem = ''
+            ten = ''
+            if ngay_sinh_index > 1:
+                name_parts = [p for p in row[2:ngay_sinh_index] if p]
+                if name_parts:
+                    ten = name_parts[-1]
+                    ho_dem = ' '.join(name_parts[:-1]) if len(name_parts) > 1 else ''
+            
+            ma_hp = row[ngay_sinh_index + 1] if ngay_sinh_index + 1 < row_len else ''
+            
+            # Tìm mã GV
+            ma_gv = ''
+            ma_gv_index = -1
+            for i in range(ngay_sinh_index + 2, min(row_len, ngay_sinh_index + 25)):
+                if is_ma_gv_format(row[i]):
+                    ma_gv = row[i]
+                    ma_gv_index = i
+                    break
+            
+            if ma_gv_index == -1:
+                ma_gv_index = row_len - 4 if row_len >= 4 else ngay_sinh_index + 2
+            
+            # Tên học phần
+            ten_hp = ' '.join(row[ngay_sinh_index + 2:ma_gv_index]) if ma_gv_index > ngay_sinh_index + 2 else ''
+            
+            # Thông tin GV
+            ho_dem_gv = row[ma_gv_index + 1] if ma_gv_index + 1 < row_len else ''
+            ten_gv = row[ma_gv_index + 2] if ma_gv_index + 2 < row_len else ''
+            lop_hp = row[ma_gv_index + 3] if ma_gv_index + 3 < row_len else ''
+            
+            # Câu hỏi và giá trị
+            cau_hoi = row[ma_gv_index + 4] if ma_gv_index + 4 < row_len else ''
+            gia_tri = row[ma_gv_index + 5] if ma_gv_index + 5 < row_len else ''
+            
+            # Tìm NULL
+            null_index = -1
+            for i in range(ma_gv_index + 6, min(row_len, ma_gv_index + 20)):
+                if row[i].upper() == 'NULL' or row[i] == '':
+                    null_index = i
+                    break
+            
+            # Lấy essay text
+            essay_text = ''
+            if null_index != -1 and null_index + 1 < row_len:
+                after_null = row[null_index + 1:]
+                essay_text = ','.join(after_null).strip()
+            
+            results.append({
+                'Lop': lop, 'MaSV': ma_sv, 'HoDem': ho_dem, 'Ten': ten,
+                'NgaySinh': ngay_sinh, 'MaHP': ma_hp, 'TenHP': ten_hp,
+                'MaGV': ma_gv, 'HoDemGV': ho_dem_gv, 'TenGV': ten_gv,
+                'LopHP': lop_hp, 'CauHoi': cau_hoi, 'GiaTri': gia_tri,
+                'EssayText': essay_text
+            })
+        except Exception:
+            continue
+    
     return results
 
-def parse_survey_data_parallel(content: str) -> pd.DataFrame:
-    """Parse dữ liệu song song, nhóm 12 dòng thành 1 phiếu"""
+def parse_survey_data_parallel_fast(content: str) -> pd.DataFrame:
+    """Parse dữ liệu song song - TỐI ƯU, nhóm trực tiếp không qua DF trung gian"""
     print(f"  -> Đang parse với {NUM_WORKERS} workers...")
     start = time.time()
     
@@ -493,122 +464,107 @@ def parse_survey_data_parallel(content: str) -> pd.DataFrame:
     # Xử lý song song
     all_results = []
     with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
-        futures = [executor.submit(parse_lines_batch, batch) for batch in batches]
+        futures = [executor.submit(parse_lines_batch_fast, batch) for batch in batches]
         for future in as_completed(futures):
             all_results.extend(future.result())
     
-    df = pd.DataFrame(all_results)
-    print(f"  -> Đã parse {len(df):,} dòng ({time.time()-start:.2f}s)")
+    print(f"  -> Đã parse {len(all_results):,} dòng ({time.time()-start:.2f}s)")
     
-    # Nhóm 12 dòng thành 1 phiếu
+    # NHÓM TRỰC TIẾP - KHÔNG QUA DATAFRAME
     print("  -> Đang nhóm thành phiếu...")
     start_group = time.time()
     
     surveys = {}
-    for _, row in df.iterrows():
+    for row in all_results:
         key = f"{row['MaSV']}_{row['LopHP']}_{row['MaGV']}"
         
         if key not in surveys:
             surveys[key] = {
-                'Lop': row['Lop'],
-                'MaSV': row['MaSV'],
-                'HoDem': row['HoDem'],
-                'Ten': row['Ten'],
-                'NgaySinh': row['NgaySinh'],
-                'MaHP': row['MaHP'],
-                'TenHP': row['TenHP'],
-                'MaGV': row['MaGV'],
-                'HoDemGV': row['HoDemGV'],
-                'TenGV': row['TenGV'],
-                'LopHP': row['LopHP'],
-                'EssayText': row['EssayText'],  # Lấy từ dòng đầu tiên
-                'DiemTracNghiem': {},
-                'Is_Valid_Format': row['Is_Valid_Format']
+                'Lop': row['Lop'], 'MaSV': row['MaSV'], 'HoDem': row['HoDem'],
+                'Ten': row['Ten'], 'NgaySinh': row['NgaySinh'], 'MaHP': row['MaHP'],
+                'TenHP': row['TenHP'], 'MaGV': row['MaGV'], 'HoDemGV': row['HoDemGV'],
+                'TenGV': row['TenGV'], 'LopHP': row['LopHP'],
+                'EssayText': row['EssayText'], 'DiemTracNghiem': {}
             }
         
-        # Lưu điểm trắc nghiệm
         cau_hoi = row['CauHoi']
         gia_tri = row['GiaTri']
         if cau_hoi and gia_tri and cau_hoi.isdigit() and gia_tri.isdigit():
             surveys[key]['DiemTracNghiem'][int(cau_hoi)] = int(gia_tri)
     
-    results = list(surveys.values())
+    # Chuyển thành list các dict
+    results = []
+    for key, survey in surveys.items():
+        results.append(survey)
+    
     df_grouped = pd.DataFrame(results)
     print(f"  -> Đã nhóm {len(df_grouped):,} phiếu ({time.time()-start_group:.2f}s)")
     
     return df_grouped
 
 
-# ================= TRANSFORM & NLP =================
-def process_nlp_batch(texts):
-    """Xử lý NLP cho một batch văn bản"""
-    results = []
-    for text in texts:
-        if not text or not isinstance(text, str) or len(text.strip()) < 5:
-            sentiment = 'neutral'
-            tags = ['TAG_K']
-            is_valid = 0
-        else:
-            sentiment = _nlp.analyze_sentiment(text)
-            tags = _nlp.extract_tags(text)
-            is_valid = is_valid_essay(text)
-        results.append((sentiment, tags, is_valid))
-    return results
-
-def transform_with_nlp_parallel(df):
-    """Transform dữ liệu và xử lý NLP song song"""
+# ================= TRANSFORM & NLP (TỐI ƯU) =================
+def transform_with_nlp_fast(df):
+    """Transform dữ liệu - TỐI ƯU"""
     print("  -> Transform dữ liệu với NLP...")
     start = time.time()
     
-    # Tạo SubmissionID (vectorized)
+    # Tạo SubmissionID - vectorized
     df['SubmissionID'] = df['MaSV'] + '_' + df['LopHP'] + '_' + df['MaGV'] + '_' + FILE_NAME
     
-    # Làm sạch text (vectorized)
-    df['NoiDungGopY'] = df['EssayText'].fillna('').astype(str)
-    df['NoiDungGopY'] = df['NoiDungGopY'].str.replace(r'\s+', ' ', regex=True).str.strip()
+    # Làm sạch text - vectorized
+    df['NoiDungGopY'] = df['EssayText'].fillna('').astype(str).str.replace(r'\s+', ' ', regex=True).str.strip()
     
-    # NLP Processing song song
+    # Xử lý NLP song song
     print(f"  -> Đang xử lý NLP với {NUM_WORKERS} workers...")
     texts = df['NoiDungGopY'].tolist()
     batches = [texts[i:i+CHUNK_SIZE] for i in range(0, len(texts), CHUNK_SIZE)]
     
     all_nlp_results = []
     with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
-        futures = [executor.submit(process_nlp_batch, batch) for batch in batches]
-        for future in as_completed(futures):
-            all_nlp_results.extend(future.result())
+        for batch_results in executor.map(process_nlp_batch_fast, batches):
+            all_nlp_results.extend(batch_results)
     
     df['Sentiment'] = [r[0] for r in all_nlp_results]
     df['Tags'] = [r[1] for r in all_nlp_results]
     df['Is_Valid'] = [r[2] for r in all_nlp_results]
     
-    # Tạo FACT_KET_QUA_DANH_GIA (dạng dọc) - dùng explode
-    df['DiemList'] = df['DiemTracNghiem'].apply(lambda x: list(x.items()) if x else [])
-    exploded = df.explode('DiemList')
-    df_ketqua = pd.DataFrame({
-        'SubmissionID': exploded['SubmissionID'],
-        'MaCauHoi': exploded['DiemList'].apply(lambda x: x[0] if x else None),
-        'Diem': exploded['DiemList'].apply(lambda x: x[1] if x else None)
-    }).dropna()
+    # Tạo FACT_KET_QUA_DANH_GIA - XÂY DỰNG TRỰC TIẾP (nhanh hơn explode)
+    ketqua_data = []
+    for _, row in df.iterrows():
+        sub_id = row['SubmissionID']
+        for cau, diem in row['DiemTracNghiem'].items():
+            ketqua_data.append((sub_id, cau, diem))
+    df_ketqua = pd.DataFrame(ketqua_data, columns=['SubmissionID', 'MaCauHoi', 'Diem'])
     
-    # Tạo FACT_TAG_MAPPING (dạng dọc) - dùng explode
-    df['TagsList'] = df['Tags']
-    exploded_tags = df.explode('TagsList')
-    df_tag = pd.DataFrame({
-        'SubmissionID': exploded_tags['SubmissionID'],
-        'MaTag': exploded_tags['TagsList']
-    }).dropna()
+    # Tạo FACT_TAG_MAPPING - XÂY DỰNG TRỰC TIẾP
+    tag_data = []
+    for _, row in df.iterrows():
+        sub_id = row['SubmissionID']
+        for tag in row['Tags']:
+            tag_data.append((sub_id, tag))
+    df_tag = pd.DataFrame(tag_data, columns=['SubmissionID', 'MaTag'])
     
     print(f"  ✅ Transform xong ({time.time()-start:.2f}s)")
-    print(f"     - {len(df)} phiếu → {len(df_ketqua)} dòng điểm (12 dòng/phiếu)")
-    print(f"     - {len(df)} phiếu → {len(df_tag)} dòng tag")
-    
     return df, df_ketqua, df_tag
 
+def process_nlp_batch_fast(texts):
+    """Xử lý NLP batch"""
+    results = []
+    for text in texts:
+        if not text or len(text) < 5:
+            results.append(('neutral', ['TAG_K'], 0))
+        else:
+            sentiment = _nlp.analyze_sentiment(text)
+            tags = _nlp.extract_tags(text)
+            is_valid = is_valid_essay(text)
+            results.append((sentiment, tags, is_valid))
+    return results
 
-# ================= LOAD DATABASE (TỐI ƯU BATCH) =================
-def batch_insert(cursor, table, columns, data, batch_size=10000):
-    """Batch insert dữ liệu vào SQL"""
+
+# ================= LOAD DATABASE (BATCH LỚN HƠN) =================
+def batch_insert_fast(cursor, table, columns, data, batch_size=20000):
+    """Batch insert - TỐI ƯU với batch lớn hơn"""
     if not data:
         return 0
     
@@ -618,23 +574,15 @@ def batch_insert(cursor, table, columns, data, batch_size=10000):
     total = 0
     for i in range(0, len(data), batch_size):
         batch = data[i:i+batch_size]
-        try:
-            cursor.executemany(sql, batch)
-            cursor.connection.commit()
-            total += len(batch)
+        cursor.executemany(sql, batch)
+        cursor.connection.commit()
+        total += len(batch)
+        if total % 50000 == 0:
             print(f"      -> Đã insert {total:,}/{len(data):,} dòng vào {table}")
-        except Exception as e:
-            print(f"      ⚠️ Lỗi batch: {e}")
-            # Thử insert từng dòng nếu batch lỗi
-            for row in batch:
-                try:
-                    cursor.execute(sql, row)
-                except Exception as e2:
-                    pass
-            cursor.connection.commit()
-            total += len(batch)
     
     return total
+
+
 
 def load_dim_khoa(cursor, df_hp, df_nganh):
     all_khoa = set()
@@ -913,7 +861,7 @@ def load_fact_tables(cursor, df_main, df_ketqua, df_tag):
 def main():
     total_start = time.time()
     print("=" * 60)
-    print("🚀 ETL PIPELINE - XỬ LÝ ĐỒNG THỜI 2 PHẦN (TRƯỚC & SAU NULL)")
+    print("🚀 ETL PIPELINE - PHIÊN BẢN TỐI ƯU")
     print("=" * 60)
     print(f"SEMESTER: {SEMESTER}")
     print(f"SURVEY_FILE: {SURVEY_FILE}")
@@ -930,7 +878,7 @@ def main():
         return
     
     # 2. Đọc dữ liệu master
-    print("\n📥 2. Đọc dữ liệu master từ container tailieu...")
+    print("\n📥 2. Đọc dữ liệu master...")
     hp_master = load_hp_master(blob_service)
     dim_nganh, dim_chuyennganh = load_chuyennganh_master(blob_service)
     print(f"  ✅ HP-Khoa: {len(hp_master)} dòng")
@@ -939,33 +887,33 @@ def main():
     
     # 3. Đọc dữ liệu survey
     print(f"\n📥 3. Đọc dữ liệu survey...")
-    survey_path = f"{RAWDATA_PATH}/{SURVEY_FILE}"
-    survey_content = download_blob(blob_service, CONTAINER_NAME, survey_path)
+    survey_content = download_blob(blob_service, CONTAINER_NAME, f"{RAWDATA_PATH}/{SURVEY_FILE}")
     
     if not survey_content:
         print("  ❌ Không đọc được file survey!")
         return
     
-    # 4. Parse dữ liệu (xử lý đồng thời 2 phần)
-    print("\n📝 4. Parse dữ liệu (xử lý đồng thời trước & sau NULL)...")
-    df_raw = parse_survey_data_parallel(survey_content)
+    # 4. Parse - PHIÊN BẢN TỐI ƯU
+    print("\n📝 4. Parse dữ liệu...")
+    df_raw = parse_survey_data_parallel_fast(survey_content)
     
     if df_raw.empty:
         print("  ❌ Không có dữ liệu!")
         return
     
-    # 5. Transform & NLP
+    # 5. Transform & NLP - PHIÊN BẢN TỐI ƯU
     print("\n🔄 5. Transform & NLP...")
-    df_main, df_ketqua, df_tag = transform_with_nlp_parallel(df_raw)
+    df_main, df_ketqua, df_tag = transform_with_nlp_fast(df_raw)
+    
+    # Giải phóng memory
+    del df_raw
     
     # 6. Lưu CSV backup
     print("\n💾 6. Lưu CSV backup...")
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     save_processed(blob_service, df_main, f"{FILE_NAME}_main_{timestamp}.csv")
-    save_processed(blob_service, df_ketqua, f"{FILE_NAME}_ketqua_{timestamp}.csv")
-    save_processed(blob_service, df_tag, f"{FILE_NAME}_tags_{timestamp}.csv")
     
-    # 7. Kết nối SQL Database
+    # 7. Kết nối SQL
     print("\n💾 7. Kết nối SQL Database...")
     try:
         conn = pyodbc.connect(CONN_STR)
@@ -973,14 +921,14 @@ def main():
         cursor.fast_executemany = True
         print("  ✅ Kết nối SQL thành công")
     except Exception as e:
-        print(f"  ❌ Lỗi kết nối SQL: {e}")
+        print(f"  ❌ Lỗi: {e}")
         return
     
     try:
-        # 8. Load DIMENSION tables
-        load_all_dimensions(cursor, df_raw, hp_master, dim_nganh, dim_chuyennganh)
+        # 8. Load DIMENSION
+        load_all_dimensions(cursor, df_main, hp_master, dim_nganh, dim_chuyennganh)
         
-        # 9. Load FACT tables
+        # 9. Load FACT
         count_main, count_kq, count_tag = load_fact_tables(cursor, df_main, df_ketqua, df_tag)
         
     except Exception as e:
@@ -991,29 +939,18 @@ def main():
         conn.close()
     
     # 10. Thống kê
-    print("\n📊 10. KẾT QUẢ THỐNG KÊ:")
-    print(f"   - Tổng số phiếu khảo sát: {len(df_main):,}")
-    print(f"   - Phiếu hợp lệ (Is_Valid=1): {df_main['Is_Valid'].sum():,}")
-    print(f"   - Tỷ lệ hợp lệ: {df_main['Is_Valid'].mean()*100:.1f}%")
-    print(f"   - Tổng số điểm trắc nghiệm: {count_kq:,} (12 dòng/phiếu)")
-    print(f"   - Tổng số tag mapping: {count_tag:,}")
+    print("\n📊 10. KẾT QUẢ:")
+    print(f"   - Số phiếu: {len(df_main):,}")
+    print(f"   - Hợp lệ: {df_main['Is_Valid'].sum():,} ({df_main['Is_Valid'].mean()*100:.1f}%)")
+    print(f"   - Điểm TN: {count_kq:,} dòng")
+    print(f"   - Tag: {count_tag:,} dòng")
     
-    print("\n   - Phân bố SENTIMENT:")
-    for sent, count in df_main['Sentiment'].value_counts().items():
-        pct = count / len(df_main) * 100
-        bar = '█' * int(pct / 2)
-        print(f"      {sent}: {count:,} ({pct:.1f}%) {bar}")
+    print("\n   - Sentiment:")
+    for sent, cnt in df_main['Sentiment'].value_counts().items():
+        print(f"      {sent}: {cnt:,} ({cnt/len(df_main)*100:.1f}%)")
     
-    print("\n   - Phân bố TAG:")
-    tag_counts = df_tag['MaTag'].value_counts()
-    for tag, count in tag_counts.items():
-        pct = count / len(df_tag) * 100
-        bar = '█' * int(pct / 2)
-        print(f"      {tag}: {count:,} ({pct:.1f}%) {bar}")
-    
-    total_time = time.time() - total_start
     print("\n" + "=" * 60)
-    print(f"✅ ETL HOÀN THÀNH! Thời gian: {total_time:.2f}s")
+    print(f"✅ HOÀN THÀNH! Thời gian: {time.time()-total_start:.2f}s")
     print("=" * 60)
 
 

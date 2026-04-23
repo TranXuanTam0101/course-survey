@@ -600,11 +600,7 @@ def parse_survey_to_long_format(content: str) -> pd.DataFrame:
 # ================= TRANSFORM & NLP - ĐÃ CẬP NHẬT =================
 def transform_with_nlp_long_format(df_raw: pd.DataFrame) -> tuple:
     """
-    Transform dữ liệu với NLP đã sửa logic toán học:
-    - Xử lý phủ định (negation)
-    - Xử lý từ tăng cường (boost)
-    - Tính điểm số SentimentScore
-    - Loại bỏ trùng lặp EssayText theo SubmissionID
+    Transform dữ liệu với NLP đã sửa logic toán học
     """
     print("  -> Transform dữ liệu...")
     start = time.time()
@@ -631,13 +627,15 @@ def transform_with_nlp_long_format(df_raw: pd.DataFrame) -> tuple:
         # Chuẩn bị dữ liệu
         text_df_unique['NoiDungGopY'] = text_df_unique['EssayText'].str.replace(r'\s+', ' ', regex=True).str.strip()
         
-        # Vectorized NLP (đã sửa logic)
+        # Vectorized NLP
         texts = text_df_unique['NoiDungGopY'].tolist()
         print(f"  -> Đang xử lý NLP cho {len(texts):,} bài tự luận...")
         
-        # Phân tích cảm xúc
+        # ✅ Phân tích cảm xúc - chỉ lấy sentiment, không lưu score
         text_df_unique['Sentiment'] = _nlp.analyze_sentiment_vectorized(texts)
-        text_df_unique['SentimentScore'] = _nlp.calculate_scores_vectorized(texts)
+        
+        # ✅ Tính score để thống kê nhưng không đưa vào database
+        sentiment_scores = _nlp.calculate_scores_vectorized(texts)
         
         # Extract tags
         tag_vectors = _nlp.extract_tags_vectorized(texts)
@@ -648,11 +646,15 @@ def transform_with_nlp_long_format(df_raw: pd.DataFrame) -> tuple:
         text_df_unique['Tag_Khac'] = [v[3] for v in tag_vectors]
         text_df_unique['Is_Valid'] = 1
         
+        # ✅ CHỈ LẤY CÁC CỘT CẦN THIẾT CHO DATABASE (KHÔNG CÓ SentimentScore)
         fact_main = text_df_unique[[
             'SubmissionID', 'MaSV', 'LopHP', 'NoiDungGopY',
-            'Sentiment', 'SentimentScore', 'Is_Valid',
+            'Sentiment', 'Is_Valid',
             'Tag_HocPhan', 'Tag_DayHoc', 'Tag_KiemTra', 'Tag_Khac'
         ]].copy()
+        
+        # ✅ Lưu sentiment scores riêng để thống kê (không insert vào DB)
+        fact_main['SentimentScore'] = sentiment_scores  # Chỉ để thống kê, sẽ bỏ sau
         
         duplicates_removed = len(text_df) - len(text_df_unique)
         if duplicates_removed > 0:
@@ -1042,10 +1044,29 @@ def load_fact_tables_optimized(cursor, fact_main, fact_ketqua):
     
     # FACT_GOP_Y_TU_LUAN
     if not fact_main.empty:
-        data_main = [tuple(row) for row in fact_main.to_numpy()]
-        # Lưu ý: fact_main hiện có 11 cột (bao gồm SentimentScore)
+        # ✅ CHỈ LẤY CÁC CỘT CẦN INSERT (BỎ SentimentScore)
+        data_main = []
+        for _, row in fact_main.iterrows():
+            # Cắt NoiDungGopY nếu quá dài
+            noi_dung = row['NoiDungGopY']
+            if isinstance(noi_dung, str) and len(noi_dung) > 4000:
+                noi_dung = noi_dung[:4000]
+            
+            data_main.append((
+                row['SubmissionID'],
+                row['MaSV'],
+                row['LopHP'],
+                noi_dung,
+                row['Sentiment'],
+                row['Is_Valid'],
+                row['Tag_HocPhan'],
+                row['Tag_DayHoc'],
+                row['Tag_KiemTra'],
+                row['Tag_Khac']
+            ))
+        
         count_main = batch_insert_optimized(cursor, 'FACT_GOP_Y_TU_LUAN',
-            ['SubmissionID', 'MaSV', 'MaLopHP', 'NoiDungGopY', 'Sentiment', 'SentimentScore', 'Is_Valid',
+            ['SubmissionID', 'MaSV', 'MaLopHP', 'NoiDungGopY', 'Sentiment', 'Is_Valid',
              'Tag_HocPhan', 'Tag_DayHoc', 'Tag_KiemTra', 'Tag_Khac'], data_main, 50000)
         print(f"    ✅ FACT_GOP_Y_TU_LUAN: {count_main} dòng")
     else:
@@ -1053,7 +1074,7 @@ def load_fact_tables_optimized(cursor, fact_main, fact_ketqua):
     
     # FACT_KET_QUA_DANH_GIA
     if not fact_ketqua.empty:
-        data_kq = [tuple(row) for row in fact_ketqua.to_numpy()]
+        data_kq = [tuple(row) for row in fact_ketqua[['SubmissionID', 'MaCauHoi', 'Diem']].to_numpy()]
         count_kq = batch_insert_optimized(cursor, 'FACT_KET_QUA_DANH_GIA',
             ['SubmissionID', 'MaCauHoi', 'Diem'], data_kq, 100000)
         print(f"    ✅ FACT_KET_QUA_DANH_GIA: {count_kq} dòng")
@@ -1068,7 +1089,6 @@ def load_fact_tables_optimized(cursor, fact_main, fact_ketqua):
     elapsed = time.time() - start_time
     print(f"  ✅ FACT tables loaded in {elapsed:.1f}s")
     return count_main, count_kq
-
 
 # ================= MAIN =================
 def main():
@@ -1171,7 +1191,7 @@ def main():
     print(f"   - Số phiếu tự luận: {len(fact_main):,}")
     print(f"   - Số câu trắc nghiệm: {count_kq:,}")
     
-    if not fact_main.empty:
+        if not fact_main.empty:
         print("\n   - Tag phân bố:")
         print(f"      Tag_HocPhan: {fact_main['Tag_HocPhan'].sum():,}")
         print(f"      Tag_DayHoc: {fact_main['Tag_DayHoc'].sum():,}")
@@ -1183,10 +1203,12 @@ def main():
             pct = cnt/len(fact_main)*100
             print(f"      {sent}: {cnt:,} ({pct:.1f}%)")
         
-        print("\n   - SentimentScore thống kê:")
-        print(f"      Min: {fact_main['SentimentScore'].min():.2f}")
-        print(f"      Max: {fact_main['SentimentScore'].max():.2f}")
-        print(f"      Mean: {fact_main['SentimentScore'].mean():.2f}")
+        # ✅ Thống kê SentimentScore (nếu có cột)
+        if 'SentimentScore' in fact_main.columns:
+            print("\n   - SentimentScore thống kê:")
+            print(f"      Min: {fact_main['SentimentScore'].min():.2f}")
+            print(f"      Max: {fact_main['SentimentScore'].max():.2f}")
+            print(f"      Mean: {fact_main['SentimentScore'].mean():.2f}")
     
     print("\n" + "=" * 60)
     print(f"✅ HOÀN THÀNH! Thời gian: {total_time:.1f}s")

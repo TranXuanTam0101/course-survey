@@ -573,6 +573,21 @@ def load_dimensions_optimized(cursor, df_raw, hp_master, dim_nganh, dim_chuyenng
             print(f"     ✅ Đã insert {len(data_nganh)} dòng mới từ master")
         else:
             print(f"     ✅ Không có dòng mới từ master")
+
+    # ==========================================
+    # BẢNG 5: DIM_CHUYEN_NGANH
+    # ==========================================
+    print("\n  -> 5. DIM_CHUYEN_NGANH")
+    if not dim_chuyennganh.empty:
+        cursor.execute("SELECT MaChuyenNganh FROM DIM_CHUYEN_NGANH")
+        existing_cn = {row[0] for row in cursor.fetchall()}
+        data_cn = [(row['MaChuyenNganh'], row['TenChuyenNganh'], row['MaNganh'], 'CTDT_CHINHQUY') 
+                   for _, row in dim_chuyennganh.iterrows() if row['MaChuyenNganh'] not in existing_cn]
+        if data_cn:
+            batch_insert_optimized(cursor, 'DIM_CHUYEN_NGANH', ['MaChuyenNganh', 'TenChuyenNganh', 'MaNganh', 'MaCTDT'], data_cn, 5000)
+            print(f"     ✅ Đã insert {len(data_cn)} dòng mới từ master")
+        else:
+            print(f"     ✅ Không có dòng mới từ master")
     
     # ==========================================
     # BẢNG 4: DIM_HOC_PHAN
@@ -603,21 +618,7 @@ def load_dimensions_optimized(cursor, df_raw, hp_master, dim_nganh, dim_chuyenng
         print(f"     ✅ Đã insert {len(data_hp)} dòng mới")
     else:
         print(f"     ✅ Không có dòng mới")
-    
-    # ==========================================
-    # BẢNG 5: DIM_CHUYEN_NGANH
-    # ==========================================
-    print("\n  -> 5. DIM_CHUYEN_NGANH")
-    if not dim_chuyennganh.empty:
-        cursor.execute("SELECT MaChuyenNganh FROM DIM_CHUYEN_NGANH")
-        existing_cn = {row[0] for row in cursor.fetchall()}
-        data_cn = [(row['MaChuyenNganh'], row['TenChuyenNganh'], row['MaNganh'], 'CTDT_CHINHQUY') 
-                   for _, row in dim_chuyennganh.iterrows() if row['MaChuyenNganh'] not in existing_cn]
-        if data_cn:
-            batch_insert_optimized(cursor, 'DIM_CHUYEN_NGANH', ['MaChuyenNganh', 'TenChuyenNganh', 'MaNganh', 'MaCTDT'], data_cn, 5000)
-            print(f"     ✅ Đã insert {len(data_cn)} dòng mới từ master")
-        else:
-            print(f"     ✅ Không có dòng mới từ master")
+
     
     # ==========================================
     # BẢNG 6: DIM_GIANG_VIEN

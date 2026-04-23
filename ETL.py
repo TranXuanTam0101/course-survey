@@ -115,9 +115,9 @@ def determine_ma_chuyen_nganh(lop: str) -> tuple:
 
 
 # ================= IMPROVED RULE-BASED NLP =================
-class ImprovedVietnameseNLPRuleBased:
-    __slots__ = ['positive_set', 'negative_set', 'negations', 'intensifiers', 
-                 'tag_keywords', 'tag_priority', 'strong_positive_set', 'strong_negative_set']
+class FastVietnameseNLP:
+    __slots__ = ['positive_words', 'negative_words', 'tag_weights', 
+                 'negations', 'intensifiers', 'stop_words']
     
     def __init__(self):
         # ===== TỪ ĐIỂN CẢM XÚC =====

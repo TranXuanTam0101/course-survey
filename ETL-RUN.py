@@ -790,28 +790,6 @@ def load_dimensions_optimized(cursor, df_raw, hp_master, dim_nganh, dim_chuyenng
     # ==========================================
     print("\n  -> 4. DIM_CHUYEN_NGANH")
     
-    # ✅ CẬP NHẬT QT VÀ CTS (THÊM ĐOẠN NÀY)
-    # Cập nhật MaNganh cho chuyên ngành QT
-    cursor.execute("""
-        UPDATE DIM_CHUYEN_NGANH 
-        SET MaNganh = 'QT', MaKhoa = 'PĐT'
-        WHERE MaChuyenNganh = 'QT'
-    """)
-    
-    # Cập nhật MaNganh cho chuyên ngành CTS
-    cursor.execute("""
-        UPDATE DIM_CHUYEN_NGANH 
-        SET MaNganh = 'CTS', MaKhoa = 'TĐHKT'
-        WHERE MaChuyenNganh = 'CTS'
-    """)
-    cursor.connection.commit()
-    print(f"     ✅ Đã cập nhật QT và CTS trong DIM_CHUYEN_NGANH")
-    
-    # Kiểm tra lại DIM_NGANH sau commit
-    cursor.execute("SELECT MaNganh FROM DIM_NGANH")
-    valid_nganh = {row[0] for row in cursor.fetchall()}
-    print(f"     - Hiện có {len(valid_nganh)} ngành trong DIM_NGANH")
-    
     if not dim_chuyennganh.empty:
         cursor.execute("SELECT MaChuyenNganh FROM DIM_CHUYEN_NGANH")
         existing_cn = {row[0] for row in cursor.fetchall()}

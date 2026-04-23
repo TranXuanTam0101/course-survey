@@ -147,7 +147,18 @@ class FastVietnameseNLP:
             'không hài lòng', 'không có ích', 'mất thời gian'
         }
         
-     # ===== TRỌNG SỐ CHO TAG =====
+        # Thêm strong emotion sets cho is_valid_essay_improved
+        self.strong_positive_set = {
+            'tuyệt vời', 'xuất sắc', 'hoàn hảo', 'siêu hay', 'tuyệt đỉnh',
+            'quá tuyệt', 'rất tốt', 'cực kỳ hài lòng'
+        }
+        
+        self.strong_negative_set = {
+            'tệ', 'quá tệ', 'rất tệ', 'thất vọng', 'cực kỳ tệ',
+            'không chấp nhận được', 'quá dở', 'dở tệ'
+        }
+        
+        # ===== TRỌNG SỐ CHO TAG =====
         self.tag_weights = {
             'TAG_HP': {
                 'chuẩn đầu ra': 5.0, 'mục tiêu môn học': 4.5, 'đáp ứng chương trình': 4.0,
@@ -353,7 +364,7 @@ def is_valid_essay_improved(text):
     if len(meaningful_parts) == 1:
         single_part = meaningful_parts[0].lower()
         # Từ khóa cảm xúc mạnh (positive hoặc negative)
-        strong_emotion = _nlp.strong_positive_set.union(_nlp_improved.strong_negative_set)
+        strong_emotion = _nlp.strong_positive_set.union(_nlp.strong_negative_set)
         if any(kw in single_part for kw in strong_emotion):
             return 1
     
@@ -757,24 +768,24 @@ def load_dim_sinh_vien(cursor, df_raw):
     df_sv = df_raw[['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'Lop']].drop_duplicates('MaSV')
     df_sv = df_sv[df_sv['MaSV'].notna() & (df_sv['MaSV'] != '')]
     
+    cursor.execute("SELECT MaSV FROM DIM_SINH_VIEN")
+    existing = {row[0] for row in cursor.fetchall()}
+    
     data = []
     for _, row in df_sv.iterrows():
-        ngay_sinh = None
-        if row['NgaySinh'] and row['NgaySinh'] != '':
-            try:
-                ngay_sinh = datetime.strptime(row['NgaySinh'], '%d/%m/%Y').date()
-            except:
-                pass
-        data.append((row['MaSV'], row['HoDem'], row['Ten'], ngay_sinh, row['Lop']))
-        existing.add(ma_sv)
+        if row['MaSV'] not in existing:
+            ngay_sinh = None
+            if row['NgaySinh'] and row['NgaySinh'] != '':
+                try:
+                    ngay_sinh = datetime.strptime(row['NgaySinh'], '%d/%m/%Y').date()
+                except:
+                    pass
+            data.append((row['MaSV'], row['HoDem'], row['Ten'], ngay_sinh, row['Lop']))
+    
     if data:
-        cursor.execute("SELECT MaSV FROM DIM_SINH_VIEN")
-        existing = {row[0] for row in cursor.fetchall()}
-        new_data = [d for d in data if d[0] not in existing]
-        if new_data:
-            batch_insert(cursor, 'DIM_SINH_VIEN', ['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop'], new_data, 5000)
-            print(f"  ✅ DIM_SINH_VIEN: {len(new_data)} dòng mới")
-            return len(new_data)
+        batch_insert(cursor, 'DIM_SINH_VIEN', ['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop'], data, 5000)
+        print(f"  ✅ DIM_SINH_VIEN: {len(data)} dòng mới")
+        return len(data)
     print(f"  ✅ DIM_SINH_VIEN: 0 dòng mới")
     return 0
 
@@ -845,7 +856,6 @@ def load_dim_hoc_phan(cursor, df_hp_master, df_raw):
     
     print(f"  ✅ DIM_HOC_PHAN: {count} dòng mới")
     return count
-    
 
 def load_dim_hoc_ky(cursor):
     ma_hoc_ky, nam_hoc, hoc_ky = derive_ma_hoc_ky()

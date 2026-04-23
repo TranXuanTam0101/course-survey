@@ -96,16 +96,26 @@ def extract_ma_nganh_from_ten_nganh(ten_nganh: str) -> str:
 
 
 def determine_ma_chuyen_nganh(lop: str) -> tuple:
-    lop_upper = lop.upper()
-    lop_normalized = normalize_lop(lop)
+    if not lop or not isinstance(lop, str):
+        return None, None, None, None
     
-    if _lop_pattern.match(lop_normalized):
-        ma_cn = f"K{lop_normalized[3:5]}"
+    lop_upper = lop.upper().strip()
+    
+    # TH1: Pattern có dạng 24K59 hoặc 24K59-E hoặc 24K59-E01
+    # Lấy toàn bộ phần sau số: "K59" hoặc "K59-E" hoặc "K59-E01"
+    match = re.search(r'\d{2}(K\d{2}[-\w]*)', lop_upper)
+    if match:
+        ma_cn = match.group(1) 
         return ma_cn, f"Chuyên ngành {ma_cn}", None, None
+    
+    # TH2: Chứa 'QT'
     if 'QT' in lop_upper:
         return "QT", "Chuyên ngành QT", "Phòng Đào Tạo", "PĐT"
-    if 'CTS' in lop_upper or lop_upper.startswith('CTS-') or lop_upper.startswith('CTS'):
+    
+    # TH3: Chứa 'CTS'
+    if 'CTS' in lop_upper:
         return "CTS", "Chuyên ngành CTS", "Trường ĐHKT", "TĐHKT"
+    
     return None, None, None, None
 
 

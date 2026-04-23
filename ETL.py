@@ -565,7 +565,7 @@ def process_nlp_batch_improved(texts):
             results.append(('neutral', ['TAG_K'], 0))
         else:
             sentiment = _nlp.analyze_sentiment_fast(text)
-            tags = _nlp_improved.extract_tags(text)
+            tags = _nlp.extract_tags_fast(text)
             is_valid = is_valid_essay_improved(text)
             results.append((sentiment, tags, is_valid))
     return results

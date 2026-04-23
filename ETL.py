@@ -564,7 +564,7 @@ def process_nlp_batch_improved(texts):
         if not text or len(text) < 5:
             results.append(('neutral', ['TAG_K'], 0))
         else:
-            sentiment = _nlp.analyze_sentiment(text)
+            sentiment = _nlp.analyze_sentiment_fast(text)
             tags = _nlp_improved.extract_tags(text)
             is_valid = is_valid_essay_improved(text)
             results.append((sentiment, tags, is_valid))

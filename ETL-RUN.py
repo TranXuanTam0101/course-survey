@@ -550,58 +550,65 @@ def load_dimensions_optimized(cursor, df_raw, hp_master, dim_nganh, dim_chuyenng
     else:
         print(f"     ✅ Không có dòng mới")
     # ==========================================
-    # BẢNG 3: DIM_NGANH (INSERT TRƯỚC TỪ FILE MASTER)
+    # BẢNG 3: DIM_NGANH
     # ==========================================
     print("\n  -> 3. DIM_NGANH")
     
-    # ✅ LẤY DIM_NGANH TRỰC TIẾP TỪ FILE MASTER
-    if not dim_nganh.empty:
+    if not dim_chuyennganh.empty:
+        # Lấy tất cả MaNganh cần có
+        all_ma_nganh = set(dim_chuyennganh['MaNganh'].dropna().unique())
+        print(f"     - Cần có {len(all_ma_nganh)} MaNganh: {sorted(all_ma_nganh)}")
+        
+        # Lấy existing
         cursor.execute("SELECT MaNganh FROM DIM_NGANH")
         existing_nganh = {row[0] for row in cursor.fetchall()}
         
-        data_nganh = []
-        for _, row in dim_nganh.iterrows():
-            ma_nganh = row['MaNganh']
-            if ma_nganh and ma_nganh not in existing_nganh:
-                data_nganh.append((ma_nganh, row['TenNganh'], row['MaKhoa']))
-                existing_nganh.add(ma_nganh)
+        # Tìm MaNganh thiếu
+        missing_nganh = all_ma_nganh - existing_nganh
+        print(f"     - Thiếu {len(missing_nganh)} MaNganh: {sorted(missing_nganh)}")
         
-        if data_nganh:
-            batch_insert_optimized(cursor, 'DIM_NGANH', ['MaNganh', 'TenNganh', 'MaKhoa'], data_nganh, 10000)
-            print(f"     ✅ Đã insert {len(data_nganh)} dòng vào DIM_NGANH từ master")
-        else:
-            print(f"     ✅ Không có dòng mới")
-    else:
-        print(f"     ⚠️ Không có dữ liệu từ TenChuyenNganh-Khoa.csv")
+        # Insert các MaNganh thiếu
+        if missing_nganh:
+            for ma_nganh in missing_nganh:
+                # Lấy thông tin từ dim_chuyennganh
+                sample = dim_chuyennganh[dim_chuyennganh['MaNganh'] == ma_nganh].iloc[0]
+                ten_nganh = sample.get('TenNganh', f'Ngành {ma_nganh}')
+                cursor.execute("""
+                    INSERT INTO DIM_NGANH (MaNganh, TenNganh, MaKhoa) 
+                    VALUES (?, ?, ?)
+                """, ma_nganh, ten_nganh, 'TĐHKT')
+                print(f"        ✅ Đã insert {ma_nganh} vào DIM_NGANH")
+            
+            # ✅ COMMIT NGAY SAU KHI INSERT
+            cursor.connection.commit()
+            print(f"     ✅ Đã commit {len(missing_nganh)} dòng vào DIM_NGANH")
     
     # ==========================================
-    # BẢNG 4: DIM_CHUYEN_NGANH (INSERT SAU)
+    # BẢNG 4: DIM_CHUYEN_NGANH (INSERT SAU KHI ĐÃ COMMIT)
     # ==========================================
     print("\n  -> 4. DIM_CHUYEN_NGANH")
     
-    # Lấy danh sách MaNganh đã có
+    # Kiểm tra lại DIM_NGANH sau commit
     cursor.execute("SELECT MaNganh FROM DIM_NGANH")
     valid_nganh = {row[0] for row in cursor.fetchall()}
-    print(f"     - Có {len(valid_nganh)} ngành trong DIM_NGANH")
+    print(f"     - Hiện có {len(valid_nganh)} ngành trong DIM_NGANH")
     
     if not dim_chuyennganh.empty:
         cursor.execute("SELECT MaChuyenNganh FROM DIM_CHUYEN_NGANH")
         existing_cn = {row[0] for row in cursor.fetchall()}
         
         data_cn = []
-        skipped_cn = []
-        
         for _, row in dim_chuyennganh.iterrows():
             ma_chuyen = row['MaChuyenNganh']
             ma_nganh = row['MaNganh']
             
             if ma_chuyen and ma_chuyen not in existing_cn:
-                # ✅ CHỈ INSERT NẾU MaNganh TỒN TẠI TRONG DIM_NGANH
-                if ma_nganh in valid_nganh:
-                    data_cn.append((ma_chuyen, row['TenChuyenNganh'], ma_nganh, 'CTDT_CHINHQUY'))
-                    existing_cn.add(ma_chuyen)
-                else:
-                    skipped_cn.append((ma_chuyen, ma_nganh))
+                # Kiểm tra ma_nganh có trong DIM_NGANH không
+                if ma_nganh not in valid_nganh:
+                    print(f"        ❌ LỖI: {ma_chuyen} có MaNganh={ma_nganh} không tồn tại trong DIM_NGANH!")
+                    continue
+                data_cn.append((ma_chuyen, row['TenChuyenNganh'], ma_nganh, 'CTDT_CHINHQUY'))
+                existing_cn.add(ma_chuyen)
         
         if data_cn:
             batch_insert_optimized(cursor, 'DIM_CHUYEN_NGANH', 
@@ -609,14 +616,7 @@ def load_dimensions_optimized(cursor, df_raw, hp_master, dim_nganh, dim_chuyenng
             print(f"     ✅ Đã insert {len(data_cn)} dòng mới từ master")
         else:
             print(f"     ✅ Không có dòng mới từ master")
-        
-        if skipped_cn:
-            print(f"     ⚠️ Bỏ qua {len(skipped_cn)} dòng do MaNganh không tồn tại trong DIM_NGANH:")
-            for cn, ng in skipped_cn[:5]:
-                print(f"        - {cn}: MaNganh={ng}")
-    else:
-        print(f"     ⚠️ Không có dữ liệu từ TenChuyenNganh-Khoa.csv")
-        
+            
     # ==========================================
     # BẢNG 4: DIM_HOC_PHAN
     # ==========================================

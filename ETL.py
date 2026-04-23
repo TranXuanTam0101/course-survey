@@ -944,7 +944,7 @@ def load_fact_tables(cursor, df_main, df_ketqua, df_tag):
 def main():
     total_start = time.time()
     print("=" * 60)
-    print("🚀 ETL PIPELINE - PHIÊN BẢN TỐI ƯU")
+    print("🚀 ETL PIPELINE - XỬ LÝ ĐỒNG THỜI 2 PHẦN (TRƯỚC & SAU NULL)")
     print("=" * 60)
     print(f"SEMESTER: {SEMESTER}")
     print(f"SURVEY_FILE: {SURVEY_FILE}")
@@ -961,42 +961,43 @@ def main():
         return
     
     # 2. Đọc dữ liệu master
-    print("\n📥 2. Đọc dữ liệu master...")
+    print("\n📥 2. Đọc dữ liệu master từ container tailieu...")
     hp_master = load_hp_master(blob_service)
     dim_nganh, dim_chuyennganh, mapping = load_chuyennganh_master(blob_service)
     print(f"  ✅ HP-Khoa: {len(hp_master)} dòng")
     print(f"  ✅ DIM_NGANH: {len(dim_nganh)} dòng")
     print(f"  ✅ DIM_CHUYEN_NGANH: {len(dim_chuyennganh)} dòng")
+    print(f"  ✅ Mapping MaChuyenNganh: {len(mapping)} dòng")
     
     # 3. Đọc dữ liệu survey
     print(f"\n📥 3. Đọc dữ liệu survey...")
-    survey_content = download_blob(blob_service, CONTAINER_NAME, f"{RAWDATA_PATH}/{SURVEY_FILE}")
+    survey_path = f"{RAWDATA_PATH}/{SURVEY_FILE}"
+    survey_content = download_blob(blob_service, CONTAINER_NAME, survey_path)
     
     if not survey_content:
         print("  ❌ Không đọc được file survey!")
         return
     
-    # 4. Parse - PHIÊN BẢN TỐI ƯU
-    print("\n📝 4. Parse dữ liệu...")
-    df_raw = parse_survey_data_parallel_fast(survey_content)
+    # 4. Parse dữ liệu (xử lý đồng thời 2 phần) - TẠO df_raw Ở ĐÂY
+    print("\n📝 4. Parse dữ liệu (xử lý đồng thời trước & sau NULL)...")
+    df_raw = parse_survey_data_parallel_fast(survey_content)  # <--- df_raw được tạo ở đây
     
     if df_raw.empty:
         print("  ❌ Không có dữ liệu!")
         return
     
-    # 5. Transform & NLP - PHIÊN BẢN TỐI ƯU
+    # 5. Transform & NLP - TẠO df_main, df_ketqua, df_tag
     print("\n🔄 5. Transform & NLP...")
     df_main, df_ketqua, df_tag = transform_with_nlp_fast(df_raw)
-    
-    # Giải phóng memory
-    del df_raw
     
     # 6. Lưu CSV backup
     print("\n💾 6. Lưu CSV backup...")
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     save_processed(blob_service, df_main, f"{FILE_NAME}_main_{timestamp}.csv")
+    save_processed(blob_service, df_ketqua, f"{FILE_NAME}_ketqua_{timestamp}.csv")
+    save_processed(blob_service, df_tag, f"{FILE_NAME}_tags_{timestamp}.csv")
     
-    # 7. Kết nối SQL
+    # 7. Kết nối SQL Database
     print("\n💾 7. Kết nối SQL Database...")
     try:
         conn = pyodbc.connect(CONN_STR)
@@ -1004,14 +1005,15 @@ def main():
         cursor.fast_executemany = True
         print("  ✅ Kết nối SQL thành công")
     except Exception as e:
-        print(f"  ❌ Lỗi: {e}")
+        print(f"  ❌ Lỗi kết nối SQL: {e}")
         return
     
     try:
-        # 8. Load DIMENSION
+        # 8. Load DIMENSION tables - DÙNG df_raw (ĐÃ ĐƯỢC TẠO Ở BƯỚC 4)
         load_all_dimensions(cursor, df_raw, hp_master, dim_nganh, dim_chuyennganh, mapping)
         
-        # 9. Load FACT
+        # 9. Load FACT tables
+        print("\n📥 Loading FACT tables (LOAD TẤT CẢ, không kiểm tra trùng)...")
         count_main, count_kq, count_tag = load_fact_tables(cursor, df_main, df_ketqua, df_tag)
         
     except Exception as e:
@@ -1022,18 +1024,29 @@ def main():
         conn.close()
     
     # 10. Thống kê
-    print("\n📊 10. KẾT QUẢ:")
-    print(f"   - Số phiếu: {len(df_main):,}")
-    print(f"   - Hợp lệ: {df_main['Is_Valid'].sum():,} ({df_main['Is_Valid'].mean()*100:.1f}%)")
-    print(f"   - Điểm TN: {count_kq:,} dòng")
-    print(f"   - Tag: {count_tag:,} dòng")
+    print("\n📊 10. KẾT QUẢ THỐNG KÊ:")
+    print(f"   - Tổng số phiếu khảo sát: {len(df_main):,}")
+    print(f"   - Phiếu hợp lệ (Is_Valid=1): {df_main['Is_Valid'].sum():,}")
+    print(f"   - Tỷ lệ hợp lệ: {df_main['Is_Valid'].mean()*100:.1f}%")
+    print(f"   - Tổng số điểm trắc nghiệm: {count_kq:,} (12 dòng/phiếu)")
+    print(f"   - Tổng số tag mapping: {count_tag:,}")
     
-    print("\n   - Sentiment:")
-    for sent, cnt in df_main['Sentiment'].value_counts().items():
-        print(f"      {sent}: {cnt:,} ({cnt/len(df_main)*100:.1f}%)")
+    print("\n   - Phân bố SENTIMENT:")
+    for sent, count in df_main['Sentiment'].value_counts().items():
+        pct = count / len(df_main) * 100
+        bar = '█' * int(pct / 2)
+        print(f"      {sent}: {count:,} ({pct:.1f}%) {bar}")
     
+    print("\n   - Phân bố TAG:")
+    tag_counts = df_tag['MaTag'].value_counts()
+    for tag, count in tag_counts.items():
+        pct = count / len(df_tag) * 100
+        bar = '█' * int(pct / 2)
+        print(f"      {tag}: {count:,} ({pct:.1f}%) {bar}")
+    
+    total_time = time.time() - total_start
     print("\n" + "=" * 60)
-    print(f"✅ HOÀN THÀNH! Thời gian: {time.time()-total_start:.2f}s")
+    print(f"✅ ETL HOÀN THÀNH! Thời gian: {total_time:.2f}s")
     print("=" * 60)
 
 

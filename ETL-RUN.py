@@ -789,6 +789,9 @@ def load_dimensions_optimized(cursor, df_raw, hp_master, dim_nganh, dim_chuyenng
     # BẢNG 4: DIM_CHUYEN_NGANH (INSERT SAU KHI ĐÃ COMMIT)
     # ==========================================
     print("\n  -> 4. DIM_CHUYEN_NGANH")
+    cursor.execute("SELECT MaNganh FROM DIM_NGANH")
+    valid_nganh = {row[0] for row in cursor.fetchall()}
+    print(f"     - Hiện có {len(valid_nganh)} ngành trong DIM_NGANH")
     
     if not dim_chuyennganh.empty:
         cursor.execute("SELECT MaChuyenNganh FROM DIM_CHUYEN_NGANH")

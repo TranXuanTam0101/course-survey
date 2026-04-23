@@ -394,27 +394,30 @@ def parse_single_line(line: str) -> dict:
         lop_hp = row[ma_gv_index + 3] if ma_gv_index + 3 < len(row) else ''
         cau_hoi = row[ma_gv_index + 4] if ma_gv_index + 4 < len(row) else ''
         gia_tri = row[ma_gv_index + 5] if ma_gv_index + 5 < len(row) else ''
+        
+        # Tìm vị trí NULL
         null_index = -1
         gia_tri_index = ma_gv_index + 5 if ma_gv_index >= 0 else -1
         if gia_tri_index >= 0 and gia_tri_index + 1 < len(row):
             potential_null = row[gia_tri_index + 1]
             if potential_null.upper() == 'NULL' or potential_null == '':
                 null_index = gia_tri_index + 1
-        cau13 = cau14 = cau15 = cau16 = ''
+        
+        # LẤY TOÀN BỘ CHUỖI SAU NULL (bao gồm cả dấu phẩy)
+        essay_text = ''
         if null_index >= 0 and null_index + 1 < len(row):
             after_null = row[null_index + 1:]
-            if after_null:
-                split_result = split_after_null_by_scoring(after_null)
-                if len(split_result) >= 4:
-                    cau13, cau14, cau15, cau16 = split_result[:4]
+            # Nối nguyên bản, giữ nguyên dấu phẩy
+            essay_text = ','.join(after_null).strip()
+        
         return {
             'Lop': lop, 'MaSV': ma_sv, 'HoDem': ho_dem, 'Ten': ten,
             'NgaySinh': ngay_sinh, 'MaHP': ma_hp, 'TenHP': ten_hp,
             'MaGV': ma_gv, 'HoDemGV': ho_dem_gv, 'TenGV': ten_gv, 'LopHP': lop_hp,
             'CauHoi': cau_hoi, 'GiaTri': gia_tri,
-            'Cau13': cau13, 'Cau14': cau14, 'Cau15': cau15, 'Cau16': cau16
+            'EssayText': essay_text  # Chỉ 1 cột duy nhất cho toàn bộ câu trả lời tự luận
         }
-    except:
+    except Exception as e:
         return None
 
 def parse_lines_batch(lines_batch):
@@ -528,10 +531,9 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
     start = time.time()
     
     # ========== LƯU LẠI DỮ LIỆU GỐC CHO FACT ==========
-    # Đảm bảo các cột tự luận tồn tại
-    for col in ['Cau13', 'Cau14', 'Cau15', 'Cau16']:
-        if col not in df.columns:
-            df[col] = ''
+    # Đảm bảo cột EssayText tồn tại
+    if 'EssayText' not in df.columns:
+        df['EssayText'] = ''
     
     # ========== 1. XÁC ĐỊNH CHUYÊN NGÀNH TỪ LOP ==========
     cn_info = df['Lop'].apply(determine_ma_chuyen_nganh)
@@ -545,7 +547,6 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
         cn_unique = cn_master.drop_duplicates(subset=['MaChuyenNganh'])
         cn_dict = cn_unique.set_index('MaChuyenNganh')[['TenChuyenNganh', 'TenKhoa', 'MaKhoa']].to_dict('index')
         
-        # Chỉ map cho những dòng có MaChuyenNganh_Lop không None
         mask = df['MaChuyenNganh_Lop'].notna()
         df.loc[mask, 'TenChuyenNganh_File'] = df.loc[mask, 'MaChuyenNganh_Lop'].map(
             lambda x: cn_dict.get(x, {}).get('TenChuyenNganh') if x else None
@@ -557,25 +558,22 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
             lambda x: cn_dict.get(x, {}).get('MaKhoa') if x else None
         )
         
-        # Ưu tiên dùng từ file, nếu không có thì dùng giá trị từ Lop
-        df['MaChuyenNganh'] = df['MaChuyenNganh_Lop']  # Giữ nguyên MaChuyenNganh từ Lop
+        df['MaChuyenNganh'] = df['MaChuyenNganh_Lop']
         df['TenChuyenNganh'] = df['TenChuyenNganh_File'].fillna(df['TenChuyenNganh_Lop'])
         df['TenKhoa_CN'] = df['TenKhoa_CN_File'].fillna(df['TenKhoa_CN_Lop'])
         df['MaKhoa_CN'] = df['MaKhoa_CN_File'].fillna(df['MaKhoa_CN_Lop'])
         
         df.drop(['TenChuyenNganh_File', 'TenKhoa_CN_File', 'MaKhoa_CN_File'], axis=1, inplace=True, errors='ignore')
     else:
-        # Không có file master, dùng trực tiếp từ Lop
         df['MaChuyenNganh'] = df['MaChuyenNganh_Lop']
         df['TenChuyenNganh'] = df['TenChuyenNganh_Lop']
         df['TenKhoa_CN'] = df['TenKhoa_CN_Lop']
         df['MaKhoa_CN'] = df['MaKhoa_CN_Lop']
     
-    # Xóa các cột tạm
     df.drop(['MaChuyenNganh_Lop', 'TenChuyenNganh_Lop', 'TenKhoa_CN_Lop', 'MaKhoa_CN_Lop'], 
             axis=1, inplace=True, errors='ignore')
     
-    # ========== 3. XÁC ĐỊNH KHOA CỦA HỌC PHẦN TỪ HP-Khoa.csv ==========
+    # ========== 3. XÁC ĐỊNH KHOA CỦA HỌC PHẦN ==========
     if not hp_master.empty:
         hp_unique = hp_master.drop_duplicates(subset=['MaHP'])
         hp_dict = hp_unique.set_index('MaHP')[['TenHP', 'TenKhoa', 'MaKhoa']].to_dict('index')
@@ -585,14 +583,12 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
         df['MaKhoa_HP'] = df['MaHP'].map(lambda x: hp_dict.get(x, {}).get('MaKhoa'))
         
         df['TenHP'] = df['TenHP_File'].fillna(df['TenHP'])
-        # Nếu không có trong HP-Khoa, để NULL (không gán mặc định)
-        
         df.drop(['TenHP_File'], axis=1, inplace=True, errors='ignore')
     else:
         df['TenKhoa_HP'] = None
         df['MaKhoa_HP'] = None
     
-    # ========== 4. CHUẨN HÓA LOP ==========
+    # ========== 4. CHUẨN HÓA ==========
     df['MaLop'] = df['Lop']
     df['MaLopHP'] = df['LopHP']
     
@@ -603,7 +599,8 @@ def transform_data(df: pd.DataFrame, hp_master: pd.DataFrame, cn_master: pd.Data
         df['MaGV'].fillna('UNKNOWN').astype(str) + "_" + 
         FILE_NAME
     )
-   
+    
+    print(f"  ✅ Transform: {time.time()-start:.2f}s")
     return df
 
 # ================= LOAD TO DATABASE =================
@@ -665,7 +662,7 @@ def load_dimension(cursor, table: str, df: pd.DataFrame, columns: list, id_col: 
     return len(new_data)
     
 def load_fact(cursor, df: pd.DataFrame) -> int:
-    """Load FACT - 1 dòng/submission, dùng executemany"""
+    """Load FACT - chỉ có 1 cột EssayText"""
     if df.empty:
         print("  ❌ DataFrame rỗng!")
         return 0
@@ -674,7 +671,7 @@ def load_fact(cursor, df: pd.DataFrame) -> int:
     start = time.time()
     
     # Lấy unique submissions
-    unique_subs = df[['SubmissionID', 'MaSV', 'MaLopHP', 'Cau13', 'Cau14', 'Cau15', 'Cau16']].drop_duplicates('SubmissionID')
+    unique_subs = df[['SubmissionID', 'MaSV', 'MaLopHP', 'EssayText']].drop_duplicates('SubmissionID')
     print(f"  -> Số submission unique: {len(unique_subs):,}")
     
     # Gom nhóm câu trắc nghiệm
@@ -706,10 +703,7 @@ def load_fact(cursor, df: pd.DataFrame) -> int:
             answers.get(1), answers.get(2), answers.get(3), answers.get(4),
             answers.get(5), answers.get(6), answers.get(7), answers.get(8),
             answers.get(9), answers.get(10), answers.get(11), answers.get(12),
-            str(row.get('Cau13', ''))[:4000] if pd.notna(row.get('Cau13')) else None,
-            str(row.get('Cau14', ''))[:4000] if pd.notna(row.get('Cau14')) else None,
-            str(row.get('Cau15', ''))[:4000] if pd.notna(row.get('Cau15')) else None,
-            str(row.get('Cau16', ''))[:4000] if pd.notna(row.get('Cau16')) else None,
+            str(row.get('EssayText', ''))[:4000] if pd.notna(row.get('EssayText')) else None,  # Chỉ 1 cột
         ))
     
     print(f"  -> Đã tạo {len(fact_data):,} dòng FACT")
@@ -721,7 +715,6 @@ def load_fact(cursor, df: pd.DataFrame) -> int:
     # Insert
     print("  -> Đang insert {:,} dòng...".format(len(fact_data)))
     
-    # Tắt ràng buộc
     cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT NOCHECK CONSTRAINT ALL")
     cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT DISABLE TRIGGER ALL")
     cursor.connection.commit()
@@ -734,14 +727,13 @@ def load_fact(cursor, df: pd.DataFrame) -> int:
             INSERT INTO FACT_TRA_LOI_KHAO_SAT 
             (SubmissionID, MaSV, MaLopHP, 
              C1, C2, C3, C4, C5, C6, C7, C8, C9, C10, C11, C12,
-             C13, C14, C15, C16)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             EssayText)  -- Chỉ 1 cột tự luận
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, batch)
         cursor.connection.commit()
         total += len(batch)
         print(f"     -> Đã insert {total:,}/{len(fact_data):,} dòng")
     
-    # Bật lại ràng buộc
     cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT ENABLE TRIGGER ALL")
     cursor.execute("ALTER TABLE FACT_TRA_LOI_KHAO_SAT CHECK CONSTRAINT ALL")
     cursor.connection.commit()

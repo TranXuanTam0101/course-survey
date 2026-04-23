@@ -95,7 +95,45 @@ def create_ma_khoa(ten_khoa: str) -> str:
                 initials.append(first_char)
     return ''.join(initials) if initials else "UNKNOWN"
 
+def extract_ma_nganh_from_ten_nganh(ten_nganh: str) -> str:
+    """Trích xuất Mã Ngành từ Tên Ngành (lấy các chữ cái đầu viết hoa)"""
+    if not isinstance(ten_nganh, str) or not ten_nganh:
+        return "UNKNOWN"
+    words = re.split(r'[\s\-]+', ten_nganh.strip())
+    initials = []
+    for w in words:
+        if w:
+            first_char = w[0].upper() if w[0].isalpha() else ''
+            if first_char:
+                initials.append(first_char)
+    return ''.join(initials) if initials else "UNKNOWN"
 
+def determine_ma_chuyen_nganh(lop: str) -> tuple:
+    """
+    Xác định MaChuyenNganh, TenChuyenNganh, TenKhoa_CN, MaKhoa_CN từ Lop
+    
+    Returns:
+        (MaChuyenNganh, TenChuyenNganh, TenKhoa_CN, MaKhoa_CN)
+        Trả về None cho các giá trị không xác định được
+    """
+    lop_upper = lop.upper()
+    lop_normalized = normalize_lop(lop)
+    
+    # TH1: Lop khớp pattern ^\d{2}K\d{2}$
+    if _lop_pattern.match(lop_normalized):
+        ma_cn = f"K{lop_normalized[3:5]}"
+        return ma_cn, f"Chuyên ngành {ma_cn}", None, None
+    
+    # TH2: Lop chứa 'QT'
+    if 'QT' in lop_upper:
+        return "QT", "Chuyên ngành QT", "Phòng Đào Tạo", "PĐT"
+    
+    # TH3: Lop chứa 'CTS' hoặc bắt đầu bằng CTS
+    if 'CTS' in lop_upper or lop_upper.startswith('CTS-') or lop_upper.startswith('CTS'):
+        return "CTS", "Chuyên ngành CTS", "Trường ĐHKT", "TĐHKT"
+    
+    return None, None, None, None
+    
 # ================= RULE-BASED NLP (CẬP NHẬT TỪ ĐIỂN) =================
 class VietnameseNLPRuleBased:
     __slots__ = ['positive_set', 'negative_set', 'negations', 'intensifiers', 'tag_keywords']
@@ -565,54 +603,161 @@ def load_dim_khoa(cursor, df_hp, df_nganh):
     print(f"  ✅ DIM_KHOA: {count} dòng")
     return count
 
-def load_dim_nganh(cursor, df_nganh):
-    if df_nganh.empty:
-        return 0
+def load_dim_nganh(cursor, df_nganh, df_raw):
+    """Load DIM_NGANH - bao gồm cả từ file master và từ dữ liệu Lop"""
+    
     count = 0
-    for _, row in df_nganh.iterrows():
-        cursor.execute("IF NOT EXISTS (SELECT 1 FROM DIM_NGANH WHERE MaNganh = ?) INSERT INTO DIM_NGANH (MaNganh, TenNganh, MaKhoa) VALUES (?, ?, ?)", row['MaNganh'], row['MaNganh'], row['TenNganh'], row['MaKhoa'])
-        count += 1
+    
+    # 1. Insert từ file master (TenChuyenNganh-Khoa.csv)
+    if not df_nganh.empty:
+        for _, row in df_nganh.iterrows():
+            try:
+                cursor.execute("""
+                    IF NOT EXISTS (SELECT 1 FROM DIM_NGANH WHERE MaNganh = ?) 
+                    INSERT INTO DIM_NGANH (MaNganh, TenNganh, MaKhoa) VALUES (?, ?, ?)
+                """, row['MaNganh'], row['MaNganh'], row['TenNganh'], row['MaKhoa'])
+                count += 1
+            except Exception as e:
+                print(f"      ⚠️ Lỗi insert ngành {row['MaNganh']}: {e}")
+    
+    # 2. Insert các ngành từ dữ liệu Lop (nếu chưa có)
+    df_lop = df_raw[['Lop']].drop_duplicates('Lop')
+    df_lop = df_lop[df_lop['Lop'].notna() & (df_lop['Lop'] != '')]
+    
+    for _, row in df_lop.iterrows():
+        lop = row['Lop']
+        ma_nganh = None
+        ten_nganh = None
+        ma_khoa = None
+        
+        # SỬ DỤNG determine_ma_chuyen_nganh để lấy thông tin
+        ma_cn, ten_cn, ten_khoa, ma_khoa_from_cn = determine_ma_chuyen_nganh(lop)
+        
+        if not ma_cn:
+            continue
+        
+        # MaNganh = MaChuyenNganh (trong trường hợp này)
+        ma_nganh = ma_cn
+        ten_nganh = f"Ngành {ma_nganh}"
+        ma_khoa = ma_khoa_from_cn if ma_khoa_from_cn else "UNKNOWN"
+        
+        try:
+            cursor.execute("""
+                IF NOT EXISTS (SELECT 1 FROM DIM_NGANH WHERE MaNganh = ?) 
+                INSERT INTO DIM_NGANH (MaNganh, TenNganh, MaKhoa) VALUES (?, ?, ?)
+            """, ma_nganh, ma_nganh, ten_nganh, ma_khoa)
+            count += 1
+        except Exception as e:
+            print(f"      ⚠️ Lỗi insert ngành {ma_nganh}: {e}")
+    
     cursor.connection.commit()
     print(f"  ✅ DIM_NGANH: {count} dòng")
     return count
 
-def load_dim_chuyennganh(cursor, df_chuyennganh):
-    if df_chuyennganh.empty:
-        return 0
+def load_dim_chuyennganh(cursor, df_chuyennganh, df_raw):
+    """Load DIM_CHUYEN_NGANH - bao gồm cả từ file master và từ dữ liệu Lop"""
     
-    cursor.execute("IF NOT EXISTS (SELECT 1 FROM DIM_CHUONG_TRINH_DAO_TAO WHERE MaCTDT = 'CTDT_CHINHQUY') INSERT INTO DIM_CHUONG_TRINH_DAO_TAO (MaCTDT, TenCTDT) VALUES ('CTDT_CHINHQUY', N'Chính quy')")
+    # Đảm bảo có CTDT mặc định
+    cursor.execute("""
+        IF NOT EXISTS (SELECT 1 FROM DIM_CHUONG_TRINH_DAO_TAO WHERE MaCTDT = 'CTDT_CHINHQUY') 
+        INSERT INTO DIM_CHUONG_TRINH_DAO_TAO (MaCTDT, TenCTDT) VALUES ('CTDT_CHINHQUY', N'Chính quy')
+    """)
     cursor.connection.commit()
     
     count = 0
-    for _, row in df_chuyennganh.iterrows():
-        cursor.execute("IF NOT EXISTS (SELECT 1 FROM DIM_CHUYEN_NGANH WHERE MaChuyenNganh = ?) INSERT INTO DIM_CHUYEN_NGANH (MaChuyenNganh, TenChuyenNganh, MaNganh, MaCTDT) VALUES (?, ?, ?, 'CTDT_CHINHQUY')", row['MaChuyenNganh'], row['MaChuyenNganh'], row['TenChuyenNganh'], row['MaNganh'])
-        count += 1
+    
+    # 1. Insert từ file master (TenChuyenNganh-Khoa.csv)
+    if not df_chuyennganh.empty:
+        for _, row in df_chuyennganh.iterrows():
+            try:
+                cursor.execute("""
+                    IF NOT EXISTS (SELECT 1 FROM DIM_CHUYEN_NGANH WHERE MaChuyenNganh = ?) 
+                    INSERT INTO DIM_CHUYEN_NGANH (MaChuyenNganh, TenChuyenNganh, MaNganh, MaCTDT) 
+                    VALUES (?, ?, ?, 'CTDT_CHINHQUY')
+                """, row['MaChuyenNganh'], row['MaChuyenNganh'], row['TenChuyenNganh'], row['MaNganh'])
+                count += 1
+            except Exception as e:
+                print(f"      ⚠️ Lỗi insert chuyên ngành {row['MaChuyenNganh']}: {e}")
+    
+    # 2. Lấy danh sách MaNganh đã có trong DIM_NGANH để kiểm tra khóa ngoại
+    cursor.execute("SELECT MaNganh FROM DIM_NGANH")
+    existing_nganh = {row[0] for row in cursor.fetchall()}
+    
+    # 3. Insert các chuyên ngành từ dữ liệu Lop (nếu chưa có)
+    df_lop = df_raw[['Lop']].drop_duplicates('Lop')
+    df_lop = df_lop[df_lop['Lop'].notna() & (df_lop['Lop'] != '')]
+    
+    for _, row in df_lop.iterrows():
+        lop = row['Lop']
+        
+        # SỬ DỤNG determine_ma_chuyen_nganh để lấy thông tin
+        ma_cn, ten_cn, ten_khoa, ma_khoa = determine_ma_chuyen_nganh(lop)
+        
+        if not ma_cn:
+            continue
+        
+        # MaNganh = MaChuyenNganh
+        ma_nganh = ma_cn
+        
+        # Kiểm tra xem MaNganh đã có trong DIM_NGANH chưa
+        if ma_nganh not in existing_nganh:
+            print(f"      ⚠️ MaNganh '{ma_nganh}' chưa có trong DIM_NGANH, bỏ qua chuyên ngành {ma_cn}")
+            continue
+        
+        # Insert vào DIM_CHUYEN_NGANH nếu chưa có
+        try:
+            cursor.execute("""
+                IF NOT EXISTS (SELECT 1 FROM DIM_CHUYEN_NGANH WHERE MaChuyenNganh = ?) 
+                INSERT INTO DIM_CHUYEN_NGANH (MaChuyenNganh, TenChuyenNganh, MaNganh, MaCTDT) 
+                VALUES (?, ?, ?, 'CTDT_CHINHQUY')
+            """, ma_cn, ma_cn, ten_cn, ma_nganh)
+            count += 1
+        except Exception as e:
+            print(f"      ⚠️ Lỗi insert chuyên ngành {ma_cn}: {e}")
+    
     cursor.connection.commit()
     print(f"  ✅ DIM_CHUYEN_NGANH: {count} dòng")
     return count
 
 def load_dim_lop_sinh_vien(cursor, df_raw):
+    """Load DIM_LOP_SINH_VIEN - chỉ insert khi MaChuyenNganh tồn tại trong DIM_CHUYEN_NGANH"""
+    
+    # Lấy danh sách MaChuyenNganh đã có trong DIM_CHUYEN_NGANH
+    cursor.execute("SELECT MaChuyenNganh FROM DIM_CHUYEN_NGANH")
+    existing_chuyennganh = {row[0] for row in cursor.fetchall()}
+    
     df_lop = df_raw[['Lop', 'MaSV']].drop_duplicates('Lop').copy()
     df_lop = df_lop[df_lop['Lop'].notna() & (df_lop['Lop'] != '')]
     
     count = 0
+    skipped = 0
+    
     for _, row in df_lop.iterrows():
-        ma_chuyen_nganh = None
-        if _lop_pattern.match(normalize_lop(row['Lop'])):
-            ma_chuyen_nganh = f"K{normalize_lop(row['Lop'])[3:5]}"
-        elif 'QT' in row['Lop'].upper():
-            ma_chuyen_nganh = "QT"
-        elif 'CTS' in row['Lop'].upper():
-            ma_chuyen_nganh = "CTS"
+        # SỬ DỤNG determine_ma_chuyen_nganh để lấy thông tin
+        ma_cn, ten_cn, ten_khoa, ma_khoa = determine_ma_chuyen_nganh(row['Lop'])
         
-        if ma_chuyen_nganh:
+        if not ma_cn:
+            skipped += 1
+            continue
+        
+        # Kiểm tra xem MaChuyenNganh đã tồn tại trong DIM_CHUYEN_NGANH chưa
+        if ma_cn not in existing_chuyennganh:
+            print(f"      ⚠️ MaChuyenNganh '{ma_cn}' chưa có trong DIM_CHUYEN_NGANH, bỏ qua lớp {row['Lop']}")
+            skipped += 1
+            continue
+        
+        try:
             cursor.execute("""
                 IF NOT EXISTS (SELECT 1 FROM DIM_LOP_SINH_VIEN WHERE MaLop = ?) 
                 INSERT INTO DIM_LOP_SINH_VIEN (MaLop, Lop, MaChuyenNganh) VALUES (?, ?, ?)
-            """, row['Lop'], row['Lop'], row['Lop'], ma_chuyen_nganh)
+            """, row['Lop'], row['Lop'], row['Lop'], ma_cn)
             count += 1
+        except Exception as e:
+            print(f"      ⚠️ Lỗi insert lớp {row['Lop']}: {e}")
+            skipped += 1
+    
     cursor.connection.commit()
-    print(f"  ✅ DIM_LOP_SINH_VIEN: {count} dòng")
+    print(f"  ✅ DIM_LOP_SINH_VIEN: {count} dòng (bỏ qua {skipped} dòng)")
     return count
 
 def load_dim_sinh_vien(cursor, df_raw):
@@ -758,24 +903,37 @@ def load_fact_tables(cursor, df_main, df_ketqua, df_tag):
 
 
 # ================= LOAD ALL DIMENSIONS =================
+
 def load_all_dimensions(cursor, df_raw, df_hp_master, df_nganh, df_chuyennganh):
     print("\n📥 Loading DIMENSION tables (KIỂM TRA TRÙNG - chỉ insert mới)...")
     
     ma_hoc_ky, _, _ = derive_ma_hoc_ky()
     
+    # Load theo thứ tự đúng quan hệ khóa ngoại
+    # 1. DIM_KHOA (không phụ thuộc)
     load_dim_khoa(cursor, df_hp_master, df_nganh)
-    load_dim_nganh(cursor, df_nganh)
-    load_dim_chuyennganh(cursor, df_chuyennganh)
+    
+    # 2. DIM_NGANH (phụ thuộc DIM_KHOA)
+    load_dim_nganh(cursor, df_nganh, df_raw)
+    
+    # 3. DIM_CHUONG_TRINH_DAO_TAO (đã có mặc định)
+    
+    # 4. DIM_CHUYEN_NGANH (phụ thuộc DIM_NGANH)
+    load_dim_chuyennganh(cursor, df_chuyennganh, df_raw)
+    
+    # 5. DIM_LOP_SINH_VIEN (phụ thuộc DIM_CHUYEN_NGANH)
     load_dim_lop_sinh_vien(cursor, df_raw)
+    
+    # 6. DIM_SINH_VIEN (phụ thuộc DIM_LOP_SINH_VIEN)
     load_dim_sinh_vien(cursor, df_raw)
+    
+    # 7. Các bảng còn lại
     load_dim_giang_vien(cursor, df_raw)
     load_dim_hoc_phan(cursor, df_hp_master, df_raw)
     load_dim_hoc_ky(cursor)
     load_dim_lop_hoc_phan(cursor, df_raw, ma_hoc_ky)
     
     print("  ✅ All DIMENSION tables loaded!")
-
-
 # ================= MAIN =================
 def main():
     total_start = time.time()

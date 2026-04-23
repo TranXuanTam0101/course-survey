@@ -691,94 +691,132 @@ def load_dimensions_optimized(cursor, df_raw, hp_master, dim_nganh, dim_chuyenng
         print(f"     ✅ Đã thêm {ma_hoc_ky}")
     else:
         print(f"     ✅ {ma_hoc_ky} đã tồn tại")
-    
     # ==========================================
-    # BẢNG 8: DIM_LOP_SINH_VIEN (PHỤ THUỘC DIM_CHUYEN_NGANH)
-    # ==========================================
-    print("\n  -> 8. DIM_LOP_SINH_VIEN")
-    
-    # Lấy danh sách MaChuyenNganh hợp lệ
-    cursor.execute("SELECT MaChuyenNganh FROM DIM_CHUYEN_NGANH")
-    valid_chuyennganh = {row[0] for row in cursor.fetchall()}
-    print(f"     - Có {len(valid_chuyennganh)} chuyên ngành hợp lệ")
-    
-    cursor.execute("SELECT MaLop FROM DIM_LOP_SINH_VIEN")
-    existing_lop = {row[0] for row in cursor.fetchall()}
-    
-    df_lop_unique = df_raw[['Lop']].drop_duplicates('Lop').dropna()
-    
-    data_lop = []
-    skipped_lop = []
-    
-    for _, row in df_lop_unique.iterrows():
-        lop = row['Lop']
-        if lop not in existing_lop:
-            ma_cn, _, _, _ = determine_ma_chuyen_nganh(lop)
-            
-            # Nếu không xác định được hoặc không tồn tại, bỏ qua (không insert)
-            if not ma_cn or ma_cn not in valid_chuyennganh:
-                skipped_lop.append(lop)
-                continue
-            
-            data_lop.append((lop, lop, ma_cn))
-            existing_lop.add(lop)
-    
-    if data_lop:
-        batch_insert_optimized(cursor, 'DIM_LOP_SINH_VIEN', ['MaLop', 'Lop', 'MaChuyenNganh'], data_lop, 5000)
-        print(f"     ✅ Đã insert {len(data_lop)} dòng mới")
-    else:
-        print(f"     ✅ Không có dòng mới")
-    
-    if skipped_lop:
-        print(f"     ⚠️ Bỏ qua {len(skipped_lop)} lớp không xác định được chuyên ngành")
-    
-    # ==========================================
-    # BẢNG 9: DIM_SINH_VIEN (PHỤ THUỘC DIM_LOP_SINH_VIEN)
-    # ==========================================
-    print("\n  -> 9. DIM_SINH_VIEN")
-    
-    # Lấy danh sách MaLop hợp lệ
-    cursor.execute("SELECT MaLop FROM DIM_LOP_SINH_VIEN")
-    valid_lop = {row[0] for row in cursor.fetchall()}
-    print(f"     - Có {len(valid_lop)} lớp hợp lệ")
-    
-    cursor.execute("SELECT MaSV FROM DIM_SINH_VIEN")
-    existing_sv = {row[0] for row in cursor.fetchall()}
-    
-    df_sv = df_raw[['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'Lop']].drop_duplicates('MaSV').dropna(subset=['MaSV'])
-    
-    data_sv = []
-    skipped_sv = []
-    
-    for _, row in df_sv.iterrows():
-        ma_sv = row['MaSV']
-        lop = row['Lop']
+# BẢNG 8: DIM_LOP_SINH_VIEN (CÓ LOG)
+# ==========================================
+print("\n  -> 8. DIM_LOP_SINH_VIEN")
+
+# Lấy danh sách MaChuyenNganh từ file master
+cursor.execute("SELECT MaChuyenNganh FROM DIM_CHUYEN_NGANH")
+valid_chuyennganh = {row[0] for row in cursor.fetchall()}
+print(f"     - Có {len(valid_chuyennganh)} chuyên ngành từ file master: {sorted(valid_chuyennganh)}")
+
+cursor.execute("SELECT MaLop FROM DIM_LOP_SINH_VIEN")
+existing_lop = {row[0] for row in cursor.fetchall()}
+
+df_lop_unique = df_raw[['Lop']].drop_duplicates('Lop').dropna()
+
+data_lop = []
+skipped_lop_details = []  # Lưu chi tiết lớp bị bỏ qua
+
+for _, row in df_lop_unique.iterrows():
+    lop = row['Lop']
+    if lop not in existing_lop:
+        ma_cn, ten_cn, ten_khoa, ma_khoa = determine_ma_chuyen_nganh(lop)
         
-        if ma_sv not in existing_sv:
-            # Chỉ insert nếu lớp tồn tại trong DIM_LOP_SINH_VIEN
-            if lop not in valid_lop:
-                skipped_sv.append(ma_sv)
-                continue
-            
-            ngay_sinh = None
-            if row['NgaySinh']:
-                try:
-                    ngay_sinh = datetime.strptime(row['NgaySinh'], '%d/%m/%Y').date()
-                except:
-                    pass
-            
-            data_sv.append((ma_sv, row['HoDem'] or '', row['Ten'] or '', ngay_sinh, lop))
-            existing_sv.add(ma_sv)
+        if not ma_cn:
+            skipped_lop_details.append({
+                'Lop': lop,
+                'LyDo': 'Không xác định được MaChuyenNganh từ tên lớp',
+                'MaChuyenNganh': ma_cn
+            })
+            continue
+        
+        if ma_cn not in valid_chuyennganh:
+            skipped_lop_details.append({
+                'Lop': lop,
+                'LyDo': f"MaChuyenNganh '{ma_cn}' không có trong file master",
+                'MaChuyenNganh': ma_cn
+            })
+            continue
+        
+        data_lop.append((lop, lop, ma_cn))
+        existing_lop.add(lop)
+
+# LOG CHI TIẾT LỚP BỎ QUA
+if skipped_lop_details:
+    print(f"     ⚠️ Bỏ qua {len(skipped_lop_details)} lớp:")
+    print("     " + "-" * 60)
+    for i, detail in enumerate(skipped_lop_details[:20], 1):  # In tối đa 20 lớp
+        print(f"        {i}. Lớp: '{detail['Lop']}'")
+        print(f"           MaChuyenNganh: {detail['MaChuyenNganh']}")
+        print(f"           Lý do: {detail['LyDo']}")
+        print()
+    if len(skipped_lop_details) > 20:
+        print(f"        ... và {len(skipped_lop_details) - 20} lớp khác")
+    print("     " + "-" * 60)
+
+if data_lop:
+    batch_insert_optimized(cursor, 'DIM_LOP_SINH_VIEN', ['MaLop', 'Lop', 'MaChuyenNganh'], data_lop, 5000)
+    print(f"     ✅ Đã insert {len(data_lop)} dòng mới")
+else:
+    print(f"     ✅ Không có dòng mới")
+
+
+# ==========================================
+# BẢNG 9: DIM_SINH_VIEN (CÓ LOG)
+# ==========================================
+print("\n  -> 9. DIM_SINH_VIEN")
+
+# Lấy danh sách MaLop hợp lệ
+cursor.execute("SELECT MaLop FROM DIM_LOP_SINH_VIEN")
+valid_lop = {row[0] for row in cursor.fetchall()}
+print(f"     - Có {len(valid_lop)} lớp hợp lệ trong DIM_LOP_SINH_VIEN")
+print(f"     - Danh sách lớp hợp lệ: {sorted(valid_lop)[:20]}..." if len(valid_lop) > 20 else f"     - Danh sách lớp hợp lệ: {sorted(valid_lop)}")
+
+cursor.execute("SELECT MaSV FROM DIM_SINH_VIEN")
+existing_sv = {row[0] for row in cursor.fetchall()}
+
+df_sv = df_raw[['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'Lop']].drop_duplicates('MaSV').dropna(subset=['MaSV'])
+
+data_sv = []
+skipped_sv_details = []  # Lưu chi tiết sinh viên bị bỏ qua
+
+for _, row in df_sv.iterrows():
+    ma_sv = row['MaSV']
+    lop = row['Lop']
     
-    if data_sv:
-        batch_insert_optimized(cursor, 'DIM_SINH_VIEN', ['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop'], data_sv, 5000)
-        print(f"     ✅ Đã insert {len(data_sv)} dòng mới")
-    else:
-        print(f"     ✅ Không có dòng mới")
-    
-    if skipped_sv:
-        print(f"     ⚠️ Bỏ qua {len(skipped_sv)} sinh viên có lớp không hợp lệ")
-    
+    if ma_sv not in existing_sv:
+        # Kiểm tra lớp có tồn tại trong DIM_LOP_SINH_VIEN không
+        if lop not in valid_lop:
+            skipped_sv_details.append({
+                'MaSV': ma_sv,
+                'Lop': lop,
+                'HoDem': row['HoDem'],
+                'Ten': row['Ten'],
+                'LyDo': f"Lớp '{lop}' không tồn tại trong DIM_LOP_SINH_VIEN (có thể đã bị bỏ qua ở bước trước)"
+            })
+            continue
+        
+        ngay_sinh = None
+        if row['NgaySinh']:
+            try:
+                ngay_sinh = datetime.strptime(row['NgaySinh'], '%d/%m/%Y').date()
+            except:
+                pass
+        
+        data_sv.append((ma_sv, row['HoDem'] or '', row['Ten'] or '', ngay_sinh, lop))
+        existing_sv.add(ma_sv)
+
+# LOG CHI TIẾT SINH VIÊN BỎ QUA
+if skipped_sv_details:
+    print(f"     ⚠️ Bỏ qua {len(skipped_sv_details)} sinh viên:")
+    print("     " + "-" * 60)
+    for i, detail in enumerate(skipped_sv_details[:20], 1):  # In tối đa 20 sinh viên
+        print(f"        {i}. MaSV: '{detail['MaSV']}'")
+        print(f"           Tên: {detail['HoDem']} {detail['Ten']}")
+        print(f"           Lớp: '{detail['Lop']}'")
+        print(f"           Lý do: {detail['LyDo']}")
+        print()
+    if len(skipped_sv_details) > 20:
+        print(f"        ... và {len(skipped_sv_details) - 20} sinh viên khác")
+    print("     " + "-" * 60)
+
+if data_sv:
+    batch_insert_optimized(cursor, 'DIM_SINH_VIEN', ['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop'], data_sv, 5000)
+    print(f"     ✅ Đã insert {len(data_sv)} dòng mới")
+else:
+    print(f"     ✅ Không có dòng mới")
     # ==========================================
     # BẢNG 10: DIM_LOP_HOC_PHAN (PHỤ THUỘC DIM_HOC_PHAN, DIM_GIANG_VIEN, DIM_HOC_KY)
     # ==========================================

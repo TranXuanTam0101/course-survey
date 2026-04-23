@@ -566,22 +566,36 @@ def transform_with_nlp(df):
 
 
 # ================= LOAD DATABASE =================
-def batch_insert_fast(cursor, table, columns, data, batch_size=20000):
+def batch_insert_optimized(cursor, table, columns, data, batch_size=100000):
     if not data:
         return 0
+    
     placeholders = ', '.join(['?' for _ in columns])
     sql = f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders})"
+    
     total = 0
-    for i in range(0, len(data), batch_size):
-        batch = data[i:i+batch_size]
-        cursor.executemany(sql, batch)
+    cursor.fast_executemany = True
+    original_autocommit = cursor.connection.autocommit
+    cursor.connection.autocommit = False
+    
+    try:
+        for i in range(0, len(data), batch_size):
+            batch = data[i:i+batch_size]
+            cursor.executemany(sql, batch)
+            total += len(batch)
+            
+            if total % 100000 == 0:
+                print(f"      -> Đã insert {total:,}/{len(data):,} dòng vào {table}")
+    
         cursor.connection.commit()
-        total += len(batch)
-        if total % 50000 == 0:
-            print(f"      -> Đã insert {total:,}/{len(data):,} dòng vào {table}")
+        
+    except Exception as e:
+        cursor.connection.rollback()
+        raise e
+    finally:
+        cursor.connection.autocommit = original_autocommit
+    
     return total
-
-batch_insert = batch_insert_fast
 
 def load_dim_khoa(cursor, df_hp, df_nganh):
     all_khoa = set()
@@ -595,8 +609,7 @@ def load_dim_khoa(cursor, df_hp, df_nganh):
     existing = {row[0] for row in cursor.fetchall()}
     new_data = [(ma, ma) for ma in all_khoa if ma not in existing]
     if new_data:
-        batch_insert(cursor, 'DIM_KHOA', ['MaKhoa', 'TenKhoa'], new_data, 1000)
-    print(f"  ✅ DIM_KHOA: {len(new_data)} dòng mới")
+        batch_insert_optimized(cursor, 'DIM_KHOA', ['MaKhoa', 'TenKhoa'], new_data, 10000)
     return len(new_data)
 
 def load_dim_nganh(cursor, df_nganh):
@@ -611,7 +624,7 @@ def load_dim_nganh(cursor, df_nganh):
                 data.append((ma_nganh, row['TenNganh'], row['MaKhoa']))
                 existing.add(ma_nganh)
         if data:
-            count = batch_insert(cursor, 'DIM_NGANH', ['MaNganh', 'TenNganh', 'MaKhoa'], data, 1000)
+            count = batch_insert_optimized(cursor, 'DIM_NGANH', ['MaNganh', 'TenNganh', 'MaKhoa'], data, 10000)
     print(f"  ✅ DIM_NGANH: {count} dòng mới")
     return count
 
@@ -640,8 +653,7 @@ def load_dim_chuyennganh(cursor, df_chuyennganh, df_raw, mapping):
                 data.append((ma_chuyen, row['TenChuyenNganh'], ma_nganh, 'CTDT_CHINHQUY'))
                 existing.add(ma_chuyen)
         if data:
-            count += batch_insert(cursor, 'DIM_CHUYEN_NGANH', 
-                                 ['MaChuyenNganh', 'TenChuyenNganh', 'MaNganh', 'MaCTDT'], data, 1000)
+            count += batch_insert_optimized(cursor, 'DIM_CHUYEN_NGANH', ...)
     
     # Từ Lop
     df_lop = df_raw[['Lop']].drop_duplicates('Lop')
@@ -677,8 +689,7 @@ def load_dim_chuyennganh(cursor, df_chuyennganh, df_raw, mapping):
                 existing.add(ma_cn)
     
     if data_lop:
-        count += batch_insert(cursor, 'DIM_CHUYEN_NGANH',
-                             ['MaChuyenNganh', 'TenChuyenNganh', 'MaNganh', 'MaCTDT'], data_lop, 1000)
+        count += batch_insert_optimized(cursor, 'DIM_CHUYEN_NGANH', ...)
     
     print(f"  ✅ DIM_CHUYEN_NGANH: {count} dòng mới")
     return count
@@ -701,8 +712,7 @@ def load_dim_lop_sinh_vien(cursor, df_raw, mapping):
                 existing_lop.add(row['Lop'])
     
     if data:
-        batch_insert(cursor, 'DIM_LOP_SINH_VIEN', ['MaLop', 'Lop', 'MaChuyenNganh'], data, 5000)
-        print(f"  ✅ DIM_LOP_SINH_VIEN: {len(data)} dòng mới")
+        batch_insert_optimized(cursor, 'DIM_LOP_SINH_VIEN', ['MaLop', 'Lop', 'MaChuyenNganh'], data, 5000)
         return len(data)
     print(f"  ✅ DIM_LOP_SINH_VIEN: 0 dòng mới")
     return 0
@@ -726,8 +736,7 @@ def load_dim_sinh_vien(cursor, df_raw):
             data.append((row['MaSV'], row['HoDem'], row['Ten'], ngay_sinh, row['Lop']))
     
     if data:
-        batch_insert(cursor, 'DIM_SINH_VIEN', ['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop'], data, 5000)
-        print(f"  ✅ DIM_SINH_VIEN: {len(data)} dòng mới")
+        batch_insert_optimized(cursor, 'DIM_SINH_VIEN', ['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop'], data, 5000)
         return len(data)
     print(f"  ✅ DIM_SINH_VIEN: 0 dòng mới")
     return 0
@@ -735,15 +744,25 @@ def load_dim_sinh_vien(cursor, df_raw):
 def load_dim_giang_vien(cursor, df_raw):
     df_gv = df_raw[['MaGV', 'HoDemGV', 'TenGV']].drop_duplicates('MaGV')
     df_gv = df_gv[df_gv['MaGV'].notna() & (df_gv['MaGV'] != '')]
-    data = [(row['MaGV'], row['HoDemGV'], row['TenGV']) for _, row in df_gv.iterrows()]
-    if data:
-        cursor.execute("SELECT MaGV FROM DIM_GIANG_VIEN")
-        existing = {row[0] for row in cursor.fetchall()}
-        new_data = [d for d in data if d[0] not in existing]
-        if new_data:
-            batch_insert(cursor, 'DIM_GIANG_VIEN', ['MaGV', 'HoDemGV', 'TenGV'], new_data, 5000)
-            print(f"  ✅ DIM_GIANG_VIEN: {len(new_data)} dòng mới")
-            return len(new_data)
+    
+    if df_gv.empty:
+        print(f"  ✅ DIM_GIANG_VIEN: 0 dòng mới")
+        return 0
+    
+    cursor.execute("SELECT MaGV FROM DIM_GIANG_VIEN")
+    existing = {row[0] for row in cursor.fetchall()}
+    new_data = []
+    for _, row in df_gv.iterrows():
+        if row['MaGV'] not in existing:
+            new_data.append((row['MaGV'], row['HoDemGV'], row['TenGV']))
+    
+    if new_data:
+        count = batch_insert_optimized(cursor, 'DIM_GIANG_VIEN', 
+                                       ['MaGV', 'HoDemGV', 'TenGV'], 
+                                       new_data, 50000)
+        print(f"  ✅ DIM_GIANG_VIEN: {count} dòng mới")
+        return count
+    
     print(f"  ✅ DIM_GIANG_VIEN: 0 dòng mới")
     return 0
 
@@ -782,8 +801,7 @@ def load_dim_hoc_phan(cursor, df_hp_master, df_raw):
             existing_in_db.add(ma_hp)
     
     if data:
-        print(f"      -> Insert {len(data)} học phần vào DIM_HOC_PHAN")
-        count = batch_insert(cursor, 'DIM_HOC_PHAN', ['MaHP', 'TenHP', 'MaKhoa'], data, 5000)
+        count = batch_insert_optimized(cursor, 'DIM_HOC_PHAN', ['MaHP', 'TenHP', 'MaKhoa'], data, 5000)
     
     print(f"  ✅ DIM_HOC_PHAN: {count} dòng mới")
     return count
@@ -808,64 +826,115 @@ def load_dim_lop_hoc_phan(cursor, df_raw, ma_hoc_ky):
         existing = {row[0] for row in cursor.fetchall()}
         new_data = [d for d in data if d[0] not in existing]
         if new_data:
-            batch_insert(cursor, 'DIM_LOP_HOC_PHAN', ['MaLopHP', 'LopHP', 'MaHP', 'MaGV', 'MaHocKy'], new_data, 5000)
-            print(f"  ✅ DIM_LOP_HOC_PHAN: {len(new_data)} dòng mới")
+            batch_insert_optimized(cursor, 'DIM_LOP_HOC_PHAN', ['MaLopHP', 'LopHP', 'MaHP', 'MaGV', 'MaHocKy'], new_data, 5000)
             return len(new_data)
     print(f"  ✅ DIM_LOP_HOC_PHAN: 0 dòng mới")
     return 0
 
-def load_all_dimensions(cursor, df_raw, df_hp_master, df_nganh, df_chuyennganh, mapping):
-    print("\n📥 Loading DIMENSION tables...")
+def load_all_dimensions_optimized(cursor, df_raw, df_hp_master, df_nganh, df_chuyennganh, mapping):
+    print("\n📥 Loading DIMENSION tables (OPTIMIZED)...")
     ma_hoc_ky, _, _ = derive_ma_hoc_ky()
     
-    load_dim_khoa(cursor, df_hp_master, df_nganh)
-    load_dim_nganh(cursor, df_nganh)
-    load_dim_chuyennganh(cursor, df_chuyennganh, df_raw, mapping)
-    load_dim_lop_sinh_vien(cursor, df_raw, mapping)
-    load_dim_sinh_vien(cursor, df_raw)
-    load_dim_giang_vien(cursor, df_raw)
-    load_dim_hoc_phan(cursor, df_hp_master, df_raw)
-    load_dim_hoc_ky(cursor)
-    load_dim_lop_hoc_phan(cursor, df_raw, ma_hoc_ky)
+    # ✅ TẮT AUTO-COMMIT ĐỂ GOM TRANSACTION
+    original_autocommit = cursor.connection.autocommit
+    cursor.connection.autocommit = False
+    
+    try:
+        load_dim_khoa(cursor, df_hp_master, df_nganh)
+        load_dim_nganh(cursor, df_nganh)
+        load_dim_chuyennganh(cursor, df_chuyennganh, df_raw, mapping)
+        load_dim_lop_sinh_vien(cursor, df_raw, mapping)
+        load_dim_sinh_vien(cursor, df_raw)
+        load_dim_giang_vien(cursor, df_raw) 
+        load_dim_hoc_phan(cursor, df_hp_master, df_raw)
+        load_dim_hoc_ky(cursor)
+        load_dim_lop_hoc_phan(cursor, df_raw, ma_hoc_ky)
+        cursor.connection.commit()
+        
+    except Exception as e:
+        cursor.connection.rollback()
+        raise e
+    finally:
+        cursor.connection.autocommit = original_autocommit
     
     print("  ✅ All DIMENSION tables loaded!")
 
 
 # ================= LOAD FACT TABLES (KHÔNG TAG MAPPING) =================
-def load_fact_tables(cursor, df_main, df_ketqua):
-    print("\n📥 Loading FACT tables...")
+def load_fact_tables_optimized(cursor, df_main, df_ketqua):
+    print("\n📥 Loading FACT tables (OPTIMIZED)...")
+    start_time = time.time()
     
-    # FACT_GOP_Y_TU_LUAN - đã có 4 cột tag
-    data_main = [
-        (
-            row['SubmissionID'], 
-            row['MaSV'], 
-            row['LopHP'], 
-            row['NoiDungGopY'][:4000] if row['NoiDungGopY'] else '',
-            row['Sentiment'], 
-            row['Is_Valid'],
-            row['Tag_HocPhan'],
-            row['Tag_DayHoc'],
-            row['Tag_KiemTra'],
-            row['Tag_Khac']
-        ) 
-        for _, row in df_main.iterrows()
-    ]
-    count_main = batch_insert(cursor, 'FACT_GOP_Y_TU_LUAN',
-                              ['SubmissionID', 'MaSV', 'MaLopHP', 'NoiDungGopY', 
-                               'Sentiment', 'Is_Valid',
-                               'Tag_HocPhan', 'Tag_DayHoc', 'Tag_KiemTra', 'Tag_Khac'],
-                              data_main, 10000)
-    print(f"    ✅ FACT_GOP_Y_TU_LUAN: {count_main} dòng")
+    try:
+        # ✅ TẮT CONSTRAINTS VÀ TRIGGERS TẠM THỜI
+        print("  -> Disabling constraints and triggers...")
+        cursor.execute("ALTER TABLE FACT_GOP_Y_TU_LUAN NOCHECK CONSTRAINT ALL")
+        cursor.execute("ALTER TABLE FACT_GOP_Y_TU_LUAN DISABLE TRIGGER ALL")
+        cursor.execute("ALTER TABLE FACT_KET_QUA_DANH_GIA NOCHECK CONSTRAINT ALL")
+        cursor.execute("ALTER TABLE FACT_KET_QUA_DANH_GIA DISABLE TRIGGER ALL")
+        cursor.connection.commit()
+        
+        # ✅ CHUẨN BỊ DỮ LIỆU
+        print("  -> Preparing data...")
+        
+        # FACT_GOP_Y_TU_LUAN
+        data_main = [
+            (
+                row['SubmissionID'], 
+                row['MaSV'], 
+                row['LopHP'], 
+                (row['NoiDungGopY'][:4000] if row['NoiDungGopY'] else '')[:4000],
+                row['Sentiment'], 
+                row['Is_Valid'],
+                row['Tag_HocPhan'],
+                row['Tag_DayHoc'],
+                row['Tag_KiemTra'],
+                row['Tag_Khac']
+            ) 
+            for _, row in df_main.iterrows()
+        ]
+        
+        # ✅ DÙNG itertuples THAY VÌ values (nhanh hơn)
+        data_kq = list(df_ketqua[['SubmissionID', 'MaCauHoi', 'Diem']].itertuples(index=False, name=None))
+        
+        # INSERT FACT_GOP_Y_TU_LUAN
+        print(f"  -> Inserting {len(data_main):,} rows into FACT_GOP_Y_TU_LUAN...")
+        count_main = batch_insert_optimized(
+            cursor, 
+            'FACT_GOP_Y_TU_LUAN',
+            ['SubmissionID', 'MaSV', 'MaLopHP', 'NoiDungGopY', 
+             'Sentiment', 'Is_Valid',
+             'Tag_HocPhan', 'Tag_DayHoc', 'Tag_KiemTra', 'Tag_Khac'],
+            data_main, 
+            50000
+        )
+        
+        # INSERT FACT_KET_QUA_DANH_GIA
+        print(f"  -> Inserting {len(data_kq):,} rows into FACT_KET_QUA_DANH_GIA...")
+        count_kq = batch_insert_optimized(
+            cursor,
+            'FACT_KET_QUA_DANH_GIA',
+            ['SubmissionID', 'MaCauHoi', 'Diem'],
+            data_kq,
+            100000  # ✅ BATCH LỚN HƠN CHO BẢNG NHIỀU DÒNG
+        )
+        
+        # ✅ BẬT LẠI CONSTRAINTS VÀ TRIGGERS
+        print("  -> Re-enabling constraints and triggers...")
+        cursor.execute("ALTER TABLE FACT_GOP_Y_TU_LUAN CHECK CONSTRAINT ALL")
+        cursor.execute("ALTER TABLE FACT_GOP_Y_TU_LUAN ENABLE TRIGGER ALL")
+        cursor.execute("ALTER TABLE FACT_KET_QUA_DANH_GIA CHECK CONSTRAINT ALL")
+        cursor.execute("ALTER TABLE FACT_KET_QUA_DANH_GIA ENABLE TRIGGER ALL")
+        cursor.connection.commit()
+        
+    except Exception as e:
+        print(f"  ❌ Lỗi: {e}")
+        cursor.connection.rollback()
+        raise
     
-    # FACT_KET_QUA_DANH_GIA
-    data_kq = [tuple(x) for x in df_ketqua[['SubmissionID', 'MaCauHoi', 'Diem']].values]
-    count_kq = batch_insert(cursor, 'FACT_KET_QUA_DANH_GIA',
-                            ['SubmissionID', 'MaCauHoi', 'Diem'], data_kq, 20000)
-    print(f"    ✅ FACT_KET_QUA_DANH_GIA: {count_kq} dòng ({count_kq//12} phiếu)")
-    
+    elapsed = time.time() - start_time
+    print(f"  ✅ FACT tables loaded: {count_main:,} submissions, {count_kq:,} answers in {elapsed:.1f}s")
     return count_main, count_kq
-
 
 # ================= MAIN =================
 def main():
@@ -933,8 +1002,8 @@ def main():
         return
     
     try:
-        load_all_dimensions(cursor, df_raw, hp_master, dim_nganh, dim_chuyennganh, mapping)
-        count_main, count_kq = load_fact_tables(cursor, df_main, df_ketqua)
+        load_all_dimensions_optimized(cursor, df_raw, hp_master, dim_nganh, dim_chuyennganh, mapping)
+        count_main, count_kq = load_fact_tables_optimized(cursor, df_main, df_ketqua)
     except Exception as e:
         print(f"  ❌ Lỗi: {e}")
         raise

@@ -132,34 +132,86 @@ def determine_ma_chuyen_nganh(lop: str) -> tuple:
     return None, None, None, None
 
 
-# ================= NLP CLASS =================
+# ================= NLP CLASS - ĐÃ SỬA LOGIC TOÁN HỌC =================
 class VietnameseNLP:
+    """
+    NLP Class với logic toán học đúng:
+    - Xử lý phủ định (negation) - "không tốt" → negative
+    - Xử lý từ tăng cường (boost) - "rất tốt" → điểm cao hơn
+    - Tính điểm có trọng số
+    - Phân biệt "không có ý kiến" với "không X"
+    """
     
     def __init__(self):
+        # ===== TỪ ĐIỂN CÓ TRỌNG SỐ =====
         self.positive_words = {
-            'tuyệt vời', 'tuyệt', 'mãi yêu', 'yêu cô', 'yêu thầy', 'siêu thích',
-            'hào hứng', 'thoải mái', 'vui', 'sôi nổi', 'hấp dẫn', 'dễ mến',
-            'dễ gần', 'thân thiện', 'gần gũi', 'tâm lý', 'dễ thương', 'vui tính',
-            'có tâm', 'tâm huyết', 'tận tâm', 'tận tụy', 'tận tình', 'nhiệt huyết',
-            'chu đáo', 'kỹ', 'cẩn thận', 'chi tiết', 'sâu sắc', 'nghiêm túc',
-            'linh hoạt', 'sáng tạo', 'mới mẻ', 'thực tế', 'thực tiễn', 'sát ngành',
-            'bám sát', 'đúng trọng tâm', 'hiệu quả', 'tiến bộ', 'đa dạng',
-            'phong phú', 'hợp lý', 'chuẩn', 'tạo điều kiện', 'hỗ trợ',
-            'giải đáp thắc mắc', 'chỉnh chu', 'tốt', 'hay', 'ổn', 'hài lòng',
-            'cảm ơn', 'ok', 'oke', 'oki', 'good', 'great', 'excellent'
+            # Trọng số 2.0 (rất mạnh)
+            'tuyệt vời': 2.0, 'xuất sắc': 2.0, 'hoàn hảo': 2.0,
+            'quá tuyệt': 2.0, 'mãi yêu': 2.0, 'siêu thích': 2.0,
+            
+            # Trọng số 1.5 (khá mạnh)
+            'rất tốt': 1.5, 'rất hay': 1.5, 'cực kỳ': 1.5,
+            'tuyệt': 1.5, 'hào hứng': 1.5,
+            
+            # Trọng số 1.0 (bình thường)
+            'tốt': 1.0, 'hay': 1.0, 'ổn': 1.0, 'hài lòng': 1.0,
+            'cảm ơn': 1.0, 'ok': 1.0, 'oke': 1.0, 'oki': 1.0,
+            'good': 1.0, 'great': 1.0, 'excellent': 1.0,
+            'thoải mái': 1.0, 'vui': 1.0, 'sôi nổi': 1.0, 'hấp dẫn': 1.0,
+            'dễ mến': 1.0, 'dễ gần': 1.0, 'thân thiện': 1.0, 'gần gũi': 1.0,
+            'tâm lý': 1.0, 'dễ thương': 1.0, 'vui tính': 1.0, 'có tâm': 1.0,
+            'tâm huyết': 1.0, 'tận tâm': 1.0, 'tận tụy': 1.0, 'tận tình': 1.0,
+            'nhiệt huyết': 1.0, 'chu đáo': 1.0, 'kỹ': 1.0, 'cẩn thận': 1.0,
+            'chi tiết': 1.0, 'sâu sắc': 1.0, 'nghiêm túc': 1.0, 'linh hoạt': 1.0,
+            'sáng tạo': 1.0, 'mới mẻ': 1.0, 'thực tế': 1.0, 'thực tiễn': 1.0,
+            'sát ngành': 1.0, 'bám sát': 1.0, 'đúng trọng tâm': 1.0,
+            'hiệu quả': 1.0, 'tiến bộ': 1.0, 'đa dạng': 1.0, 'phong phú': 1.0,
+            'hợp lý': 1.0, 'chuẩn': 1.0, 'tạo điều kiện': 1.0, 'hỗ trợ': 1.0,
+            'giải đáp thắc mắc': 1.0, 'chỉnh chu': 1.0
         }
         
         self.negative_words = {
-            'khó hiểu', 'khó tiếp thu', 'mông lung', 'lan man', 'dài dòng',
-            'qua loa', 'chắp vá', 'đọc chép', 'phụ thuộc slide', 'thiếu linh hoạt',
-            'cứng nhắc', 'nhàm chán', 'đơn điệu', 'cũ kỹ', 'dạy nhanh',
-            'dạy lố giờ', 'thiếu tương tác', 'không tương tác', 'thiếu nhiệt tình',
-            'không tâm huyết', 'quá rộng', 'quá khó', 'không phù hợp', 'không sát',
-            'thiếu cụ thể', 'mơ hồ', 'chung chung', 'không rõ', 'thiếu tài liệu',
-            'không cập nhật', 'nặng', 'quá tải', 'không công bằng', 'thiếu minh bạch',
-            'bất tiện', 'chưa hoàn thiện', 'tệ', 'dở', 'kém', 'chán', 'thất vọng'
+            # Trọng số -2.0 (rất tệ)
+            'tệ hại': -2.0, 'tồi tệ': -2.0, 'thất vọng': -2.0,
+            
+            # Trọng số -1.5 (khá tệ)
+            'rất khó': -1.5, 'quá khó': -1.5, 'rất chán': -1.5,
+            
+            # Trọng số -1.0 (bình thường)
+            'khó hiểu': -1.0, 'khó tiếp thu': -1.0, 'mông lung': -1.0,
+            'lan man': -1.0, 'dài dòng': -1.0, 'qua loa': -1.0,
+            'chắp vá': -1.0, 'đọc chép': -1.0, 'phụ thuộc slide': -1.0,
+            'thiếu linh hoạt': -1.0, 'cứng nhắc': -1.0, 'nhàm chán': -1.0,
+            'đơn điệu': -1.0, 'cũ kỹ': -1.0, 'dạy nhanh': -1.0,
+            'dạy lố giờ': -1.0, 'thiếu tương tác': -1.0, 'không tương tác': -1.0,
+            'thiếu nhiệt tình': -1.0, 'không tâm huyết': -1.0, 'quá rộng': -1.0,
+            'quá khó': -1.0, 'không phù hợp': -1.0, 'không sát': -1.0,
+            'thiếu cụ thể': -1.0, 'mơ hồ': -1.0, 'chung chung': -1.0,
+            'không rõ': -1.0, 'thiếu tài liệu': -1.0, 'không cập nhật': -1.0,
+            'nặng': -1.0, 'quá tải': -1.0, 'không công bằng': -1.0,
+            'thiếu minh bạch': -1.0, 'bất tiện': -1.0, 'chưa hoàn thiện': -1.0,
+            'tệ': -1.0, 'dở': -1.0, 'kém': -1.0, 'chán': -1.0
         }
         
+        # ===== TỪ TĂNG CƯỜNG (BOOST WORDS) =====
+        self.boost_words = {
+            'rất': 2.0, 'quá': 2.0, 'cực': 2.0, 'vô cùng': 2.0,
+            'siêu': 2.0, 'hơi bị': 1.5, 'khá': 1.5, 'hơi': 0.8
+        }
+        
+        # ===== TỪ PHỦ ĐỊNH (NEGATION WORDS) =====
+        self.negation_words = {'không', 'chẳng', 'chả', 'chưa', 'không hề', 'chẳng hề'}
+        
+        # ===== PATTERN PHÁT HIỆN "KHÔNG CÓ Ý KIẾN" =====
+        self.no_opinion_patterns = [
+            r'^không\s*(có)?\s*(gì)?\s*(ý\s*kiến)?\s*(góp\s*ý)?\s*$',
+            r'^(em|dạ)\s*(không|ko|k)\s*(có)?\s*(ý\s*kiến)?\s*(ạ)?$',
+            r'^(ko|k|0|\.\.+|n/?a)$',
+            r'^không\s*có\s*góp\s*ý$',
+            r'^$'
+        ]
+        
+        # ===== TAG KEYWORDS (giữ nguyên logic cũ) =====
         self.tag_keywords = {
             'Tag_HocPhan': [
                 'chuẩn đầu ra', 'mục tiêu môn học', 'đáp ứng chương trình',
@@ -178,45 +230,172 @@ class VietnameseNLP:
         }
         
         self.tag_khac_keywords = [
-            'không có góp ý', 'không ý kiến', 'không góp ý',
-            'không', 'ko', 'k', 'không có', 'ok', 'ổn', 'tốt', 'được'
+            'không có góp ý', 'không ý kiến', 'không góp ý'
         ]
         
-        self.neutral_phrases = [
-            'không có ý kiến', 'không góp ý', 'không có góp ý',
-            'không', 'ko', 'k', 'bình thường', 'tạm được'
-        ]
-        
-        # Tạo regex cho vectorized
-        self.pos_regex = '|'.join(re.escape(w) for w in self.positive_words)
-        self.neg_regex = '|'.join(re.escape(w) for w in self.negative_words)
+        # Compile regex cho tags
         self.tag_hp_regex = '|'.join(re.escape(w) for w in self.tag_keywords['Tag_HocPhan'])
         self.tag_dh_regex = '|'.join(re.escape(w) for w in self.tag_keywords['Tag_DayHoc'])
         self.tag_kt_regex = '|'.join(re.escape(w) for w in self.tag_keywords['Tag_KiemTra'])
-        self.tag_khac_regex = '|'.join(re.escape(w) for w in self.tag_khac_keywords)
-        self.neutral_regex = '|'.join(re.escape(w) for w in self.neutral_phrases)
     
-    def analyze_sentiment_vectorized(self, texts):
-        series = pd.Series(texts)
-        pos_count = series.str.count(self.pos_regex).fillna(0)
-        neg_count = series.str.count(self.neg_regex).fillna(0)
-        is_neutral = series.str.contains(self.neutral_regex, na=False, regex=True)
+    # ==========================================
+    # HÀM KIỂM TRA "KHÔNG CÓ Ý KIẾN"
+    # ==========================================
+    def is_no_opinion(self, text: str) -> bool:
+        """Kiểm tra câu có phải 'không có ý kiến' không"""
+        if not isinstance(text, str):
+            return True
         
-        sentiment = pd.Series(['neutral'] * len(series))
-        sentiment[(pos_count > neg_count) & ~is_neutral] = 'positive'
-        sentiment[(neg_count > pos_count) & ~is_neutral] = 'negative'
-        sentiment[is_neutral] = 'neutral'
-        return sentiment.tolist()
+        text_clean = text.lower().strip()
+        
+        for pattern in self.no_opinion_patterns:
+            if re.match(pattern, text_clean):
+                return True
+        
+        # Câu quá ngắn (1-2 ký tự) và không phải từ có nghĩa đặc biệt
+        important_short_words = {'tốt', 'hay', 'ok', 'oke', 'ổn', 'vâng', 'dạ'}
+        if len(text_clean) <= 2 and text_clean not in important_short_words:
+            return True
+        
+        return False
     
+    # ==========================================
+    # HÀM TOKENIZE (TÁCH TỪ)
+    # ==========================================
+    def tokenize(self, text: str) -> list:
+        """Tách câu thành từ, xử lý cụm từ đặc biệt"""
+        if not isinstance(text, str):
+            return []
+        
+        text = text.lower()
+        
+        # Xử lý cụm từ đặc biệt trước (ưu tiên cụm dài hơn)
+        special_phrases = [
+            'không có ý kiến', 'không góp ý', 'không có góp ý',
+            'tuyệt vời', 'rất tốt', 'rất hay', 'quá khó', 'rất khó'
+        ]
+        
+        for phrase in special_phrases:
+            if phrase in text:
+                text = text.replace(phrase, phrase.replace(' ', '_'))
+        
+        # Tách từ tiếng Việt (bao gồm dấu)
+        words = re.findall(r'[a-zàáâãèéêìíòóôõùúýăđĩũơưạảấầẩẫậắằẳẵặẹẻẽếềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹ]+', text)
+        
+        return words
+    
+    # ==========================================
+    # HÀM TÍNH ĐIỂM CẢM XÚC CHO 1 CÂU
+    # ==========================================
+    def calculate_sentiment_score(self, text: str) -> dict:
+        """
+        Tính điểm cảm xúc theo công thức:
+        S = Σ (w_i × boost_i × (-1)^negation_i)
+        
+        Returns:
+            dict: {
+                'score': float,      # Tổng điểm (có thể âm hoặc dương)
+                'sentiment': str,    # 'positive', 'negative', 'neutral'
+            }
+        """
+        # Bước 1: Kiểm tra "không có ý kiến"
+        if self.is_no_opinion(text):
+            return {'score': 0.0, 'sentiment': 'neutral'}
+        
+        # Bước 2: Tokenize
+        words = self.tokenize(text)
+        
+        total_score = 0.0
+        negation = False
+        boost = 1.0
+        
+        i = 0
+        while i < len(words):
+            word = words[i]
+            
+            # Kiểm tra từ phủ định
+            if word in self.negation_words:
+                negation = True
+                i += 1
+                continue
+            
+            # Kiểm tra từ tăng cường (ảnh hưởng đến từ tiếp theo)
+            if word in self.boost_words:
+                boost = self.boost_words[word]
+                i += 1
+                if i >= len(words):
+                    break
+                word = words[i]
+            
+            # Tìm điểm cho từ hiện tại
+            word_score = 0.0
+            
+            # Ưu tiên tìm trong từ điển tích cực trước
+            found = False
+            for pos_word, score in self.positive_words.items():
+                if pos_word in word or word in pos_word:
+                    word_score = score
+                    found = True
+                    break
+            
+            # Nếu không tìm thấy, tìm trong từ điển tiêu cực
+            if not found:
+                for neg_word, score in self.negative_words.items():
+                    if neg_word in word or word in neg_word:
+                        word_score = score
+                        break
+            
+            # Áp dụng phủ định và boost
+            if word_score != 0:
+                if negation:
+                    word_score = -word_score
+                word_score = word_score * boost
+                total_score += word_score
+            
+            # Reset flags cho từ tiếp theo
+            negation = False
+            boost = 1.0
+            i += 1
+        
+        # Xác định sentiment dựa trên ngưỡng 0.5 để tránh nhiễu
+        if total_score > 0.5:
+            sentiment = 'positive'
+        elif total_score < -0.5:
+            sentiment = 'negative'
+        else:
+            sentiment = 'neutral'
+        
+        return {'score': total_score, 'sentiment': sentiment}
+    
+    # ==========================================
+    # HÀM VECTORIZED CHO NHIỀU DÒNG
+    # ==========================================
+    def analyze_sentiment_vectorized(self, texts):
+        """Phân tích cảm xúc cho nhiều dòng cùng lúc"""
+        return [self.calculate_sentiment_score(t)['sentiment'] for t in texts]
+    
+    def calculate_scores_vectorized(self, texts):
+        """Tính điểm số cho nhiều dòng cùng lúc"""
+        return [self.calculate_sentiment_score(t)['score'] for t in texts]
+    
+    # ==========================================
+    # HÀM EXTRACT TAGS (GIỮ NGUYÊN LOGIC CŨ)
+    # ==========================================
     def extract_tags_vectorized(self, texts):
+        """Trích xuất tags cho nhiều dòng cùng lúc (giữ nguyên logic cũ)"""
         series = pd.Series(texts)
-        is_neutral = series.str.contains(self.neutral_regex, na=False, regex=True)
         
         tag_hp = series.str.contains(self.tag_hp_regex, na=False, regex=True).astype(int)
         tag_dh = series.str.contains(self.tag_dh_regex, na=False, regex=True).astype(int)
         tag_kt = series.str.contains(self.tag_kt_regex, na=False, regex=True).astype(int)
+        
+        # Tag_Khac: khi không có tag nào khác
         tag_khac = ((tag_hp + tag_dh + tag_kt) == 0).astype(int)
-        tag_khac[is_neutral] = 1
+        
+        # Câu "không có ý kiến" vẫn được gán Tag_Khac = 1
+        for i, text in enumerate(texts):
+            if self.is_no_opinion(text):
+                tag_khac.iloc[i] = 1
         
         return list(zip(tag_hp, tag_dh, tag_kt, tag_khac))
 
@@ -418,12 +597,14 @@ def parse_survey_to_long_format(content: str) -> pd.DataFrame:
     return df
 
 
-# ================= TRANSFORM & NLP - LOẠI BỎ TRÙNG =================
+# ================= TRANSFORM & NLP - ĐÃ CẬP NHẬT =================
 def transform_with_nlp_long_format(df_raw: pd.DataFrame) -> tuple:
     """
-    Transform dữ liệu:
+    Transform dữ liệu với NLP đã sửa logic toán học:
+    - Xử lý phủ định (negation)
+    - Xử lý từ tăng cường (boost)
+    - Tính điểm số SentimentScore
     - Loại bỏ trùng lặp EssayText theo SubmissionID
-    - Giữ nguyên dạng dọc cho câu trắc nghiệm
     """
     print("  -> Transform dữ liệu...")
     start = time.time()
@@ -450,11 +631,15 @@ def transform_with_nlp_long_format(df_raw: pd.DataFrame) -> tuple:
         # Chuẩn bị dữ liệu
         text_df_unique['NoiDungGopY'] = text_df_unique['EssayText'].str.replace(r'\s+', ' ', regex=True).str.strip()
         
-        # Vectorized NLP
+        # Vectorized NLP (đã sửa logic)
         texts = text_df_unique['NoiDungGopY'].tolist()
         print(f"  -> Đang xử lý NLP cho {len(texts):,} bài tự luận...")
         
+        # Phân tích cảm xúc
         text_df_unique['Sentiment'] = _nlp.analyze_sentiment_vectorized(texts)
+        text_df_unique['SentimentScore'] = _nlp.calculate_scores_vectorized(texts)
+        
+        # Extract tags
         tag_vectors = _nlp.extract_tags_vectorized(texts)
         
         text_df_unique['Tag_HocPhan'] = [v[0] for v in tag_vectors]
@@ -465,7 +650,7 @@ def transform_with_nlp_long_format(df_raw: pd.DataFrame) -> tuple:
         
         fact_main = text_df_unique[[
             'SubmissionID', 'MaSV', 'LopHP', 'NoiDungGopY',
-            'Sentiment', 'Is_Valid',
+            'Sentiment', 'SentimentScore', 'Is_Valid',
             'Tag_HocPhan', 'Tag_DayHoc', 'Tag_KiemTra', 'Tag_Khac'
         ]].copy()
         
@@ -827,6 +1012,7 @@ def load_dimensions_optimized(cursor, df_raw, hp_master, dim_nganh, dim_chuyenng
     cursor.connection.commit()
     print("  ✅ All DIMENSION tables loaded!")
 
+
 def load_fact_tables_optimized(cursor, fact_main, fact_ketqua):
     print("\n📥 Loading FACT tables...")
     start_time = time.time()
@@ -841,8 +1027,9 @@ def load_fact_tables_optimized(cursor, fact_main, fact_ketqua):
     # FACT_GOP_Y_TU_LUAN
     if not fact_main.empty:
         data_main = [tuple(row) for row in fact_main.to_numpy()]
+        # Lưu ý: fact_main hiện có 11 cột (bao gồm SentimentScore)
         count_main = batch_insert_optimized(cursor, 'FACT_GOP_Y_TU_LUAN',
-            ['SubmissionID', 'MaSV', 'MaLopHP', 'NoiDungGopY', 'Sentiment', 'Is_Valid',
+            ['SubmissionID', 'MaSV', 'MaLopHP', 'NoiDungGopY', 'Sentiment', 'SentimentScore', 'Is_Valid',
              'Tag_HocPhan', 'Tag_DayHoc', 'Tag_KiemTra', 'Tag_Khac'], data_main, 50000)
         print(f"    ✅ FACT_GOP_Y_TU_LUAN: {count_main} dòng")
     else:
@@ -979,6 +1166,11 @@ def main():
         for sent, cnt in fact_main['Sentiment'].value_counts().items():
             pct = cnt/len(fact_main)*100
             print(f"      {sent}: {cnt:,} ({pct:.1f}%)")
+        
+        print("\n   - SentimentScore thống kê:")
+        print(f"      Min: {fact_main['SentimentScore'].min():.2f}")
+        print(f"      Max: {fact_main['SentimentScore'].max():.2f}")
+        print(f"      Mean: {fact_main['SentimentScore'].mean():.2f}")
     
     print("\n" + "=" * 60)
     print(f"✅ HOÀN THÀNH! Thời gian: {total_time:.1f}s")

@@ -110,7 +110,7 @@ def determine_ma_chuyen_nganh(lop: str) -> tuple:
 class VietnameseNLP:
     
     def __init__(self):
-        # ===== TỪ ĐIỂN CẢM XÚC THUẦN TÚY (KHÔNG TRỌNG SỐ) =====
+        # ===== TỪ ĐIỂN CẢM XÚC =====
         self.positive_words = {
             'tuyệt vời', 'tuyệt', 'mãi yêu', 'yêu cô', 'yêu thầy', 'siêu thích',
             'hào hứng', 'thoải mái', 'vui', 'sôi nổi', 'hấp dẫn', 'dễ mến',
@@ -141,14 +141,14 @@ class VietnameseNLP:
         
         # ===== TỪ KHÓA CHO TAG =====
         self.tag_keywords = {
-            'TAG_HP': [
+            'Tag_HocPhan': [
                 'chuẩn đầu ra', 'mục tiêu môn học', 'đáp ứng chương trình',
                 'nội dung', 'học phần', 'chương trình', 'môn học', 'trang bị',
                 'cung cấp', 'đào tạo', 'bám sát', 'phù hợp', 'rõ ràng', 'đầy đủ',
                 'hợp lý', 'chất lượng', 'bổ ích', 'cần thiết', 'quan trọng', 'chi tiết',
                 'cụ thể', 'chuẩn', 'giáo trình', 'tài liệu'
             ],
-            'TAG_DH': [
+            'Tag_DayHoc': [
                 'giảng viên', 'thầy giáo', 'cô giáo', 'tận tâm', 'nhiệt tình',
                 'tận tình', 'truyền cảm hứng', 'thầy', 'cô', 'gv', 'dạy', 'giảng',
                 'nhiệt huyết', 'tâm huyết', 'dễ hiểu', 'bài giảng', 'truyền đạt',
@@ -157,19 +157,21 @@ class VietnameseNLP:
                 'thân thiện', 'gần gũi', 'thoải mái', 'phong cách giảng dạy',
                 'giọng nói', 'tác phong', 'chuyên môn'
             ],
-            'TAG_KT': [
+            'Tag_KiemTra': [
                 'kiểm tra', 'đánh giá', 'công bằng', 'minh bạch', 'đánh giá đúng',
                 'phản ánh đúng', 'thi', 'đề thi', 'bài kiểm tra', 'cho điểm',
                 'công khai', 'nghiêm túc', 'khách quan', 'điểm', 'bài tập',
                 'chấm', 'giữa kỳ', 'cuối kỳ', 'thực lực', 'công tâm', 'chính xác',
                 'phù hợp', 'rõ ràng', 'kỹ càng', 'chỉnh chu', 'cấu trúc đề'
-            ],
-            'TAG_K': [
-                'không có góp ý', 'không ý kiến', 'không góp ý', 'không', 'ko',
-                'k', 'không có', 'không ạ', 'ok', 'ổn', 'tốt', 'được', 'cảm ơn',
-                'tuyệt vời', 'hài lòng', 'ổn hết', 'quá ok', 'rất ok'
             ]
         }
+        
+        # ===== TỪ KHÓA CHO TAG_KHAC (không có góp ý) =====
+        self.tag_khac_keywords = [
+            'không có góp ý', 'không ý kiến', 'không góp ý', 'không', 'ko',
+            'k', 'không có', 'không ạ', 'ok', 'ổn', 'tốt', 'được', 'cảm ơn',
+            'tuyệt vời', 'hài lòng', 'ổn hết', 'quá ok', 'rất ok'
+        ]
         
         # ===== CÁC MẪU CÂU TRUNG TÍNH =====
         self.neutral_phrases = [
@@ -195,16 +197,13 @@ class VietnameseNLP:
         """Kiểm tra xem có phải câu 'không có ý kiến' không"""
         text_lower = text.lower().strip()
         
-        # Loại bỏ dấu câu cuối câu
         if text_lower.endswith('.') or text_lower.endswith('!') or text_lower.endswith('?'):
             text_lower = text_lower[:-1]
         
-        # Kiểm tra các cụm từ trung tính
         for phrase in self.neutral_phrases:
             if phrase in text_lower:
                 return True
         
-        # Trường hợp chỉ có từ "không" đơn độc
         words = self._tokenize(text_lower)
         if len(words) == 1 and words[0] in ['không', 'ko', 'k']:
             return True
@@ -212,27 +211,16 @@ class VietnameseNLP:
         return False
     
     def analyze_sentiment(self, text):
-        """
-        Phân tích sentiment dựa trên TẦN SUẤT xuất hiện từ cảm xúc
-        - KHÔNG dùng phủ định (đã loại trường hợp 'không' ở cuối)
-        - KHÔNG dùng trọng số
-        - Đếm số lượng từ positive và negative
-        """
+        """Phân tích sentiment dựa trên tần suất xuất hiện từ cảm xúc"""
         if not text or len(text) < 3:
             return 'neutral'
         
-        # Kiểm tra trường hợp "không có ý kiến" -> trung tính ngay
         if self._is_neutral_no_opinion(text):
             return 'neutral'
         
         text_lower = text.lower()
         words = self._tokenize(text_lower)
         
-        # Đếm số lần xuất hiện của từ positive và negative
-        pos_count = 0
-        neg_count = 0
-        
-        # Dùng set để tránh đếm trùng từ trong 1 câu quá nhiều lần
         pos_words_found = set()
         neg_words_found = set()
         
@@ -245,58 +233,68 @@ class VietnameseNLP:
         pos_count = len(pos_words_found)
         neg_count = len(neg_words_found)
         
-        # Quyết định sentiment dựa trên số lượng từ cảm xúc
         if pos_count > neg_count:
-            # Có nhiều từ tích cực hơn
-            if pos_count >= 1:
-                return 'positive'
+            return 'positive' if pos_count >= 1 else 'neutral'
         elif neg_count > pos_count:
-            # Có nhiều từ tiêu cực hơn
-            if neg_count >= 1:
-                return 'negative'
+            return 'negative' if neg_count >= 1 else 'neutral'
         elif pos_count == neg_count and pos_count > 0:
-            # Số lượng bằng nhau, ưu tiên positive nếu từ positive mạnh hơn
-            # Kiểm tra các từ rất tích cực
             strong_pos = ['tuyệt vời', 'xuất sắc', 'hoàn hảo', 'siêu']
             for word in pos_words_found:
                 if any(sp in word for sp in strong_pos):
                     return 'positive'
             return 'neutral'
         
-        # Không có từ cảm xúc nào
         return 'neutral'
     
-    def extract_tags(self, text):
+    def extract_tags_vector(self, text):
         """
-        Trích xuất tag dựa trên từ khóa
-        - KHÔNG dùng trọng số
-        - Có thể trả về NHIỀU TAG
+        Trích xuất tag và trả về vector bit cho 4 tag
+        Trả về: (Tag_HocPhan, Tag_DayHoc, Tag_KiemTra, Tag_Khac)
         """
         if not text or len(text) < 3:
-            return ['TAG_K']
+            return (0, 0, 0, 1)
         
-        # Kiểm tra "không có ý kiến" -> chỉ gán TAG_K
+        # Kiểm tra "không có ý kiến" -> chỉ gán Tag_Khac
         if self._is_neutral_no_opinion(text):
-            return ['TAG_K']
+            return (0, 0, 0, 1)
         
         text_lower = text.lower()
-        found_tags = set()
+        tag_hocphan = 0
+        tag_dayhoc = 0
+        tag_kiemtra = 0
+        tag_khac = 0
         
-        # Duyệt từng tag và từ khóa
-        for tag, keywords in self.tag_keywords.items():
-            for keyword in keywords:
+        # Kiểm tra các tag chính
+        for keyword in self.tag_keywords['Tag_HocPhan']:
+            if keyword in text_lower:
+                tag_hocphan = 1
+                break
+        
+        for keyword in self.tag_keywords['Tag_DayHoc']:
+            if keyword in text_lower:
+                tag_dayhoc = 1
+                break
+        
+        for keyword in self.tag_keywords['Tag_KiemTra']:
+            if keyword in text_lower:
+                tag_kiemtra = 1
+                break
+        
+        # Nếu có ít nhất 1 tag chính, không gán Tag_Khac
+        if tag_hocphan == 1 or tag_dayhoc == 1 or tag_kiemtra == 1:
+            tag_khac = 0
+        else:
+            # Kiểm tra Tag_Khac
+            for keyword in self.tag_khac_keywords:
                 if keyword in text_lower:
-                    found_tags.add(tag)
-                    break  # Tìm thấy 1 từ khóa cho tag này là đủ
+                    tag_khac = 1
+                    break
+            
+            # Nếu text có nội dung nhưng không match từ khóa nào
+            if tag_khac == 0 and len(text) > 10 and sum(c.isalpha() for c in text) > 3:
+                tag_khac = 1
         
-        # Nếu không tìm thấy tag nào và text có nội dung -> gán TAG_K
-        if not found_tags:
-            # Kiểm tra nếu text có độ dài > 10 ký tự và không phải toàn số/ký tự đặc biệt
-            if len(text) > 10 and sum(c.isalpha() for c in text) > 3:
-                return ['TAG_K']
-            return ['TAG_K']
-        
-        return list(found_tags)
+        return (tag_hocphan, tag_dayhoc, tag_kiemtra, tag_khac)
 
 
 _nlp = VietnameseNLP()
@@ -304,9 +302,6 @@ _nlp = VietnameseNLP()
 
 # ================= KIỂM TRA DỮ LIỆU RÁC =================
 def is_valid_essay(text):
-    """
-    Kiểm tra dữ liệu hợp lệ
-    """
     if not text or not isinstance(text, str):
         return 0
     
@@ -315,12 +310,10 @@ def is_valid_essay(text):
     if len(text) < 5:
         return 0
     
-    # Các trường hợp vô nghĩa
     meaningless = ['không', 'ko', 'k', 'không có', 'ko có', 'không ạ', 'ok', 'oki', 'oke']
     if text.lower() in meaningless:
         return 0
     
-    # Kiểm tra tỷ lệ chữ cái
     letter_count = sum(1 for c in text if c.isalpha())
     if len(text) > 0 and letter_count / len(text) < 0.3:
         return 0
@@ -520,17 +513,17 @@ def parse_survey_data_parallel_optimized(content: str) -> pd.DataFrame:
     return df_grouped
 
 
-# ================= TRANSFORM & NLP =================
+# ================= TRANSFORM & NLP (KHÔNG TAG MAPPING) =================
 def process_nlp_batch(texts):
     results = []
     for text in texts:
         if not text or len(text) < 3:
-            results.append(('neutral', ['TAG_K'], 0))
+            results.append(('neutral', (0, 0, 0, 1), 0))
         else:
             sentiment = _nlp.analyze_sentiment(text)
-            tags = _nlp.extract_tags(text)
+            tags_vector = _nlp.extract_tags_vector(text)
             is_valid = is_valid_essay(text)
-            results.append((sentiment, tags, is_valid))
+            results.append((sentiment, tags_vector, is_valid))
     return results
 
 def transform_with_nlp(df):
@@ -551,9 +544,16 @@ def transform_with_nlp(df):
             all_nlp_results.extend(batch_results)
     
     df['Sentiment'] = [r[0] for r in all_nlp_results]
-    df['Tags'] = [r[1] for r in all_nlp_results]
     df['Is_Valid'] = [r[2] for r in all_nlp_results]
     
+    # Gán 4 cột tag
+    tag_vectors = [r[1] for r in all_nlp_results]
+    df['Tag_HocPhan'] = [v[0] for v in tag_vectors]
+    df['Tag_DayHoc'] = [v[1] for v in tag_vectors]
+    df['Tag_KiemTra'] = [v[2] for v in tag_vectors]
+    df['Tag_Khac'] = [v[3] for v in tag_vectors]
+    
+    # Tạo df_ketqua cho câu trắc nghiệm
     ketqua_data = [
         (row['SubmissionID'], cau, diem)
         for _, row in df.iterrows()
@@ -561,15 +561,8 @@ def transform_with_nlp(df):
     ]
     df_ketqua = pd.DataFrame(ketqua_data, columns=['SubmissionID', 'MaCauHoi', 'Diem'])
     
-    tag_data = [
-        (row['SubmissionID'], tag)
-        for _, row in df.iterrows()
-        for tag in row['Tags']
-    ]
-    df_tag = pd.DataFrame(tag_data, columns=['SubmissionID', 'MaTag'])
-    
     print(f"  ✅ Transform xong ({time.time()-start:.2f}s)")
-    return df, df_ketqua, df_tag
+    return df, df_ketqua
 
 
 # ================= LOAD DATABASE =================
@@ -650,7 +643,7 @@ def load_dim_chuyennganh(cursor, df_chuyennganh, df_raw, mapping):
             count += batch_insert(cursor, 'DIM_CHUYEN_NGANH', 
                                  ['MaChuyenNganh', 'TenChuyenNganh', 'MaNganh', 'MaCTDT'], data, 1000)
     
-    # Từ Lop - XỬ LÝ ĐẶC BIỆT CTS, QT
+    # Từ Lop
     df_lop = df_raw[['Lop']].drop_duplicates('Lop')
     df_lop = df_lop[df_lop['Lop'].notna() & (df_lop['Lop'] != '')]
     
@@ -658,7 +651,6 @@ def load_dim_chuyennganh(cursor, df_chuyennganh, df_raw, mapping):
     for _, row in df_lop.iterrows():
         ma_cn, ten_cn, ten_khoa, ma_khoa = determine_ma_chuyen_nganh(row['Lop'])
         if ma_cn and ma_cn not in existing:
-            # XỬ LÝ ĐẶC BIỆT CHO CTS VÀ QT
             if ma_cn == 'CTS':
                 ma_nganh = 'CTS'
                 ten_nganh = 'Ngành CTS'
@@ -675,7 +667,6 @@ def load_dim_chuyennganh(cursor, df_chuyennganh, df_raw, mapping):
                     existing_nganh.add(ma_nganh)
                 data_lop.append((ma_cn, 'Chuyên ngành QT', ma_nganh, 'CTDT_CHINHQUY'))
                 existing.add(ma_cn)
-            # XỬ LÝ CÁC TRƯỜNG HỢP CÓ TRONG MAPPING
             elif ma_cn in mapping:
                 info = mapping[ma_cn]
                 ma_nganh = info['MaNganh']
@@ -757,19 +748,11 @@ def load_dim_giang_vien(cursor, df_raw):
     return 0
 
 def load_dim_hoc_phan(cursor, df_hp_master, df_raw):
-    """
-    Load DIM_HOC_PHAN:
-    1. Lấy MaHP từ file RAW (làm gốc)
-    2. Tra trong HP-Khoa.csv để lấy TenHP và MaKhoa
-    3. Nếu không có trong HP-Khoa, dùng TenHP từ RAW và MaKhoa = 'UNKNOWN'
-    """
     count = 0
     
-    # Lấy danh sách MaHP đã có trong DB
     cursor.execute("SELECT MaHP FROM DIM_HOC_PHAN")
     existing_in_db = {row[0] for row in cursor.fetchall()}
     
-    # Tạo dict từ HP-Khoa.csv để tra cứu nhanh
     hp_dict = {}
     if not df_hp_master.empty:
         for _, row in df_hp_master.iterrows():
@@ -780,7 +763,6 @@ def load_dim_hoc_phan(cursor, df_hp_master, df_raw):
                     'MaKhoa': row['MaKhoa']
                 }
     
-    # Lấy MaHP duy nhất từ RAW (làm gốc)
     df_hp_raw = df_raw[['MaHP', 'TenHP']].drop_duplicates('MaHP')
     df_hp_raw = df_hp_raw[df_hp_raw['MaHP'].notna() & (df_hp_raw['MaHP'] != '')]
     
@@ -789,12 +771,10 @@ def load_dim_hoc_phan(cursor, df_hp_master, df_raw):
         ma_hp = row['MaHP']
         
         if ma_hp and ma_hp not in existing_in_db:
-            # Tra trong HP-Khoa.csv
             if ma_hp in hp_dict:
                 ten_hp = hp_dict[ma_hp]['TenHP']
                 ma_khoa = hp_dict[ma_hp]['MaKhoa']
             else:
-                # Không có trong HP-Khoa, dùng từ RAW
                 ten_hp = row['TenHP'] if pd.notna(row['TenHP']) else f"Học phần {ma_hp}"
                 ma_khoa = 'UNKNOWN'
             
@@ -802,7 +782,7 @@ def load_dim_hoc_phan(cursor, df_hp_master, df_raw):
             existing_in_db.add(ma_hp)
     
     if data:
-        print(f"      -> Insert {len(data)} học phần (chỉ từ RAW) vào DIM_HOC_PHAN")
+        print(f"      -> Insert {len(data)} học phần vào DIM_HOC_PHAN")
         count = batch_insert(cursor, 'DIM_HOC_PHAN', ['MaHP', 'TenHP', 'MaKhoa'], data, 5000)
     
     print(f"  ✅ DIM_HOC_PHAN: {count} dòng mới")
@@ -851,36 +831,47 @@ def load_all_dimensions(cursor, df_raw, df_hp_master, df_nganh, df_chuyennganh, 
     print("  ✅ All DIMENSION tables loaded!")
 
 
-# ================= LOAD FACT TABLES =================
-def load_fact_tables(cursor, df_main, df_ketqua, df_tag):
+# ================= LOAD FACT TABLES (KHÔNG TAG MAPPING) =================
+def load_fact_tables(cursor, df_main, df_ketqua):
     print("\n📥 Loading FACT tables...")
     
-    data_main = [(row['SubmissionID'], row['MaSV'], row['LopHP'], 
-                  row['NoiDungGopY'][:4000] if row['NoiDungGopY'] else '',
-                  row['Sentiment'], row['Is_Valid']) for _, row in df_main.iterrows()]
+    # FACT_GOP_Y_TU_LUAN - đã có 4 cột tag
+    data_main = [
+        (
+            row['SubmissionID'], 
+            row['MaSV'], 
+            row['LopHP'], 
+            row['NoiDungGopY'][:4000] if row['NoiDungGopY'] else '',
+            row['Sentiment'], 
+            row['Is_Valid'],
+            row['Tag_HocPhan'],
+            row['Tag_DayHoc'],
+            row['Tag_KiemTra'],
+            row['Tag_Khac']
+        ) 
+        for _, row in df_main.iterrows()
+    ]
     count_main = batch_insert(cursor, 'FACT_GOP_Y_TU_LUAN',
-                              ['SubmissionID', 'MaSV', 'MaLopHP', 'NoiDungGopY', 'Sentiment', 'Is_Valid'],
+                              ['SubmissionID', 'MaSV', 'MaLopHP', 'NoiDungGopY', 
+                               'Sentiment', 'Is_Valid',
+                               'Tag_HocPhan', 'Tag_DayHoc', 'Tag_KiemTra', 'Tag_Khac'],
                               data_main, 10000)
     print(f"    ✅ FACT_GOP_Y_TU_LUAN: {count_main} dòng")
     
+    # FACT_KET_QUA_DANH_GIA
     data_kq = [tuple(x) for x in df_ketqua[['SubmissionID', 'MaCauHoi', 'Diem']].values]
     count_kq = batch_insert(cursor, 'FACT_KET_QUA_DANH_GIA',
                             ['SubmissionID', 'MaCauHoi', 'Diem'], data_kq, 20000)
     print(f"    ✅ FACT_KET_QUA_DANH_GIA: {count_kq} dòng ({count_kq//12} phiếu)")
     
-    data_tag = [tuple(x) for x in df_tag[['SubmissionID', 'MaTag']].values]
-    count_tag = batch_insert(cursor, 'FACT_TAG_MAPPING',
-                             ['SubmissionID', 'MaTag'], data_tag, 20000)
-    print(f"    ✅ FACT_TAG_MAPPING: {count_tag} dòng")
-    
-    return count_main, count_kq, count_tag
+    return count_main, count_kq
 
 
 # ================= MAIN =================
 def main():
     total_start = time.time()
     print("=" * 60)
-    print("🚀 ETL PIPELINE - NLP SIMPLIFIED")
+    print("🚀 ETL PIPELINE - NO TAG MAPPING (GỘP TAG VÀO FACT)")
     print("=" * 60)
     print(f"SEMESTER: {SEMESTER}")
     print(f"SURVEY_FILE: {SURVEY_FILE}")
@@ -922,14 +913,13 @@ def main():
     
     # 5. Transform & NLP
     print("\n🔄 5. Transform & NLP...")
-    df_main, df_ketqua, df_tag = transform_with_nlp(df_raw)
+    df_main, df_ketqua = transform_with_nlp(df_raw)
     
     # 6. Lưu CSV backup
     print("\n💾 6. Lưu CSV backup...")
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     save_processed(blob_service, df_main, f"{FILE_NAME}_main_{timestamp}.csv")
     save_processed(blob_service, df_ketqua, f"{FILE_NAME}_ketqua_{timestamp}.csv")
-    save_processed(blob_service, df_tag, f"{FILE_NAME}_tags_{timestamp}.csv")
     
     # 7. Kết nối SQL Database
     print("\n💾 7. Kết nối SQL Database...")
@@ -944,7 +934,7 @@ def main():
     
     try:
         load_all_dimensions(cursor, df_raw, hp_master, dim_nganh, dim_chuyennganh, mapping)
-        count_main, count_kq, count_tag = load_fact_tables(cursor, df_main, df_ketqua, df_tag)
+        count_main, count_kq = load_fact_tables(cursor, df_main, df_ketqua)
     except Exception as e:
         print(f"  ❌ Lỗi: {e}")
         raise
@@ -957,19 +947,19 @@ def main():
     print(f"   - Số phiếu: {len(df_main):,}")
     print(f"   - Hợp lệ: {df_main['Is_Valid'].sum():,} ({df_main['Is_Valid'].mean()*100:.1f}%)")
     print(f"   - Điểm TN: {count_kq:,} dòng")
-    print(f"   - Tag: {count_tag:,} dòng")
+    
+    # Thống kê tag
+    print("\n   - Tag phân bố:")
+    print(f"      Tag_HocPhan: {df_main['Tag_HocPhan'].sum():,} ({df_main['Tag_HocPhan'].mean()*100:.1f}%)")
+    print(f"      Tag_DayHoc: {df_main['Tag_DayHoc'].sum():,} ({df_main['Tag_DayHoc'].mean()*100:.1f}%)")
+    print(f"      Tag_KiemTra: {df_main['Tag_KiemTra'].sum():,} ({df_main['Tag_KiemTra'].mean()*100:.1f}%)")
+    print(f"      Tag_Khac: {df_main['Tag_Khac'].sum():,} ({df_main['Tag_Khac'].mean()*100:.1f}%)")
     
     print("\n   - Sentiment phân bố:")
     for sent, cnt in df_main['Sentiment'].value_counts().items():
         pct = cnt/len(df_main)*100
         bar = '█' * int(pct / 2)
         print(f"      {sent}: {cnt:,} ({pct:.1f}%) {bar}")
-    
-    print("\n   - Tag phân bố:")
-    for tag, cnt in df_tag['MaTag'].value_counts().items():
-        pct = cnt/len(df_tag)*100
-        bar = '█' * int(pct / 2)
-        print(f"      {tag}: {cnt:,} ({pct:.1f}%) {bar}")
     
     print("\n" + "=" * 60)
     print(f"✅ HOÀN THÀNH! Thời gian: {time.time()-total_start:.2f}s")

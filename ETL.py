@@ -49,14 +49,6 @@ _date_pattern = re.compile(r'^\d{2}/\d{2}/\d{4}$')
 _ma_gv_pattern = re.compile(r'^(\d{7}|TG\d{5}|gvDacThu_TKTH)$')
 _lop_pattern = re.compile(r'^\d{2}K\d{2}$')
 
-# ================= COMPILED REGEX CHO TỐC ĐỘ =================
-# Regex để thay thế 'k' hoặc 'ko' chỉ khi đứng một mình (không ảnh hưởng 'ok', 'oki')
-_k_regex = re.compile(r'\bk\b')
-_ko_regex = re.compile(r'\bko\b')
-_hok_regex = re.compile(r'\bhok\b')
-_hong_regex = re.compile(r'\bhông\b')
-_khong_regex = re.compile(r'\bkh\b')
-
 # ================= HÀM TIỆN ÍCH =================
 def normalize_lop(lop: str) -> str:
     if not isinstance(lop, str): 
@@ -114,11 +106,11 @@ def determine_ma_chuyen_nganh(lop: str) -> tuple:
     return None, None, None, None
 
 
-# ================= IMPROVED RULE-BASED NLP =================
-class FastVietnameseNLP:
+# ================= CẢI TIẾN NLP =================
+class VietnameseNLP:
     
     def __init__(self):
-        # ===== TỪ ĐIỂN CẢM XÚC =====
+        # ===== TỪ ĐIỂN CẢM XÚC THUẦN TÚY (KHÔNG TRỌNG SỐ) =====
         self.positive_words = {
             'tuyệt vời', 'tuyệt', 'mãi yêu', 'yêu cô', 'yêu thầy', 'siêu thích',
             'hào hứng', 'thoải mái', 'vui', 'sôi nổi', 'hấp dẫn', 'dễ mến',
@@ -129,10 +121,10 @@ class FastVietnameseNLP:
             'bám sát', 'đúng trọng tâm', 'hiệu quả', 'tiến bộ', 'đa dạng',
             'phong phú', 'hợp lý', 'chuẩn', 'tạo điều kiện', 'hỗ trợ',
             'giải đáp thắc mắc', 'chỉnh chu', 'tốt', 'hay', 'ổn', 'hài lòng',
-            'cảm ơn', 'ok', 'oke', 'oki', 'good', '100/100', 'siêu đáng yêu', 'dễ thương', 'giọng nói ngọt',
-            'hạnh phúc', 'tràn đầy', 'chi tiết', 'có tâm', 'đầy đủ',
-            'hợp lí', 'thú vị', 'công bằng', 'minh bạch', 'rất tuyệt',
-            'phù hợp', 'đạt', 'chia sẻ', 'thực tế', '10/10'
+            'cảm ơn', 'ok', 'oke', 'oki', 'good', 'great', 'excellent',
+            '100/100', 'siêu đáng yêu', 'giọng nói ngọt', 'hạnh phúc', 'tràn đầy',
+            'đầy đủ', 'hợp lí', 'thú vị', 'công bằng', 'minh bạch', 'rất tuyệt',
+            'phù hợp', 'đạt', 'chia sẻ', '10/10', 'quá hay', 'cực kỳ tốt'
         }
         
         self.negative_words = {
@@ -144,72 +136,53 @@ class FastVietnameseNLP:
             'thiếu cụ thể', 'mơ hồ', 'chung chung', 'không rõ', 'thiếu tài liệu',
             'không cập nhật', 'nặng', 'quá tải', 'không công bằng', 'thiếu minh bạch',
             'bất tiện', 'chưa hoàn thiện', 'tệ', 'dở', 'kém', 'chán', 'thất vọng',
-            'không hài lòng', 'không có ích', 'mất thời gian'
+            'không hài lòng', 'không có ích', 'mất thời gian', 'chán nản', 'bực mình'
         }
         
-        # Thêm strong emotion sets cho is_valid_essay_improved
-        self.strong_positive_set = {
-            'tuyệt vời', 'xuất sắc', 'hoàn hảo', 'siêu hay', 'tuyệt đỉnh',
-            'quá tuyệt', 'rất tốt', 'cực kỳ hài lòng'
+        # ===== TỪ KHÓA CHO TAG =====
+        self.tag_keywords = {
+            'TAG_HP': [
+                'chuẩn đầu ra', 'mục tiêu môn học', 'đáp ứng chương trình',
+                'nội dung', 'học phần', 'chương trình', 'môn học', 'trang bị',
+                'cung cấp', 'đào tạo', 'bám sát', 'phù hợp', 'rõ ràng', 'đầy đủ',
+                'hợp lý', 'chất lượng', 'bổ ích', 'cần thiết', 'quan trọng', 'chi tiết',
+                'cụ thể', 'chuẩn', 'giáo trình', 'tài liệu'
+            ],
+            'TAG_DH': [
+                'giảng viên', 'thầy giáo', 'cô giáo', 'tận tâm', 'nhiệt tình',
+                'tận tình', 'truyền cảm hứng', 'thầy', 'cô', 'gv', 'dạy', 'giảng',
+                'nhiệt huyết', 'tâm huyết', 'dễ hiểu', 'bài giảng', 'truyền đạt',
+                'giải thích', 'hướng dẫn', 'sinh động', 'linh hoạt', 'đa dạng',
+                'thu hút', 'tương tác', 'sôi nổi', 'thú vị', 'hấp dẫn', 'vui vẻ',
+                'thân thiện', 'gần gũi', 'thoải mái', 'phong cách giảng dạy',
+                'giọng nói', 'tác phong', 'chuyên môn'
+            ],
+            'TAG_KT': [
+                'kiểm tra', 'đánh giá', 'công bằng', 'minh bạch', 'đánh giá đúng',
+                'phản ánh đúng', 'thi', 'đề thi', 'bài kiểm tra', 'cho điểm',
+                'công khai', 'nghiêm túc', 'khách quan', 'điểm', 'bài tập',
+                'chấm', 'giữa kỳ', 'cuối kỳ', 'thực lực', 'công tâm', 'chính xác',
+                'phù hợp', 'rõ ràng', 'kỹ càng', 'chỉnh chu', 'cấu trúc đề'
+            ],
+            'TAG_K': [
+                'không có góp ý', 'không ý kiến', 'không góp ý', 'không', 'ko',
+                'k', 'không có', 'không ạ', 'ok', 'ổn', 'tốt', 'được', 'cảm ơn',
+                'tuyệt vời', 'hài lòng', 'ổn hết', 'quá ok', 'rất ok'
+            ]
         }
         
-        self.strong_negative_set = {
-            'tệ', 'quá tệ', 'rất tệ', 'thất vọng', 'cực kỳ tệ',
-            'không chấp nhận được', 'quá dở', 'dở tệ'
-        }
+        # ===== CÁC MẪU CÂU TRUNG TÍNH =====
+        self.neutral_phrases = [
+            'không có ý kiến', 'không góp ý', 'không ý kiến', 'không có góp ý',
+            'không ạ', 'không có', 'không', 'ko có', 'ko', 'k', 'không biết',
+            'không có gì', 'bình thường', 'bt', 'tạm được', 'cũng được'
+        ]
         
-        # ===== TRỌNG SỐ CHO TAG =====
-        self.tag_weights = {
-            'TAG_HP': {
-                'chuẩn đầu ra': 5.0, 'mục tiêu môn học': 4.5, 'đáp ứng chương trình': 4.0,
-                'nội dung': 3.0, 'học phần': 3.0, 'chương trình': 2.5, 'môn học': 2.5,
-                'trang bị': 2.0, 'cung cấp': 2.0, 'đào tạo': 2.0, 'bám sát': 2.0,
-                'phù hợp': 1.0, 'rõ ràng': 1.0, 'đầy đủ': 1.0, 'hợp lý': 1.0,
-                'chất lượng': 1.0, 'bổ ích': 1.0, 'cần thiết': 1.0, 'quan trọng': 1.0,
-                'chi tiết': 1.0, 'cụ thể': 1.0, 'chuẩn': 1.0
-            },
-            'TAG_DH': {
-                'giảng viên': 5.0, 'thầy giáo': 5.0, 'cô giáo': 5.0, 'tận tâm': 4.5,
-                'nhiệt tình': 4.0, 'tận tình': 4.0, 'truyền cảm hứng': 4.0,
-                'thầy': 3.0, 'cô': 3.0, 'gv': 3.0, 'dạy': 3.0, 'giảng': 3.0,
-                'nhiệt huyết': 3.0, 'tâm huyết': 3.0, 'dễ hiểu': 3.0,
-                'bài giảng': 2.0, 'truyền đạt': 2.0, 'giải thích': 2.0, 'hướng dẫn': 2.0,
-                'sinh động': 2.0, 'linh hoạt': 2.0, 'đa dạng': 2.0, 'thu hút': 2.0,
-                'tương tác': 2.0, 'sôi nổi': 2.0, 'thú vị': 2.0, 'hấp dẫn': 2.0,
-                'vui vẻ': 1.0, 'thân thiện': 1.0, 'gần gũi': 1.0, 'thoải mái': 1.0,
-                'hay': 1.0, 'tốt': 1.0
-            },
-            'TAG_KT': {
-                'kiểm tra': 5.0, 'đánh giá': 5.0, 'công bằng': 4.5, 'minh bạch': 4.0,
-                'đánh giá đúng': 4.0, 'phản ánh đúng': 4.0,
-                'thi': 3.0, 'đề thi': 3.0, 'bài kiểm tra': 3.0, 'cho điểm': 3.0,
-                'công khai': 3.0, 'nghiêm túc': 3.0, 'khách quan': 3.0,
-                'điểm': 2.0, 'bài tập': 2.0, 'chấm': 2.0, 'giữa kỳ': 2.0, 'cuối kỳ': 2.0,
-                'thực lực': 2.0, 'công tâm': 2.0, 'chính xác': 2.0,
-                'phù hợp': 1.0, 'rõ ràng': 1.0, 'kỹ càng': 1.0, 'chỉnh chu': 1.0
-            },
-            'TAG_K': {
-                'không có góp ý': 5.0, 'không ý kiến': 5.0, 'không góp ý': 4.5,
-                'không': 3.0, 'ko': 3.0, 'k': 2.5, 'không có': 3.0,
-                'tuyệt vời': 2.0, 'quá ok': 2.0, 'rất ok': 2.0, 'ổn hết': 2.0,
-                'ok': 1.0, 'oki': 1.0, 'ổn': 1.0, 'được': 1.0, 'cảm ơn': 1.0, 'tốt hơn': 1.0
-            }
-        }
-        
-        # ===== LỖI 1: XỬ LÝ PHỦ ĐỊNH =====
-        self.negations = {'không', 'chẳng', 'chả', 'chưa', 'đâu có', 'chẳng hề'}
-        
-        # ===== LỖI 4: GIỚI HẠN COUNT =====
-        # Chỉ đếm tối đa 3 lần để tránh bias
-        self.max_count = 3
-    
     def _tokenize(self, text):
-        """Tokenize văn bản thành các từ đơn (giải quyết LỖI 2)"""
-        # Tách từ đơn giản, có thể dùng thư viện nếu cần
-        # Quan trọng: match chính xác từ, không match substring
+        """Tokenize văn bản thành các từ đơn"""
         words = []
         current = []
-        for c in text + ' ':
+        for c in text.lower() + ' ':
             if c.isalpha() or c.isdigit():
                 current.append(c)
             else:
@@ -218,124 +191,121 @@ class FastVietnameseNLP:
                     current = []
         return words
     
-    def _check_negation(self, words, idx, window=2):
-        """Kiểm tra phủ định trong cửa sổ xung quanh (LỖI 1)"""
-        start = max(0, idx - window)
-        end = min(len(words), idx + window + 1)
-        for i in range(start, end):
-            if words[i] in self.negations:
+    def _is_neutral_no_opinion(self, text):
+        """Kiểm tra xem có phải câu 'không có ý kiến' không"""
+        text_lower = text.lower().strip()
+        
+        # Loại bỏ dấu câu cuối câu
+        if text_lower.endswith('.') or text_lower.endswith('!') or text_lower.endswith('?'):
+            text_lower = text_lower[:-1]
+        
+        # Kiểm tra các cụm từ trung tính
+        for phrase in self.neutral_phrases:
+            if phrase in text_lower:
                 return True
+        
+        # Trường hợp chỉ có từ "không" đơn độc
+        words = self._tokenize(text_lower)
+        if len(words) == 1 and words[0] in ['không', 'ko', 'k']:
+            return True
+        
         return False
     
-    def analyze_sentiment_fast(self, text):
+    def analyze_sentiment(self, text):
         """
-        Phân tích sentiment - SỬA 4 LỖI:
-        1. Phủ định cục bộ
-        2. Tokenize chính xác
-        3. Context qua window
-        4. Giới hạn count
+        Phân tích sentiment dựa trên TẦN SUẤT xuất hiện từ cảm xúc
+        - KHÔNG dùng phủ định (đã loại trường hợp 'không' ở cuối)
+        - KHÔNG dùng trọng số
+        - Đếm số lượng từ positive và negative
         """
         if not text or len(text) < 3:
             return 'neutral'
         
-        text_lower = text.lower()
-        
-        # LỖI 2: Tokenize chính xác
-        tokens = self._tokenize(text_lower)
-        if not tokens:
+        # Kiểm tra trường hợp "không có ý kiến" -> trung tính ngay
+        if self._is_neutral_no_opinion(text):
             return 'neutral'
         
-        # LỖI 4: Giới hạn count để tránh bias
+        text_lower = text.lower()
+        words = self._tokenize(text_lower)
+        
+        # Đếm số lần xuất hiện của từ positive và negative
         pos_count = 0
         neg_count = 0
         
-        for i, token in enumerate(tokens):
-            # LỖI 2: Match chính xác từ, không match substring
-            if token not in self.positive_words and token not in self.negative_words:
-                continue
-            
-            # LỖI 1: Kiểm tra phủ định local
-            is_negated = self._check_negation(tokens, i, window=2)
-            
-            # LỖI 4: Giới hạn count (chỉ đếm tối đa 3 lần cho mỗi loại)
-            if token in self.positive_words and pos_count < self.max_count:
-                if is_negated:
-                    neg_count = min(neg_count + 1, self.max_count)
-                else:
-                    pos_count = min(pos_count + 1, self.max_count)
-            elif token in self.negative_words and neg_count < self.max_count:
-                if is_negated:
-                    pos_count = min(pos_count + 1, self.max_count)
-                else:
-                    neg_count = min(neg_count + 1, self.max_count)
+        # Dùng set để tránh đếm trùng từ trong 1 câu quá nhiều lần
+        pos_words_found = set()
+        neg_words_found = set()
         
-        # Tính điểm
-        total = pos_count + neg_count
-        if total == 0:
-            # Kiểm tra thêm
-            if any(w in text_lower for w in ['tốt', 'hay', 'ok']):
+        for word in words:
+            if word in self.positive_words:
+                pos_words_found.add(word)
+            elif word in self.negative_words:
+                neg_words_found.add(word)
+        
+        pos_count = len(pos_words_found)
+        neg_count = len(neg_words_found)
+        
+        # Quyết định sentiment dựa trên số lượng từ cảm xúc
+        if pos_count > neg_count:
+            # Có nhiều từ tích cực hơn
+            if pos_count >= 1:
                 return 'positive'
+        elif neg_count > pos_count:
+            # Có nhiều từ tiêu cực hơn
+            if neg_count >= 1:
+                return 'negative'
+        elif pos_count == neg_count and pos_count > 0:
+            # Số lượng bằng nhau, ưu tiên positive nếu từ positive mạnh hơn
+            # Kiểm tra các từ rất tích cực
+            strong_pos = ['tuyệt vời', 'xuất sắc', 'hoàn hảo', 'siêu']
+            for word in pos_words_found:
+                if any(sp in word for sp in strong_pos):
+                    return 'positive'
             return 'neutral'
         
-        score = (pos_count - neg_count) / total
-        
-        if score > 0.15:
-            return 'positive'
-        elif score < -0.15:
-            return 'negative'
+        # Không có từ cảm xúc nào
         return 'neutral'
     
-    def extract_tags_with_weights(self, text):
+    def extract_tags(self, text):
         """
-        Trích xuất tag với trọng số - SỬA LỖI 2 và 4
+        Trích xuất tag dựa trên từ khóa
+        - KHÔNG dùng trọng số
+        - Có thể trả về NHIỀU TAG
         """
         if not text or len(text) < 3:
             return ['TAG_K']
         
-        text_lower = text.lower()
-        tokens = self._tokenize(text_lower)
-        
-        # Tính điểm cho từng tag
-        tag_scores = {tag: 0.0 for tag in self.tag_weights.keys()}
-        
-        for tag, weights in self.tag_weights.items():
-            score = 0
-            for keyword, weight in weights.items():
-                # LỖI 2: Match chính xác keyword
-                if keyword in text_lower:
-                    # LỖI 4: Giới hạn số lần xuất hiện
-                    count = min(text_lower.count(keyword), 3)
-                    score += weight * (1 + 0.1 * (count - 1))
-            tag_scores[tag] = score
-        
-        # Tìm tag có điểm cao nhất
-        best_tag = max(tag_scores, key=tag_scores.get)
-        best_score = tag_scores[best_tag]
-        
-        if best_score < 0.5:
+        # Kiểm tra "không có ý kiến" -> chỉ gán TAG_K
+        if self._is_neutral_no_opinion(text):
             return ['TAG_K']
         
-        # Cho phép nhiều tag nếu điểm > 50% điểm cao nhất
-        result = [best_tag]
-        for tag, score in tag_scores.items():
-            if tag != best_tag and score >= best_score * 0.5 and score > 0.5:
-                result.append(tag)
+        text_lower = text.lower()
+        found_tags = set()
         
-        return result
-    
-    def extract_tags_fast(self, text):
-        """Phiên bản nhanh - dùng extract_tags_with_weights"""
-        return self.extract_tags_with_weights(text)
+        # Duyệt từng tag và từ khóa
+        for tag, keywords in self.tag_keywords.items():
+            for keyword in keywords:
+                if keyword in text_lower:
+                    found_tags.add(tag)
+                    break  # Tìm thấy 1 từ khóa cho tag này là đủ
+        
+        # Nếu không tìm thấy tag nào và text có nội dung -> gán TAG_K
+        if not found_tags:
+            # Kiểm tra nếu text có độ dài > 10 ký tự và không phải toàn số/ký tự đặc biệt
+            if len(text) > 10 and sum(c.isalpha() for c in text) > 3:
+                return ['TAG_K']
+            return ['TAG_K']
+        
+        return list(found_tags)
 
 
-_nlp = FastVietnameseNLP()
+_nlp = VietnameseNLP()
 
 
-# ================= KIỂM TRA DỮ LIỆU RÁC CẢI TIẾN =================
-def is_valid_essay_improved(text):
+# ================= KIỂM TRA DỮ LIỆU RÁC =================
+def is_valid_essay(text):
     """
-    Kiểm tra dữ liệu rác cải tiến:
-    - Giữ lại những câu 1 phần nhưng có từ khóa cảm xúc mạnh
+    Kiểm tra dữ liệu hợp lệ
     """
     if not text or not isinstance(text, str):
         return 0
@@ -345,35 +315,17 @@ def is_valid_essay_improved(text):
     if len(text) < 5:
         return 0
     
-    # Tách các phần
-    parts = [p.strip() for p in text.split(',') if p.strip()]
+    # Các trường hợp vô nghĩa
+    meaningless = ['không', 'ko', 'k', 'không có', 'ko có', 'không ạ', 'ok', 'oki', 'oke']
+    if text.lower() in meaningless:
+        return 0
     
-    # Loại bỏ các phần vô nghĩa
-    meaningful_parts = []
-    for part in parts:
-        part_lower = part.lower()
-        if part_lower in ['không', 'ko', 'k', 'không có', 'ko có', 'không ạ']:
-            continue
-        meaningful_parts.append(part)
-    
-    # Nếu có 2 phần trở lên có nội dung -> hợp lệ
-    if len(meaningful_parts) >= 2:
-        return 1
-    
-    # Nếu chỉ có 1 phần, kiểm tra xem phần đó có chứa từ khóa cảm xúc mạnh không
-    if len(meaningful_parts) == 1:
-        single_part = meaningful_parts[0].lower()
-        # Từ khóa cảm xúc mạnh (positive hoặc negative)
-        strong_emotion = _nlp.strong_positive_set.union(_nlp.strong_negative_set)
-        if any(kw in single_part for kw in strong_emotion):
-            return 1
-    
-    # Fallback: kiểm tra tỷ lệ chữ cái
+    # Kiểm tra tỷ lệ chữ cái
     letter_count = sum(1 for c in text if c.isalpha())
     if len(text) > 0 and letter_count / len(text) < 0.3:
         return 0
     
-    return 0  # Không đủ nội dung -> rác
+    return 1
 
 
 # ================= BLOB FUNCTIONS =================
@@ -568,21 +520,21 @@ def parse_survey_data_parallel_optimized(content: str) -> pd.DataFrame:
     return df_grouped
 
 
-# ================= TRANSFORM & NLP (IMPROVED) =================
-def process_nlp_batch_improved(texts):
+# ================= TRANSFORM & NLP =================
+def process_nlp_batch(texts):
     results = []
     for text in texts:
-        if not text or len(text) < 5:
+        if not text or len(text) < 3:
             results.append(('neutral', ['TAG_K'], 0))
         else:
-            sentiment = _nlp.analyze_sentiment_fast(text)
-            tags = _nlp.extract_tags_fast(text)
-            is_valid = is_valid_essay_improved(text)
+            sentiment = _nlp.analyze_sentiment(text)
+            tags = _nlp.extract_tags(text)
+            is_valid = is_valid_essay(text)
             results.append((sentiment, tags, is_valid))
     return results
 
-def transform_with_nlp_improved(df):
-    print("  -> Transform dữ liệu với NLP improved...")
+def transform_with_nlp(df):
+    print("  -> Transform dữ liệu với NLP...")
     start = time.time()
     
     df['SubmissionID'] = df['MaSV'] + '_' + df['LopHP'] + '_' + df['MaGV'] + '_' + FILE_NAME
@@ -595,7 +547,7 @@ def transform_with_nlp_improved(df):
     
     all_nlp_results = []
     with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
-        for batch_results in executor.map(process_nlp_batch_improved, batches):
+        for batch_results in executor.map(process_nlp_batch, batches):
             all_nlp_results.extend(batch_results)
     
     df['Sentiment'] = [r[0] for r in all_nlp_results]
@@ -810,7 +762,6 @@ def load_dim_hoc_phan(cursor, df_hp_master, df_raw):
     1. Lấy MaHP từ file RAW (làm gốc)
     2. Tra trong HP-Khoa.csv để lấy TenHP và MaKhoa
     3. Nếu không có trong HP-Khoa, dùng TenHP từ RAW và MaKhoa = 'UNKNOWN'
-    4. KHÔNG lấy tất cả từ HP-Khoa, chỉ lấy những mã xuất hiện trong RAW
     """
     count = 0
     
@@ -929,7 +880,7 @@ def load_fact_tables(cursor, df_main, df_ketqua, df_tag):
 def main():
     total_start = time.time()
     print("=" * 60)
-    print("🚀 ETL PIPELINE - NLP IMPROVED")
+    print("🚀 ETL PIPELINE - NLP SIMPLIFIED")
     print("=" * 60)
     print(f"SEMESTER: {SEMESTER}")
     print(f"SURVEY_FILE: {SURVEY_FILE}")
@@ -971,7 +922,7 @@ def main():
     
     # 5. Transform & NLP
     print("\n🔄 5. Transform & NLP...")
-    df_main, df_ketqua, df_tag = transform_with_nlp_improved(df_raw)
+    df_main, df_ketqua, df_tag = transform_with_nlp(df_raw)
     
     # 6. Lưu CSV backup
     print("\n💾 6. Lưu CSV backup...")

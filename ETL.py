@@ -119,7 +119,7 @@ class FastVietnameseNLP:
     
     def __init__(self):
         # ===== TỪ ĐIỂN CẢM XÚC =====
-        positive_words = {
+        self.positive_words = {
             'tuyệt vời', 'tuyệt', 'mãi yêu', 'yêu cô', 'yêu thầy', 'siêu thích',
             'hào hứng', 'thoải mái', 'vui', 'sôi nổi', 'hấp dẫn', 'dễ mến',
             'dễ gần', 'thân thiện', 'gần gũi', 'tâm lý', 'dễ thương', 'vui tính',
@@ -135,7 +135,7 @@ class FastVietnameseNLP:
             'phù hợp', 'đạt', 'chia sẻ', 'thực tế', '10/10'
         }
         
-        negative_words = {
+        self.negative_words = {
             'khó hiểu', 'khó tiếp thu', 'mông lung', 'lan man', 'dài dòng',
             'qua loa', 'chắp vá', 'đọc chép', 'phụ thuộc slide', 'thiếu linh hoạt',
             'cứng nhắc', 'nhàm chán', 'đơn điệu', 'cũ kỹ', 'dạy nhanh',
@@ -564,7 +564,7 @@ def process_nlp_batch_improved(texts):
         if not text or len(text) < 5:
             results.append(('neutral', ['TAG_K'], 0))
         else:
-            sentiment = _nlp_improved.analyze_sentiment(text)
+            sentiment = _nlp.analyze_sentiment(text)
             tags = _nlp_improved.extract_tags(text)
             is_valid = is_valid_essay_improved(text)
             results.append((sentiment, tags, is_valid))

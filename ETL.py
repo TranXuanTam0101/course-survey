@@ -49,6 +49,14 @@ _date_pattern = re.compile(r'^\d{2}/\d{2}/\d{4}$')
 _ma_gv_pattern = re.compile(r'^(\d{7}|TG\d{5}|gvDacThu_TKTH)$')
 _lop_pattern = re.compile(r'^\d{2}K\d{2}$')
 
+# ================= COMPILED REGEX CHO TỐC ĐỘ =================
+# Regex để thay thế 'k' hoặc 'ko' chỉ khi đứng một mình (không ảnh hưởng 'ok', 'oki')
+_k_regex = re.compile(r'\bk\b')
+_ko_regex = re.compile(r'\bko\b')
+_hok_regex = re.compile(r'\bhok\b')
+_hong_regex = re.compile(r'\bhông\b')
+_khong_regex = re.compile(r'\bkh\b')
+
 # ================= HÀM TIỆN ÍCH =================
 def normalize_lop(lop: str) -> str:
     if not isinstance(lop, str): 
@@ -93,7 +101,6 @@ def extract_ma_nganh_from_ten_nganh(ten_nganh: str) -> str:
     return ''.join(initials) if initials else "UNKNOWN"
 
 def determine_ma_chuyen_nganh(lop: str) -> tuple:
-    """Xác định từ Lop: (MaChuyenNganh, TenChuyenNganh, TenKhoa, MaKhoa)"""
     lop_upper = lop.upper()
     lop_normalized = normalize_lop(lop)
     
@@ -106,11 +113,14 @@ def determine_ma_chuyen_nganh(lop: str) -> tuple:
         return "CTS", "Chuyên ngành CTS", "Trường ĐHKT", "TĐHKT"
     return None, None, None, None
 
-# ================= RULE-BASED NLP =================
-class VietnameseNLPRuleBased:
-    __slots__ = ['positive_set', 'negative_set', 'negations', 'intensifiers', 'tag_keywords']
+
+# ================= IMPROVED RULE-BASED NLP =================
+class ImprovedVietnameseNLPRuleBased:
+    __slots__ = ['positive_set', 'negative_set', 'negations', 'intensifiers', 
+                 'tag_keywords', 'tag_priority', 'strong_positive_set', 'strong_negative_set']
     
     def __init__(self):
+        # ===== TỪ ĐIỂN CẢM XÚC =====
         positive_words = {
             'tuyệt vời', 'tuyệt', 'mãi yêu', 'yêu cô', 'yêu thầy', 'siêu thích',
             'hào hứng', 'thoải mái', 'vui', 'sôi nổi', 'hấp dẫn', 'dễ mến',
@@ -121,7 +131,7 @@ class VietnameseNLPRuleBased:
             'bám sát', 'đúng trọng tâm', 'hiệu quả', 'tiến bộ', 'đa dạng',
             'phong phú', 'hợp lý', 'chuẩn', 'tạo điều kiện', 'hỗ trợ',
             'giải đáp thắc mắc', 'chỉnh chu', 'tốt', 'hay', 'ổn', 'hài lòng',
-            'cảm ơn', 'ok', 'good'
+            'cảm ơn', 'ok', 'oke', 'oki', 'good'
         }
         
         negative_words = {
@@ -136,70 +146,248 @@ class VietnameseNLPRuleBased:
             'không hài lòng', 'không có ích', 'mất thời gian'
         }
         
-        negations = {'không', 'chẳng', 'chả', 'đâu có', 'chưa', 'chẳng hề', 'ko', 'k', 'đâu'}
-        intensifiers = {'rất', 'quá', 'cực kỳ', 'vô cùng', 'siêu', 'cực', 'lắm', 'khá'}
+        # Từ cảm xúc mạnh (ưu tiên trong kiểm tra rác)
+        self.strong_positive_set = {'tốt', 'hay', 'tuyệt', 'hài lòng', 'cảm ơn'}
+        self.strong_negative_set = {'tệ', 'dở', 'kém', 'chán', 'thất vọng'}
         
         self.positive_set = positive_words
         self.negative_set = negative_words
-        self.negations = negations
-        self.intensifiers = intensifiers
         
+        # ===== TỪ PHỦ ĐỊNH =====
+        self.negations = {'không', 'chẳng', 'chả', 'chưa'}
+        
+        # ===== TỪ TĂNG CƯỜNG =====
+        self.intensifiers = {'rất', 'quá', 'cực kỳ', 'vô cùng', 'siêu', 'cực', 'lắm'}
+        
+        # ===== TỪ KHÓA TAG (CÓ PRIORITY) =====
         self.tag_keywords = {
-            'TAG_HP': {'chuẩn đầu ra', 'nội dung', 'mục tiêu', 'chương trình', 'học phần',
-                       'giáo trình', 'tài liệu', 'khối lượng', 'kiến thức', 'môn học'},
-            'TAG_DH': {'giảng viên', 'dạy', 'giảng', 'phương pháp', 'truyền đạt',
-                       'thầy', 'cô', 'giáo viên', 'bài giảng', 'slide'},
-            'TAG_KT': {'kiểm tra', 'đánh giá', 'thi', 'bài tập', 'điểm', 'chấm', 'đề thi'},
-            'TAG_K': {'cơ sở vật chất', 'phòng học', 'lịch học', 'wifi'}
+            'TAG_HP': {
+                'keywords': {'chuẩn đầu ra', 'nội dung', 'mục tiêu', 'chương trình', 
+                             'học phần', 'giáo trình', 'tài liệu', 'khối lượng', 
+                             'kiến thức', 'môn học'},
+                'priority': 1
+            },
+            'TAG_DH': {
+                'keywords': {'giảng viên', 'dạy', 'giảng', 'phương pháp', 'truyền đạt',
+                             'thầy', 'cô', 'giáo viên', 'bài giảng', 'slide'},
+                'priority': 2
+            },
+            'TAG_KT': {
+                'keywords': {'kiểm tra', 'đánh giá', 'thi', 'bài tập', 'điểm', 
+                             'chấm', 'đề thi'},
+                'priority': 3
+            },
+            'TAG_K': {
+                'keywords': {'cơ sở vật chất', 'phòng học', 'lịch học', 'wifi',
+                             'khác', 'góp ý'},
+                'priority': 4
+            }
         }
     
+    def _normalize_text(self, text):
+        """Chuẩn hóa văn bản - XỬ LÝ TỪ VIẾT TẮT BẰNG REGEX"""
+        if not text:
+            return ""
+        
+        text = text.lower()
+        
+        # Dùng regex chỉ thay thế khi từ đứng một mình (không ảnh hưởng 'ok')
+        text = _k_regex.sub('không', text)
+        text = _ko_regex.sub('không', text)
+        text = _hok_regex.sub('không', text)
+        text = _hong_regex.sub('không', text)
+        text = _khong_regex.sub('không', text)
+        
+        return text
+    
+    def _split_sentences_fast(self, text):
+        """Tách câu dựa trên từ nối"""
+        connectors = [' nhưng ', ' tuy nhiên ', ' mặc dù ', ' dù ', ' tuy vậy ']
+        
+        sentences = [text]
+        for conn in connectors:
+            new_sentences = []
+            for sent in sentences:
+                if conn in sent:
+                    parts = sent.split(conn)
+                    new_sentences.extend(parts)
+                else:
+                    new_sentences.append(sent)
+            sentences = new_sentences
+        
+        result = []
+        for sent in sentences:
+            sub_sents = re.split(r'[.;!?]', sent)
+            result.extend([s.strip() for s in sub_sents if s.strip()])
+        
+        return result
+    
     def analyze_sentiment(self, text):
+        """Phân tích sentiment - DÙNG ĐIỂM TÍCH LŨY thay vì ưu tiên negative"""
         if not text or len(text) < 5:
             return 'neutral'
-        text_lower = text.lower()
-        pos_count = sum(1 for w in self.positive_set if w in text_lower)
-        neg_count = sum(1 for w in self.negative_set if w in text_lower)
-        if any(neg in text_lower for neg in self.negations):
-            pos_count, neg_count = neg_count, pos_count
-        intensifier = 1.5 if any(inten in text_lower for inten in self.intensifiers) else 1
-        total = pos_count + neg_count
-        if total == 0:
+        
+        text = self._normalize_text(text)
+        sentences = self._split_sentences_fast(text)
+        
+        if len(sentences) > 1:
+            score = 0
+            sentence_count = 0
+            
+            for sent in sentences:
+                if sent.strip() in ['không', 'không có', 'ko có']:
+                    continue
+                sent_score = self._analyze_sentence_score(sent)
+                if sent_score != 0:
+                    score += sent_score
+                    sentence_count += 1
+            
+            if sentence_count == 0:
+                return 'neutral'
+            
+            avg_score = score / sentence_count
+            
+            if avg_score > 0.15:
+                return 'positive'
+            elif avg_score < -0.15:
+                return 'negative'
             return 'neutral'
-        score = (pos_count - neg_count) * intensifier / total
-        if score > 0.1:
+        
+        sent_score = self._analyze_sentence_score(text)
+        if sent_score > 0.15:
             return 'positive'
-        elif score < -0.1:
+        elif sent_score < -0.15:
             return 'negative'
         return 'neutral'
     
+    def _analyze_sentence_score(self, sentence):
+        """Trả về điểm số của một câu (có thể âm hoặc dương)"""
+        if not sentence:
+            return 0
+        
+        cleaned = sentence.strip()
+        if cleaned in ['không', 'không có', 'ko có', 'không ạ']:
+            return 0
+        
+        # Tách từ
+        tokens = cleaned.split()
+        
+        total_score = 0
+        total_weight = 0
+        
+        for i, token in enumerate(tokens):
+            token_clean = token
+            
+            if token_clean in self.positive_set:
+                base_score = 1
+            elif token_clean in self.negative_set:
+                base_score = -1
+            else:
+                continue
+            
+            # Xử lý intensifier
+            intensifier = 1
+            if i > 0 and tokens[i-1] in self.intensifiers:
+                intensifier = 1.5
+                if base_score < 0:
+                    intensifier = 2.0
+            
+            # Xử lý phủ định cục bộ
+            if i > 0 and tokens[i-1] in self.negations:
+                base_score = -base_score
+            elif i > 1 and tokens[i-2] in self.negations:
+                base_score = -base_score
+            
+            final_score = base_score * intensifier
+            total_score += final_score
+            total_weight += 1
+        
+        if total_weight == 0:
+            return 0
+        
+        return total_score / total_weight
+    
     def extract_tags(self, text):
+        """Trích xuất tag với priority"""
         if not text or len(text) < 3:
             return ['TAG_K']
-        text_lower = text.lower()
-        tags = []
-        for tag, keywords in self.tag_keywords.items():
-            if any(kw in text_lower for kw in keywords):
-                tags.append(tag)
-        return tags if tags else ['TAG_K']
+        
+        text = self._normalize_text(text)
+        
+        parts = [p.strip() for p in text.split(',') if p.strip()]
+        
+        found_tags = set()
+        best_priority = 999
+        
+        for part in parts:
+            part_lower = part.lower()
+            
+            if part_lower in ['không', 'không có', 'ko có', 'không ạ']:
+                continue
+            
+            for tag, config in self.tag_keywords.items():
+                priority = config['priority']
+                if priority < best_priority:
+                    for kw in config['keywords']:
+                        if kw in part_lower:
+                            found_tags.add(tag)
+                            if priority < best_priority:
+                                best_priority = priority
+                            break
+        
+        if not found_tags:
+            if any(kw in text for kw in ['tốt', 'hay', 'ổn', 'hài lòng']):
+                return ['TAG_K']
+        
+        return list(found_tags) if found_tags else ['TAG_K']
 
-_nlp = VietnameseNLPRuleBased()
+
+_nlp_improved = ImprovedVietnameseNLPRuleBased()
 
 
-# ================= KIỂM TRA DỮ LIỆU RÁC =================
-def is_valid_essay(text):
+# ================= KIỂM TRA DỮ LIỆU RÁC CẢI TIẾN =================
+def is_valid_essay_improved(text):
+    """
+    Kiểm tra dữ liệu rác cải tiến:
+    - Giữ lại những câu 1 phần nhưng có từ khóa cảm xúc mạnh
+    """
     if not text or not isinstance(text, str):
         return 0
+    
     text = text.strip()
-    if len(text) < 10:
+    
+    if len(text) < 5:
         return 0
-    if re.match(r'^[0-9\W_]+$', text):
-        return 0
-    if re.match(r'^[,;\.\s]+$', text):
-        return 0
+    
+    # Tách các phần
+    parts = [p.strip() for p in text.split(',') if p.strip()]
+    
+    # Loại bỏ các phần vô nghĩa
+    meaningful_parts = []
+    for part in parts:
+        part_lower = part.lower()
+        if part_lower in ['không', 'ko', 'k', 'không có', 'ko có', 'không ạ']:
+            continue
+        meaningful_parts.append(part)
+    
+    # Nếu có 2 phần trở lên có nội dung -> hợp lệ
+    if len(meaningful_parts) >= 2:
+        return 1
+    
+    # Nếu chỉ có 1 phần, kiểm tra xem phần đó có chứa từ khóa cảm xúc mạnh không
+    if len(meaningful_parts) == 1:
+        single_part = meaningful_parts[0].lower()
+        # Từ khóa cảm xúc mạnh (positive hoặc negative)
+        strong_emotion = _nlp_improved.strong_positive_set.union(_nlp_improved.strong_negative_set)
+        if any(kw in single_part for kw in strong_emotion):
+            return 1
+    
+    # Fallback: kiểm tra tỷ lệ chữ cái
     letter_count = sum(1 for c in text if c.isalpha())
     if len(text) > 0 and letter_count / len(text) < 0.3:
         return 0
-    return 1
+    
+    return 0  # Không đủ nội dung -> rác
 
 
 # ================= BLOB FUNCTIONS =================
@@ -241,13 +429,6 @@ def load_hp_master(blob_service):
     return df
 
 def load_chuyennganh_master(blob_service):
-    """
-    Đọc file TenChuyenNganh-Khoa.csv
-    Trả về:
-        - dim_nganh: DataFrame cho DIM_NGANH
-        - dim_chuyennganh: DataFrame cho DIM_CHUYEN_NGANH
-        - mapping: dict {MaChuyenNganh: {TenChuyenNganh, MaNganh, TenNganh, MaKhoa, TenKhoa}}
-    """
     content = download_blob(blob_service, TAILIEU_CONTAINER, "TenChuyenNganh-Khoa.csv")
     if not content:
         return pd.DataFrame(), pd.DataFrame(), {}
@@ -294,7 +475,7 @@ def is_ma_gv_format(value):
     v = value.strip()
     return (len(v) == 7 and v.isdigit()) or (len(v) == 7 and v.startswith("TG")) or v == "gvDacThu_TKTH"
 
-def parse_lines_batch_fast(lines_batch):
+def parse_lines_batch_optimized(lines_batch):
     results = []
     for line in lines_batch:
         if not line or not line.strip():
@@ -358,7 +539,7 @@ def parse_lines_batch_fast(lines_batch):
             continue
     return results
 
-def parse_survey_data_parallel_fast(content: str) -> pd.DataFrame:
+def parse_survey_data_parallel_optimized(content: str) -> pd.DataFrame:
     print(f"  -> Đang parse với {NUM_WORKERS} workers...")
     start = time.time()
     
@@ -369,7 +550,7 @@ def parse_survey_data_parallel_fast(content: str) -> pd.DataFrame:
     
     all_results = []
     with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
-        futures = [executor.submit(parse_lines_batch_fast, batch) for batch in batches]
+        futures = [executor.submit(parse_lines_batch_optimized, batch) for batch in batches]
         for future in as_completed(futures):
             all_results.extend(future.result())
     
@@ -401,25 +582,26 @@ def parse_survey_data_parallel_fast(content: str) -> pd.DataFrame:
     return df_grouped
 
 
-# ================= TRANSFORM & NLP =================
-def process_nlp_batch_fast(texts):
+# ================= TRANSFORM & NLP (IMPROVED) =================
+def process_nlp_batch_improved(texts):
     results = []
     for text in texts:
         if not text or len(text) < 5:
             results.append(('neutral', ['TAG_K'], 0))
         else:
-            sentiment = _nlp.analyze_sentiment(text)
-            tags = _nlp.extract_tags(text)
-            is_valid = is_valid_essay(text)
+            sentiment = _nlp_improved.analyze_sentiment(text)
+            tags = _nlp_improved.extract_tags(text)
+            is_valid = is_valid_essay_improved(text)
             results.append((sentiment, tags, is_valid))
     return results
 
-def transform_with_nlp_fast(df):
-    print("  -> Transform dữ liệu với NLP...")
+def transform_with_nlp_improved(df):
+    print("  -> Transform dữ liệu với NLP improved...")
     start = time.time()
     
     df['SubmissionID'] = df['MaSV'] + '_' + df['LopHP'] + '_' + df['MaGV'] + '_' + FILE_NAME
-    df['NoiDungGopY'] = df['EssayText'].fillna('').astype(str).str.replace(r'\s+', ' ', regex=True).str.strip()
+    df['NoiDungGopY'] = df['EssayText'].fillna('').astype(str)
+    df['NoiDungGopY'] = df['NoiDungGopY'].str.replace(r'\s+', ' ', regex=True).str.strip()
     
     print(f"  -> Đang xử lý NLP với {NUM_WORKERS} workers...")
     texts = df['NoiDungGopY'].tolist()
@@ -427,25 +609,25 @@ def transform_with_nlp_fast(df):
     
     all_nlp_results = []
     with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
-        for batch_results in executor.map(process_nlp_batch_fast, batches):
+        for batch_results in executor.map(process_nlp_batch_improved, batches):
             all_nlp_results.extend(batch_results)
     
     df['Sentiment'] = [r[0] for r in all_nlp_results]
     df['Tags'] = [r[1] for r in all_nlp_results]
     df['Is_Valid'] = [r[2] for r in all_nlp_results]
     
-    ketqua_data = []
-    for _, row in df.iterrows():
-        sub_id = row['SubmissionID']
-        for cau, diem in row['DiemTracNghiem'].items():
-            ketqua_data.append((sub_id, cau, diem))
+    ketqua_data = [
+        (row['SubmissionID'], cau, diem)
+        for _, row in df.iterrows()
+        for cau, diem in row['DiemTracNghiem'].items()
+    ]
     df_ketqua = pd.DataFrame(ketqua_data, columns=['SubmissionID', 'MaCauHoi', 'Diem'])
     
-    tag_data = []
-    for _, row in df.iterrows():
-        sub_id = row['SubmissionID']
-        for tag in row['Tags']:
-            tag_data.append((sub_id, tag))
+    tag_data = [
+        (row['SubmissionID'], tag)
+        for _, row in df.iterrows()
+        for tag in row['Tags']
+    ]
     df_tag = pd.DataFrame(tag_data, columns=['SubmissionID', 'MaTag'])
     
     print(f"  ✅ Transform xong ({time.time()-start:.2f}s)")
@@ -762,7 +944,7 @@ def load_fact_tables(cursor, df_main, df_ketqua, df_tag):
 def main():
     total_start = time.time()
     print("=" * 60)
-    print("🚀 ETL PIPELINE - XỬ LÝ ĐỒNG THỜI 2 PHẦN")
+    print("🚀 ETL PIPELINE - NLP IMPROVED")
     print("=" * 60)
     print(f"SEMESTER: {SEMESTER}")
     print(f"SURVEY_FILE: {SURVEY_FILE}")
@@ -783,8 +965,8 @@ def main():
     hp_master = load_hp_master(blob_service)
     dim_nganh, dim_chuyennganh, mapping = load_chuyennganh_master(blob_service)
     print(f"  ✅ HP-Khoa: {len(hp_master)} dòng")
-    print(f"  ✅ DIM_NGANH (master): {len(dim_nganh)} dòng")
-    print(f"  ✅ DIM_CHUYEN_NGANH (master): {len(dim_chuyennganh)} dòng")
+    print(f"  ✅ DIM_NGANH: {len(dim_nganh)} dòng")
+    print(f"  ✅ DIM_CHUYEN_NGANH: {len(dim_chuyennganh)} dòng")
     print(f"  ✅ Mapping: {len(mapping)} chuyên ngành")
     
     # 3. Đọc dữ liệu survey
@@ -797,14 +979,14 @@ def main():
     
     # 4. Parse dữ liệu
     print("\n📝 4. Parse dữ liệu...")
-    df_raw = parse_survey_data_parallel_fast(survey_content)
+    df_raw = parse_survey_data_parallel_optimized(survey_content)
     if df_raw.empty:
         print("  ❌ Không có dữ liệu!")
         return
     
     # 5. Transform & NLP
     print("\n🔄 5. Transform & NLP...")
-    df_main, df_ketqua, df_tag = transform_with_nlp_fast(df_raw)
+    df_main, df_ketqua, df_tag = transform_with_nlp_improved(df_raw)
     
     # 6. Lưu CSV backup
     print("\n💾 6. Lưu CSV backup...")
@@ -825,12 +1007,8 @@ def main():
         return
     
     try:
-        # 8. Load DIMENSION tables
         load_all_dimensions(cursor, df_raw, hp_master, dim_nganh, dim_chuyennganh, mapping)
-        
-        # 9. Load FACT tables
         count_main, count_kq, count_tag = load_fact_tables(cursor, df_main, df_ketqua, df_tag)
-        
     except Exception as e:
         print(f"  ❌ Lỗi: {e}")
         raise
@@ -838,20 +1016,24 @@ def main():
         cursor.close()
         conn.close()
     
-    # 10. Thống kê
-    print("\n📊 10. KẾT QUẢ:")
+    # 8. Thống kê
+    print("\n📊 8. KẾT QUẢ:")
     print(f"   - Số phiếu: {len(df_main):,}")
     print(f"   - Hợp lệ: {df_main['Is_Valid'].sum():,} ({df_main['Is_Valid'].mean()*100:.1f}%)")
     print(f"   - Điểm TN: {count_kq:,} dòng")
     print(f"   - Tag: {count_tag:,} dòng")
     
-    print("\n   - Sentiment:")
+    print("\n   - Sentiment phân bố:")
     for sent, cnt in df_main['Sentiment'].value_counts().items():
-        print(f"      {sent}: {cnt:,} ({cnt/len(df_main)*100:.1f}%)")
+        pct = cnt/len(df_main)*100
+        bar = '█' * int(pct / 2)
+        print(f"      {sent}: {cnt:,} ({pct:.1f}%) {bar}")
     
-    print("\n   - Tags:")
+    print("\n   - Tag phân bố:")
     for tag, cnt in df_tag['MaTag'].value_counts().items():
-        print(f"      {tag}: {cnt:,} ({cnt/len(df_tag)*100:.1f}%)")
+        pct = cnt/len(df_tag)*100
+        bar = '█' * int(pct / 2)
+        print(f"      {tag}: {cnt:,} ({pct:.1f}%) {bar}")
     
     print("\n" + "=" * 60)
     print(f"✅ HOÀN THÀNH! Thời gian: {time.time()-total_start:.2f}s")

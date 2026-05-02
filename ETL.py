@@ -109,11 +109,19 @@ def parse_survey(content):
 
 # ================= SETUP EXTERNAL DATA SOURCE =================
 def setup_external_data_source(cur):
-    """Tạo CREDENTIAL và EXTERNAL DATA SOURCE 1 lần"""
-    
-    # Escape single quotes trong key
+    """Tạo MASTER KEY, CREDENTIAL và EXTERNAL DATA SOURCE"""
     safe_key = STORAGE_KEY.replace("'", "''")
     
+    # 1. Tạo MASTER KEY nếu chưa có
+    cur.execute("""
+        IF NOT EXISTS (SELECT 1 FROM sys.symmetric_keys WHERE name = '##MS_DatabaseMasterKey##')
+        BEGIN
+            CREATE MASTER KEY ENCRYPTION BY PASSWORD = 'SurveyDB@2026!'
+        END
+    """)
+    cur.connection.commit()
+    
+    # 2. Tạo CREDENTIAL
     cur.execute(f"""
         IF NOT EXISTS (SELECT 1 FROM sys.database_scoped_credentials WHERE name = 'AzureBlobCred')
         BEGIN
@@ -124,6 +132,7 @@ def setup_external_data_source(cur):
     """)
     cur.connection.commit()
     
+    # 3. Tạo EXTERNAL DATA SOURCE
     cur.execute(f"""
         IF NOT EXISTS (SELECT 1 FROM sys.external_data_sources WHERE name = 'MyAzureBlobStorage')
         BEGIN

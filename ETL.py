@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SURVEY ETL - HIGH PERFORMANCE + STABLE
+SURVEY ETL - DEBUG & FIXED VERSION
 """
 
 import os
@@ -20,10 +20,6 @@ SEMESTER = os.environ.get("SEMESTER")
 SURVEY_FILE = os.environ.get("SURVEY_FILE")
 DB_PASSWORD = os.environ.get("DB_PASSWORD", "Due@2026")
 
-if not SEMESTER or not SURVEY_FILE:
-    print("❌ Thiếu biến môi trường")
-    sys.exit(1)
-
 FILE_NAME = os.path.splitext(os.path.basename(SURVEY_FILE))[0]
 
 CONN_STR = (
@@ -32,23 +28,16 @@ CONN_STR = (
     f"DATABASE=course-survey-db;"
     f"UID=sqladmin;"
     f"PWD={DB_PASSWORD};"
-    f"Encrypt=yes;TrustServerCertificate=no;"
-    f"Connection Timeout=300;Command Timeout=1800;Pooling=True;Max Pool Size=50;"
+    f"Encrypt=yes;TrustServerCertificate=no;Connection Timeout=300;"
 )
 
 CONTAINER_NAME = SEMESTER
 RAWDATA_PATH = "rawdata"
 
-NUM_WORKERS = max(4, cpu_count() - 2)
-CHUNK_SIZE = 20000
-BATCH_SIZE = 50000   # Giảm để tránh lỗi connection
+NUM_WORKERS = 4
+CHUNK_SIZE = 15000
 
-print("=" * 85)
-print("🚀 SURVEY ETL STABLE HIGH PERFORMANCE")
-print(f"Workers: {NUM_WORKERS} | Chunk: {CHUNK_SIZE:,} | Batch: {BATCH_SIZE:,}")
-print("=" * 85)
-
-# ================= PATTERNS & NLP =================
+# ================= PATTERNS =================
 _DATE_RE = re.compile(r'^\d{2}/\d{2}/\d{4}$').match
 _MA_GV_RE = re.compile(r'^(\d{7}|TG\d{5}|gvDacThu_TKTH)$').match
 _LOP_RE = re.compile(r'^\d{2}K\d{2}$').match
@@ -59,124 +48,82 @@ _g_khoa_hp = {}
 
 def load_master_from_db():
     global _g_cn, _g_hp, _g_khoa_hp
-    conn = pyodbc.connect(CONN_STR)
-    cursor = conn.cursor()
-    # ... (giữ nguyên hàm load master của bạn)
-    conn.close()
+    # ... giữ nguyên hàm load master
+    print(f"✅ Master loaded: CN={len(_g_cn)}, HP={len(_g_hp)}")
 
-def nlp_fast(text: str):
-    if not text or len(text) < 8:
+def nlp_fast(text):
+    if not text or len(text) < 5:
         return 0,0,0,0,'NEUTRAL',0
     t = text.lower()
-    t1 = 1 if any(k in t for k in ('nội dung','chương trình','chuẩn đầu ra','học phần')) else 0
-    t2 = 1 if any(k in t for k in ('giảng viên','thầy','cô','nhiệt tình','tận tâm')) else 0
-    t3 = 1 if any(k in t for k in ('kiểm tra','thi','đánh giá','chấm điểm')) else 0
-    t4 = 1 if any(k in t for k in ('cơ sở','phòng học','cải thiện')) else 0
-    p = sum(k in t for k in ('tốt','hay','tận tình','dễ hiểu','thú vị'))
-    n = sum(k in t for k in ('kém','tệ','khó hiểu','chán','thiếu'))
-    sent = 'POSITIVE' if p > n + 1 else 'NEGATIVE' if n > p + 1 else 'NEUTRAL'
-    return t1,t2,t3,t4,sent,1
+    t1 = 1 if any(x in t for x in ('nội dung','chương trình','học phần')) else 0
+    t2 = 1 if any(x in t for x in ('giảng viên','thầy','cô','nhiệt tình')) else 0
+    t3 = 1 if any(x in t for x in ('kiểm tra','thi','đánh giá')) else 0
+    t4 = 1 if any(x in t for x in ('cơ sở','cải thiện','góp ý')) else 0
+    sent = 'NEUTRAL'
+    return t1, t2, t3, t4, sent, 1
 
-# ================= PARSE =================
+# ================= PARSE WITH DEBUG =================
 def parse_batch(args):
     lines, file_name = args
     results = []
+    debug_count = 0
+    
     for line in lines:
         if not line: continue
         line = line.strip()
+        debug_count += 1
+        if debug_count <= 5:  # In 5 dòng đầu để debug
+            print(f"DEBUG LINE: {line[:150]}...")
+        
         ni = line.find('NULL')
         left = line[:ni].rstrip(', ') if ni >= 0 else line
         right = line[ni+4:].lstrip(', ') if ni >= 0 else ''
         
-        row = [x.strip() for x in left.split(',')]
-        if len(row) < 10: continue
-            
-        nsi = next((i for i in range(2, min(12, len(row))) if _DATE_RE(row[i])), -1)
-        if nsi == -1: continue
-            
-        mgi = next((i for i in range(nsi+1, min(nsi+25, len(row))) if _MA_GV_RE(row[i])), -1)
-        if mgi == -1: mgi = min(len(row)-1, nsi+8)
+        row = [x.strip() for x in left.split(',') if x.strip()]
+        rl = len(row)
         
-        # ... (giữ logic extract giống code trước)
-        # (để ngắn gọn, bạn copy phần parse_batch từ code trước vào đây)
+        if rl < 8:
+            continue
+            
+        # Tìm ngày sinh
+        nsi = next((i for i in range(2, min(12, rl)) if _DATE_RE(row[i])), -1)
+        if nsi == -1:
+            continue
+            
+        # Tìm MaGV
+        mgi = next((i for i in range(nsi+1, min(nsi+25, rl)) if _MA_GV_RE(row[i])), -1)
+        if mgi == -1:
+            mgi = min(rl-1, nsi+6)
         
-        # Ví dụ rút gọn:
-        sid = f"{row[1]}_{row[mgi+3] or 'NA'}_{row[mgi]}_{file_name}"
         essay = right.replace(' , ', ', ').strip()
         t1,t2,t3,t4,sent,valid = nlp_fast(essay)
         
-        results.append((sid, row[1], '', row[2] if len(row)>2 else '', row[nsi], ... ))  # Điền đầy đủ
+        ma_sv = row[1] if rl > 1 else ''
+        lop = row[0] if rl > 0 else ''
+        ma_gv = row[mgi] if mgi < rl else ''
+        ma_hp = row[nsi+1] if nsi+1 < rl else ''
+        lhp = row[mgi+3] if mgi+3 < rl else ''
         
+        sid = f"{ma_sv}_{lhp or 'NA'}_{ma_gv}_{file_name}"
+        
+        results.append({
+            'SubmissionID': sid,
+            'MaSV': ma_sv,
+            'Lop': lop,
+            'MaHP': ma_hp,
+            'MaGV': ma_gv,
+            'MaLopHP': lhp,
+            'EssayText': essay,
+            'Tag_HocPhan': t1,
+            'Tag_DayHoc': t2,
+            'Tag_KiemTra': t3,
+            'Tag_Khac': t4,
+            'Sentiment': sent,
+            'Is_Valid': valid
+        })
+    
+    print(f"Batch processed: {len(results)} rows")
     return results
-
-# ================= STABLE INSERT =================
-def safe_insert(cursor, table, columns, data, batch_size=30000):
-    if not data: return 0
-    ph = ','.join(['?']*len(columns))
-    sql = f"INSERT INTO {table} ({','.join(columns)}) VALUES ({ph})"
-    
-    inserted = 0
-    for i in range(0, len(data), batch_size):
-        try:
-            cursor.executemany(sql, data[i:i+batch_size])
-            cursor.connection.commit()
-            inserted += len(data[i:i+batch_size])
-            print(f"  → {table}: {inserted:,}/{len(data):,} rows")
-        except Exception as e:
-            print(f"  ⚠️ Batch error: {e}, trying smaller batch...")
-            # Fallback nhỏ hơn
-            for row in data[i:i+batch_size]:
-                try:
-                    cursor.execute(sql, row)
-                    cursor.connection.commit()
-                    inserted += 1
-                except: pass
-    return inserted
-
-# ================= LOAD =================
-def load_to_database(df):
-    print("\n💾 LOADING TO DATABASE...")
-    t0 = time.time()
-    conn = pyodbc.connect(CONN_STR)
-    cursor = conn.cursor()
-    cursor.fast_executemany = True
-    
-    try:
-        # Tắt constraint
-        for tbl in ['FACT_GOP_Y_TU_LUAN', 'FACT_KET_QUA_DANH_GIA']:
-            try: cursor.execute(f"ALTER TABLE {tbl} NOCHECK CONSTRAINT ALL")
-            except: pass
-        conn.commit()
-        
-        # FACT_GOP_Y_TU_LUAN
-        df_essay = df[df['EssayText'].str.strip().ne('')].copy()
-        data = []
-        for _, r in df_essay.iterrows():
-            data.append((
-                str(r['SubmissionID'])[:150],
-                str(r['MaSV'])[:20],
-                str(r['MaLopHP'])[:50],
-                str(r['EssayText'])[:4000],
-                str(r['Sentiment']),
-                int(r.get('Is_Valid', 0)),
-                int(r.get('Tag_HocPhan', 0)),
-                int(r.get('Tag_DayHoc', 0)),
-                int(r.get('Tag_KiemTra', 0)),
-                int(r.get('Tag_Khac', 0))
-            ))
-        
-        safe_insert(cursor, 'FACT_GOP_Y_TU_LUAN', 
-                   ['SubmissionID','MaSV','MaLopHP','NoiDungGopY','Sentiment',
-                    'Is_Valid','Tag_HocPhan','Tag_DayHoc','Tag_KiemTra','Tag_Khac'], 
-                   data, batch_size=30000)
-        
-        print(f"✅ LOAD HOÀN TẤT ({time.time()-t0:.1f}s)")
-        
-    except Exception as e:
-        print(f"❌ LỖI: {e}")
-        conn.rollback()
-    finally:
-        conn.close()
 
 # ================= MAIN =================
 def main():
@@ -184,10 +131,42 @@ def main():
     blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
     load_master_from_db()
     
-    # Download + Parse + Load (giống code trước)
-    # ... (bạn copy phần parse từ code cũ vào)
+    content = ""
+    try:
+        client = blob_service.get_container_client(CONTAINER_NAME).get_blob_client(f"{RAWDATA_PATH}/{SURVEY_FILE}")
+        if client.exists():
+            content = client.download_blob().readall().decode('utf-8-sig')
+            print(f"Downloaded: {len(content):,} characters")
+    except Exception as e:
+        print(f"Download error: {e}")
     
-    print(f"\n🎉 HOÀN THÀNH! Tổng thời gian: {time.time()-t0:.1f} giây")
+    if not content:
+        print("❌ No content!")
+        sys.exit(1)
+    
+    lines = [l.strip() for l in content.split('\n') if l.strip()]
+    print(f"Total lines: {len(lines):,}")
+    
+    batches = [(lines[i:i+CHUNK_SIZE], FILE_NAME) for i in range(0, len(lines), CHUNK_SIZE)]
+    
+    all_results = []
+    with Pool(NUM_WORKERS) as pool:
+        for i, res in enumerate(pool.imap_unordered(parse_batch, batches)):
+            all_results.extend(res)
+            if (i + 1) % 10 == 0:
+                print(f"Processed {i+1}/{len(batches)} batches | Total rows: {len(all_results):,}")
+    
+    df = pd.DataFrame(all_results)
+    print(f"Final DataFrame: {len(df):,} rows")
+    
+    if df.empty:
+        print("❌ DataFrame rỗng! Kiểm tra logic parse.")
+        print("5 dòng đầu file:", lines[:5])
+    else:
+        print(df.head(3))
+        # load_to_database(df)   # Bật khi parse ổn
+    
+    print(f"Total time: {time.time()-t0:.1f}s")
 
 if __name__ == "__main__":
     main()

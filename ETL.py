@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PIPELINE 2: SIÊU TỐC - 1 LẦN INSERT
-- Chuẩn bị tất cả data trong Python (list comprehension)
-- 1 executemany cho mỗi bảng
-- 1 transaction, 1 commit
+PIPELINE 2: SIÊU TỐC FIXED
+- Prepare nhanh (dùng set lookup)
+- Insert FACT_KQ theo batch 100K
 """
 import os, sys, re, time, pandas as pd, pyodbc
 from multiprocessing import Pool, cpu_count
@@ -22,7 +21,7 @@ CONN_STR = (
     f"Encrypt=yes;TrustServerCertificate=no;Connection Timeout=600;Command Timeout=1800;"
 )
 CONTAINER_NAME, RAWDATA_PATH = SEMESTER, "rawdata"
-NUM_WORKERS, CHUNK = cpu_count(), 100000
+NUM_WORKERS, CHUNK, BATCH = cpu_count(), 100000, 100000
 
 _D = re.compile(r'^\d{2}/\d{2}/\d{4}$').match
 _G = re.compile(r'^(\d{7}|TG\d{5}|gvDacThu_TKTH)$').match
@@ -97,7 +96,7 @@ def main():
         for res in pool.imap_unordered(parse_batch, batches): all_res.extend(res)
     print(f"  Parse: {len(all_res):,} rows ({time.time()-t1:.1f}s)")
     
-    # Tạo dicts để lookup nhanh
+    # Prepare data - 1 vòng lặp
     t1 = time.time()
     seen_lop, seen_sv, seen_gv, seen_lhp, seen_gy = set(), set(), set(), set(), set()
     data_lop, data_sv, data_gv, data_lhp, data_gy, data_kq = [], [], [], [], [], []
@@ -105,37 +104,32 @@ def main():
     fn = SURVEY_FILE.replace('.csv','').split('_')[-1]
     yc, hk = int(fn[:-1]), int(fn[-1])
     nbd = 2000 + yc - 1
-    mhk = f"HK{hk}_{nbd%100}{nbd%100+1}"
+    mhk = f"HK{hk}_{nbd%100}{(nbd+1)%100}"
     
     for r in all_res:
         sid, sv, ml, hp, gv, lhp, ch, gt, essay, t1, t2, t3, t4, sent, valid = r
         
-        # DIM_LOP
         if ml and ml not in seen_lop:
             seen_lop.add(ml)
             data_lop.append((ml[:50], ml[:50], ml[:50]))
-        
-        # DIM_SV
         if sv and sv not in seen_sv:
             seen_sv.add(sv)
             data_sv.append((sv[:50], '', '', None, ml[:50]))
-        
-        # DIM_GV
         if gv and gv not in seen_gv:
             seen_gv.add(gv)
             data_gv.append((gv[:50], '', ''))
-        
-        # DIM_LHP
         if lhp and lhp not in seen_lhp:
             seen_lhp.add(lhp)
             data_lhp.append((lhp[:100], lhp[:100], hp[:50], gv[:50], mhk))
-        
-        # FACT_GY
         if essay and sid not in seen_gy:
             seen_gy.add(sid)
             data_gy.append((sid[:200], sv[:50], lhp[:100], essay[:4000], sent[:20], valid, t1, t2, t3, t4))
+            # Tự luận
+            d = 5 if sent == 'POSITIVE' else (2 if sent == 'NEGATIVE' else 3)
+            for mc in [13,14,15,16]:
+                data_kq.append((sid[:200], mc, d))
         
-        # FACT_KQ - trắc nghiệm
+        # Trắc nghiệm
         if ch and gt:
             try:
                 mc, d = int(float(ch)), int(float(gt))
@@ -143,21 +137,19 @@ def main():
                     data_kq.append((sid[:200], mc, d))
             except: pass
     
-    # FACT_KQ - tự luận
-    for r in all_res:
-        sid, sv, ml, hp, gv, lhp, ch, gt, essay, t1, t2, t3, t4, sent, valid = r
-        if essay:
-            d = 5 if sent == 'POSITIVE' else (2 if sent == 'NEGATIVE' else 3)
-            for mc in [13,14,15,16]:
-                data_kq.append((sid[:200], mc, d))
-    
     print(f"  Prepare: LOP={len(data_lop)} SV={len(data_sv)} GV={len(data_gv)} LHP={len(data_lhp)} GY={len(data_gy)} KQ={len(data_kq)} ({time.time()-t1:.1f}s)")
     
-    # INSERT
+    # INSERT với batch
     t1 = time.time()
     conn = pyodbc.connect(CONN_STR, autocommit=False)
     cur = conn.cursor()
     cur.fast_executemany = True
+    
+    def insert_batch(cur, sql, data, name):
+        if not data: return
+        for i in range(0, len(data), BATCH):
+            cur.executemany(sql, data[i:i+BATCH])
+            print(f"    {name}: {min(i+BATCH, len(data)):,}/{len(data):,}")
     
     try:
         cur.execute("BEGIN TRANSACTION")
@@ -166,12 +158,13 @@ def main():
             except: pass
         
         cur.execute("IF NOT EXISTS(SELECT 1 FROM DIM_HOC_KY WHERE MaHocKy=?) INSERT INTO DIM_HOC_KY VALUES(?,?,?)", (mhk,mhk,f"{nbd}-{nbd+1}",hk))
-        if data_lop: cur.executemany("INSERT INTO DIM_LOP_SINH_VIEN(MaLop,Lop,MaChuyenNganh) VALUES(?,?,?)", data_lop)
-        if data_sv:  cur.executemany("INSERT INTO DIM_SINH_VIEN(MaSV,HoDem,Ten,NgaySinh,MaLop) VALUES(?,?,?,?,?)", data_sv)
-        if data_gv:  cur.executemany("INSERT INTO DIM_GIANG_VIEN(MaGV,HoDemGV,TenGV) VALUES(?,?,?)", data_gv)
-        if data_lhp: cur.executemany("INSERT INTO DIM_LOP_HOC_PHAN(MaLopHP,LopHP,MaHP,MaGV,MaHocKy) VALUES(?,?,?,?,?)", data_lhp)
-        if data_gy:  cur.executemany("INSERT INTO FACT_GOP_Y_TU_LUAN(SubmissionID,MaSV,MaLopHP,NoiDungGopY,Sentiment,Is_Valid,Tag_HocPhan,Tag_DayHoc,Tag_KiemTra,Tag_Khac) VALUES(?,?,?,?,?,?,?,?,?,?)", data_gy)
-        if data_kq:  cur.executemany("INSERT INTO FACT_KET_QUA_DANH_GIA(SubmissionID,MaCauHoi,Diem) VALUES(?,?,?)", data_kq)
+        
+        insert_batch(cur, "INSERT INTO DIM_LOP_SINH_VIEN(MaLop,Lop,MaChuyenNganh) VALUES(?,?,?)", data_lop, "DIM_LOP")
+        insert_batch(cur, "INSERT INTO DIM_SINH_VIEN(MaSV,HoDem,Ten,NgaySinh,MaLop) VALUES(?,?,?,?,?)", data_sv, "DIM_SV")
+        insert_batch(cur, "INSERT INTO DIM_GIANG_VIEN(MaGV,HoDemGV,TenGV) VALUES(?,?,?)", data_gv, "DIM_GV")
+        insert_batch(cur, "INSERT INTO DIM_LOP_HOC_PHAN(MaLopHP,LopHP,MaHP,MaGV,MaHocKy) VALUES(?,?,?,?,?)", data_lhp, "DIM_LHP")
+        insert_batch(cur, "INSERT INTO FACT_GOP_Y_TU_LUAN(SubmissionID,MaSV,MaLopHP,NoiDungGopY,Sentiment,Is_Valid,Tag_HocPhan,Tag_DayHoc,Tag_KiemTra,Tag_Khac) VALUES(?,?,?,?,?,?,?,?,?,?)", data_gy, "FACT_GY")
+        insert_batch(cur, "INSERT INTO FACT_KET_QUA_DANH_GIA(SubmissionID,MaCauHoi,Diem) VALUES(?,?,?)", data_kq, "FACT_KQ")
         
         cur.execute("COMMIT")
         print(f"  ✅ COMMIT ({time.time()-t1:.1f}s)")

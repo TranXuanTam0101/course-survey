@@ -110,21 +110,30 @@ def parse_survey(content):
 # ================= SETUP EXTERNAL DATA SOURCE =================
 def setup_external_data_source(cur):
     """Tạo CREDENTIAL và EXTERNAL DATA SOURCE 1 lần"""
-    cur.execute("""
+    
+    # Escape single quotes trong key
+    safe_key = STORAGE_KEY.replace("'", "''")
+    
+    cur.execute(f"""
         IF NOT EXISTS (SELECT 1 FROM sys.database_scoped_credentials WHERE name = 'AzureBlobCred')
-        CREATE DATABASE SCOPED CREDENTIAL AzureBlobCred
-        WITH IDENTITY = 'SHARED ACCESS SIGNATURE',
-        SECRET = ?
-    """, (STORAGE_KEY,))
+        BEGIN
+            CREATE DATABASE SCOPED CREDENTIAL AzureBlobCred
+            WITH IDENTITY = 'SHARED ACCESS SIGNATURE',
+            SECRET = '{safe_key}'
+        END
+    """)
+    cur.connection.commit()
     
     cur.execute(f"""
         IF NOT EXISTS (SELECT 1 FROM sys.external_data_sources WHERE name = 'MyAzureBlobStorage')
-        CREATE EXTERNAL DATA SOURCE MyAzureBlobStorage
-        WITH (
-            TYPE = BLOB_STORAGE,
-            LOCATION = 'https://{STORAGE_ACCOUNT}.blob.core.windows.net/{CONTAINER_NAME}',
-            CREDENTIAL = AzureBlobCred
-        )
+        BEGIN
+            CREATE EXTERNAL DATA SOURCE MyAzureBlobStorage
+            WITH (
+                TYPE = BLOB_STORAGE,
+                LOCATION = 'https://{STORAGE_ACCOUNT}.blob.core.windows.net/{CONTAINER_NAME}',
+                CREDENTIAL = AzureBlobCred
+            )
+        END
     """)
     cur.connection.commit()
     print("  ✅ External Data Source ready")

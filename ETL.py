@@ -37,15 +37,18 @@ CONN_STR = (
 
 CONTAINER_NAME = SEMESTER
 RAWDATA_PATH = "rawdata"
+TAILIEU_CONTAINER = "tailieu"
 PROCESSED_PATH = "processed-data"
 
 # Số lượng worker
 NUM_WORKERS = max(2, mp.cpu_count())
 CHUNK_SIZE = 50000
+BATCH_SIZE = 100000
 
 # ================= PATTERNS =================
 _date_pattern = re.compile(r'^\d{2}/\d{2}/\d{4}$')
 _ma_gv_pattern = re.compile(r'^(\d{7}|TG\d{5}|gvDacThu_TKTH)$')
+_lop_pattern = re.compile(r'^\d{2}K\d{2}$')
 
 
 # ================= HÀM TIỆN ÍCH =================
@@ -59,6 +62,37 @@ def derive_ma_hoc_ky():
     year_part = f"{nam_bat_dau % 100}{nam_ket_thuc % 100}"
     ma_hoc_ky = f"HK{hoc_ky}_{year_part}"
     return ma_hoc_ky, nam_hoc, hoc_ky
+
+
+def determine_ma_chuyen_nganh(lop: str) -> str:
+    """
+    Xác định MaChuyenNganh từ Lop
+    """
+    if not lop or not isinstance(lop, str):
+        return None
+    
+    lop_upper = lop.upper().strip()
+    
+    # ACCA
+    if 'ACCA' in lop_upper:
+        match = re.search(r'K(\d{2})', lop_upper)
+        if match:
+            return f"K{match.group(1)}-ACCA"
+    
+    # CTS
+    if 'CTS' in lop_upper:
+        return "CTS"
+    
+    # QT
+    if 'QT' in lop_upper:
+        return "QT"
+    
+    # Kxx
+    match = re.search(r'K(\d{2})', lop_upper)
+    if match:
+        return f"K{match.group(1)}"
+    
+    return None
 
 
 # ================= BLOB FUNCTIONS =================
@@ -93,18 +127,22 @@ def load_existing_dim_data(cursor):
     """Load dữ liệu đã có từ các bảng DIM"""
     print("  -> Đọc dữ liệu existing từ DIM tables...")
     
+    # DIM_KHOA
     cursor.execute("SELECT MaKhoa FROM DIM_KHOA")
     existing_khoa = {row[0] for row in cursor.fetchall()}
     print(f"     - DIM_KHOA: {len(existing_khoa)} dòng")
     
+    # DIM_NGANH
     cursor.execute("SELECT MaNganh FROM DIM_NGANH")
     existing_nganh = {row[0] for row in cursor.fetchall()}
     print(f"     - DIM_NGANH: {len(existing_nganh)} dòng")
     
+    # DIM_CHUYEN_NGANH
     cursor.execute("SELECT MaChuyenNganh FROM DIM_CHUYEN_NGANH")
     existing_chuyennganh = {row[0] for row in cursor.fetchall()}
     print(f"     - DIM_CHUYEN_NGANH: {len(existing_chuyennganh)} dòng")
     
+    # DIM_HOC_PHAN
     cursor.execute("SELECT MaHP FROM DIM_HOC_PHAN")
     existing_hocphan = {row[0] for row in cursor.fetchall()}
     print(f"     - DIM_HOC_PHAN: {len(existing_hocphan)} dòng")
@@ -367,14 +405,16 @@ def transform_with_nlp_long_format(df_raw: pd.DataFrame) -> tuple:
     return fact_main, fact_ketqua, df_raw
 
 
-# ================= LOAD REMAINING DIMENSIONS =================
+# ================= LOAD DIMENSIONS (CÁC BẢNG CÒN LẠI) =================
 def load_remaining_dimensions(cursor, df_raw, existing_dim):
-    """Load các bảng DIM còn lại"""
+    """Load các bảng DIM còn lại: DIM_GIANG_VIEN, DIM_LOP_SINH_VIEN, DIM_SINH_VIEN, DIM_LOP_HOC_PHAN, DIM_HOC_KY"""
     
     print("\n📥 Loading các bảng DIM còn lại...")
     ma_hoc_ky, nam_hoc, hoc_ky = derive_ma_hoc_ky()
     
+    # ==========================================
     # 1. DIM_HOC_KY
+    # ==========================================
     print("\n  -> 1. DIM_HOC_KY")
     cursor.execute("SELECT MaHocKy FROM DIM_HOC_KY WHERE MaHocKy = ?", ma_hoc_ky)
     if not cursor.fetchone():
@@ -385,7 +425,9 @@ def load_remaining_dimensions(cursor, df_raw, existing_dim):
     else:
         print(f"     ✅ {ma_hoc_ky} đã tồn tại")
     
+    # ==========================================
     # 2. DIM_GIANG_VIEN
+    # ==========================================
     print("\n  -> 2. DIM_GIANG_VIEN")
     cursor.execute("SELECT MaGV FROM DIM_GIANG_VIEN")
     existing_gv = {row[0] for row in cursor.fetchall()}
@@ -401,34 +443,39 @@ def load_remaining_dimensions(cursor, df_raw, existing_dim):
     else:
         print(f"     ✅ Không có dòng mới")
     
-    # 3. DIM_LOP_SINH_VIEN - CHỈ LẤY LỚP CÓ TRONG DIM_CHUYEN_NGANH
+    # ==========================================
+    # 3. DIM_LOP_SINH_VIEN
+    # ==========================================
     print("\n  -> 3. DIM_LOP_SINH_VIEN")
     cursor.execute("SELECT MaLop FROM DIM_LOP_SINH_VIEN")
     existing_lop = {row[0] for row in cursor.fetchall()}
     
-    # Lấy danh sách MaChuyenNganh hợp lệ từ DIM_CHUYEN_NGANH
-    cursor.execute("SELECT MaChuyenNganh FROM DIM_CHUYEN_NGANH")
-    valid_chuyennganh = {row[0] for row in cursor.fetchall()}
-    print(f"     - Các MaChuyenNganh hợp lệ: {len(valid_chuyennganh)}")
-    
-    # Gom nhóm Lop từ dữ liệu
-    lop_groups = df_raw.groupby('Lop')['MaChuyenNganh'].agg(lambda x: x.mode().iloc[0] if not x.mode().empty else None)
+    df_lop_unique = df_raw[['Lop']].drop_duplicates('Lop').dropna()
     
     data_lop = []
     skipped_lop = []
     
-    for lop, ma_cn in lop_groups.items():
-        if lop and lop not in existing_lop:
-            if not ma_cn or ma_cn not in valid_chuyennganh:
-                skipped_lop.append(f"{lop} (ma_cn={ma_cn})")
+    for _, row in df_lop_unique.iterrows():
+        lop = row['Lop']
+        if lop not in existing_lop:
+            ma_cn = determine_ma_chuyen_nganh(lop)
+            
+            if not ma_cn:
+                skipped_lop.append(lop)
                 continue
+            
+            # Kiểm tra ma_cn có tồn tại trong DIM_CHUYEN_NGANH không
+            if ma_cn not in existing_dim['chuyennganh']:
+                skipped_lop.append(f"{lop} (ma_cn={ma_cn} not in DIM_CHUYEN_NGANH)")
+                continue
+            
             data_lop.append((lop, lop, ma_cn))
             existing_lop.add(lop)
     
     if skipped_lop:
         print(f"     ⚠️ Bỏ qua {len(skipped_lop)} lớp (không có trong DIM_CHUYEN_NGANH)")
-        for item in skipped_lop[:5]:
-            print(f"        - {item}")
+        for lop in skipped_lop[:5]:
+            print(f"        - {lop}")
     
     if data_lop:
         cursor.executemany("INSERT INTO DIM_LOP_SINH_VIEN (MaLop, Lop, MaChuyenNganh) VALUES (?, ?, ?)", data_lop)
@@ -437,7 +484,9 @@ def load_remaining_dimensions(cursor, df_raw, existing_dim):
     else:
         print(f"     ✅ Không có dòng mới")
     
+    # ==========================================
     # 4. DIM_SINH_VIEN
+    # ==========================================
     print("\n  -> 4. DIM_SINH_VIEN")
     cursor.execute("SELECT MaLop FROM DIM_LOP_SINH_VIEN")
     valid_lop = {row[0] for row in cursor.fetchall()}
@@ -479,12 +528,16 @@ def load_remaining_dimensions(cursor, df_raw, existing_dim):
     else:
         print(f"     ✅ Không có dòng mới")
     
+    # ==========================================
     # 5. DIM_LOP_HOC_PHAN
+    # ==========================================
     print("\n  -> 5. DIM_LOP_HOC_PHAN")
     cursor.execute("SELECT MaHP FROM DIM_HOC_PHAN")
     valid_hp = {row[0] for row in cursor.fetchall()}
     cursor.execute("SELECT MaGV FROM DIM_GIANG_VIEN")
     valid_gv = {row[0] for row in cursor.fetchall()}
+    cursor.execute("SELECT MaHocKy FROM DIM_HOC_KY WHERE MaHocKy = ?", ma_hoc_ky)
+    valid_hocky = cursor.fetchone() is not None
     
     cursor.execute("SELECT MaLopHP FROM DIM_LOP_HOC_PHAN")
     existing_lhp = {row[0] for row in cursor.fetchall()}
@@ -498,10 +551,13 @@ def load_remaining_dimensions(cursor, df_raw, existing_dim):
         lop_hp = row['LopHP']
         if lop_hp not in existing_lhp:
             if row['MaHP'] not in valid_hp:
-                skipped_lhp.append(f"{lop_hp} - MaHP={row['MaHP']}")
+                skipped_lhp.append(f"{lop_hp} - MaHP={row['MaHP']} not exist")
                 continue
             if row['MaGV'] not in valid_gv:
-                skipped_lhp.append(f"{lop_hp} - MaGV={row['MaGV']}")
+                skipped_lhp.append(f"{lop_hp} - MaGV={row['MaGV']} not exist")
+                continue
+            if not valid_hocky:
+                skipped_lhp.append(f"{lop_hp} - HocKy={ma_hoc_ky} not exist")
                 continue
             
             data_lhp.append((lop_hp, lop_hp, row['MaHP'], row['MaGV'], ma_hoc_ky))
@@ -528,29 +584,39 @@ def load_fact_tables_optimized(cursor, fact_main, fact_ketqua, ma_hoc_ky):
     print("\n📥 Loading FACT tables...")
     start_time = time.time()
     
+    # Kiểm tra dữ liệu hợp lệ trước khi insert
     cursor.execute("SELECT MaLopHP FROM DIM_LOP_HOC_PHAN WHERE MaHocKy = ?", ma_hoc_ky)
     valid_lophp = {row[0] for row in cursor.fetchall()}
     
     cursor.execute("SELECT MaSV FROM DIM_SINH_VIEN")
     valid_sv = {row[0] for row in cursor.fetchall()}
     
-    print(f"     - Số LopHP hợp lệ: {len(valid_lophp)}")
+    print(f"     - Số LopHP hợp lệ trong học kỳ {ma_hoc_ky}: {len(valid_lophp)}")
     print(f"     - Số MaSV hợp lệ: {len(valid_sv)}")
     
+    # TẮT CONSTRAINTS
     cursor.execute("ALTER TABLE FACT_GOP_Y_TU_LUAN NOCHECK CONSTRAINT ALL")
     cursor.execute("ALTER TABLE FACT_KET_QUA_DANH_GIA NOCHECK CONSTRAINT ALL")
     cursor.connection.commit()
     
     count_main = 0
     count_kq = 0
+    skipped_main = 0
+    skipped_kq = 0
     
     try:
         cursor.execute("BEGIN TRANSACTION")
         
+        # FACT_GOP_Y_TU_LUAN
         if not fact_main.empty:
             data_main = []
             for _, row in fact_main.iterrows():
-                if row['MaSV'] not in valid_sv or row['LopHP'] not in valid_lophp:
+                # Kiểm tra FK
+                if row['MaSV'] not in valid_sv:
+                    skipped_main += 1
+                    continue
+                if row['LopHP'] not in valid_lophp:
+                    skipped_main += 1
                     continue
                 
                 noi_dung = row['NoiDungGopY']
@@ -568,25 +634,32 @@ def load_fact_tables_optimized(cursor, fact_main, fact_ketqua, ma_hoc_ky):
                           Tag_HocPhan, Tag_DayHoc, Tag_KiemTra, Tag_Khac) 
                          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
                 
-                for i in range(0, len(data_main), 50000):
-                    batch = data_main[i:i+50000]
+                batch_size = 50000
+                for i in range(0, len(data_main), batch_size):
+                    batch = data_main[i:i+batch_size]
                     cursor.executemany(sql, batch)
                     count_main += len(batch)
                     print(f"      -> Đã insert {count_main:,}/{len(data_main):,} dòng vào FACT_GOP_Y_TU_LUAN")
         
+        # FACT_KET_QUA_DANH_GIA
         if not fact_ketqua.empty:
+            # Lấy danh sách SubmissionID hợp lệ từ fact_main đã insert
             cursor.execute("SELECT SubmissionID FROM FACT_GOP_Y_TU_LUAN")
             valid_submissions = {row[0] for row in cursor.fetchall()}
             
-            data_kq = [(row['SubmissionID'], row['MaCauHoi'], row['Diem']) 
-                       for _, row in fact_ketqua.iterrows() 
-                       if row['SubmissionID'] in valid_submissions]
+            data_kq = []
+            for _, row in fact_ketqua.iterrows():
+                if row['SubmissionID'] in valid_submissions:
+                    data_kq.append((row['SubmissionID'], row['MaCauHoi'], row['Diem']))
+                else:
+                    skipped_kq += 1
             
             if data_kq:
                 sql2 = "INSERT INTO FACT_KET_QUA_DANH_GIA (SubmissionID, MaCauHoi, Diem) VALUES (?, ?, ?)"
                 
-                for i in range(0, len(data_kq), 100000):
-                    batch = data_kq[i:i+100000]
+                batch_size = 100000
+                for i in range(0, len(data_kq), batch_size):
+                    batch = data_kq[i:i+batch_size]
                     cursor.executemany(sql2, batch)
                     count_kq += len(batch)
                     print(f"      -> Đã insert {count_kq:,}/{len(data_kq):,} dòng vào FACT_KET_QUA_DANH_GIA")
@@ -598,12 +671,16 @@ def load_fact_tables_optimized(cursor, fact_main, fact_ketqua, ma_hoc_ky):
         print(f"  ❌ Lỗi: {e}")
         raise
     
+    # BẬT LẠI CONSTRAINTS
     cursor.execute("ALTER TABLE FACT_GOP_Y_TU_LUAN CHECK CONSTRAINT ALL")
     cursor.execute("ALTER TABLE FACT_KET_QUA_DANH_GIA CHECK CONSTRAINT ALL")
     cursor.connection.commit()
     
     elapsed = time.time() - start_time
-    print(f"  ✅ FACT tables loaded: {count_main:,} submissions, {count_kq:,} answers in {elapsed:.1f}s")
+    print(f"  ✅ FACT tables loaded: {count_main:,} submissions, {count_kq:,} answers")
+    if skipped_main > 0 or skipped_kq > 0:
+        print(f"     ⚠️ Đã bỏ qua: {skipped_main} submissions (FK lỗi), {skipped_kq} answers")
+    print(f"     Thời gian: {elapsed:.1f}s")
     return count_main, count_kq
 
 
@@ -611,8 +688,9 @@ def load_fact_tables_optimized(cursor, fact_main, fact_ketqua, ma_hoc_ky):
 def main():
     total_start = time.time()
     print("=" * 60)
-    print("🚀 ETL PIPELINE")
+    print("🚀 ETL PIPELINE - LOAD DIM (CÒN LẠI) + FACT")
     print("=" * 60)
+    print("⚠️  Các bảng đã có sẵn: DIM_KHOA, DIM_NGANH, DIM_CHUYEN_NGANH, DIM_HOC_PHAN")
     print(f"SEMESTER: {SEMESTER}")
     print(f"SURVEY_FILE: {SURVEY_FILE}")
     print("=" * 60)
@@ -672,11 +750,19 @@ def main():
         return
     
     db_start = time.time()
+    count_main = 0
+    count_kq = 0
     
     try:
+        # 7. Load dữ liệu existing từ các DIM đã có
         existing_dim = load_existing_dim_data(cursor)
+        
+        # 8. Load các bảng DIM còn lại
         ma_hoc_ky = load_remaining_dimensions(cursor, df_raw, existing_dim)
+        
+        # 9. Load FACT tables
         count_main, count_kq = load_fact_tables_optimized(cursor, fact_main, fact_ketqua, ma_hoc_ky)
+        
     except Exception as e:
         print(f"  ❌ Lỗi: {e}")
         import traceback
@@ -686,9 +772,10 @@ def main():
         conn.close()
     
     db_time = time.time() - db_start
-    total_time = time.time() - total_start
     
-    print("\n📊 7. KẾT QUẢ:")
+    # 10. Thống kê
+    total_time = time.time() - total_start
+    print("\n📊 10. KẾT QUẢ:")
     print(f"   - Dòng dữ liệu thô: {len(df_raw):,}")
     print(f"   - Số phiếu tự luận: {len(fact_main):,}")
     print(f"   - Số câu trắc nghiệm: {count_kq:,}")

@@ -362,7 +362,6 @@ def main():
             default_khoas = [
                 'Trường Đại học Kinh tế',
                 'Trường Đại học Sư phạm',
-                'Trường Đại học Ngoại ngữ',
                 'Phòng Đào tạo'
             ]
             for dk in default_khoas:

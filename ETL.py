@@ -1,27 +1,24 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PIPELINE 2: FAST EXECUTEMANY
-- Parse → ghi CSV → BULK INSERT qua Azure Blob
-- Nếu không có BULK INSERT → executemany batch
+BƯỚC 1: PARSE & LƯU CSV
+- Parse survey → NLP → lưu CSV lên Azure Blob
+- Chạy 1 lần, lưu kết quả
 """
-import os, sys, re, time, pandas as pd, pyodbc, io
+import os, sys, re, time, io
 from multiprocessing import Pool, cpu_count
 from azure.storage.blob import BlobServiceClient
 
 CONNECTION_STRING = os.environ.get("CONNECTION_STRING")
 SEMESTER = os.environ.get("SEMESTER")
 SURVEY_FILE = os.environ.get("SURVEY_FILE")
-DB_PASSWORD = os.environ.get("DB_PASSWORD", "Due@2026")
 FILE_NAME = os.path.splitext(os.path.basename(SURVEY_FILE))[0]
 
-CONN_STR = (
-    f"DRIVER={{ODBC Driver 18 for SQL Server}};SERVER=course-survey.database.windows.net;"
-    f"DATABASE=course-survey-db;UID=sqladmin;PWD={DB_PASSWORD};"
-    f"Encrypt=yes;TrustServerCertificate=no;Connection Timeout=600;Command Timeout=1800;"
-)
-CONTAINER_NAME, RAWDATA_PATH = SEMESTER, "rawdata"
-NUM_WORKERS, CHUNK, BATCH = cpu_count(), 100000, 50000
+CONTAINER_NAME = SEMESTER
+RAWDATA_PATH = "rawdata"
+PROCESSED_PATH = "processed-data"
+NUM_WORKERS = cpu_count()
+CHUNK = 100000
 
 _D = re.compile(r'^\d{2}/\d{2}/\d{4}$').match
 _G = re.compile(r'^(\d{7}|TG\d{5}|gvDacThu_TKTH)$').match
@@ -75,128 +72,42 @@ def parse_batch(args):
         essay = right.replace(' , ', ', ').strip()
         t1,t2,t3,t4,sent,valid = nlp(essay) if essay else (0,0,0,0,'NEUTRAL',0)
         sid = f"{sv}_{lhp}_{gv}_{fn}"
-        res.append((sid, sv, ml, hp, gv, lhp, ch, gt, essay, t1, t2, t3, t4, sent, valid))
+        # Format CSV: sid|sv|ml|hp|gv|lhp|ch|gt|essay|t1|t2|t3|t4|sent|valid
+        res.append(f"{sid}|{sv}|{ml}|{hp}|{gv}|{lhp}|{ch}|{gt}|{essay}|{t1}|{t2}|{t3}|{t4}|{sent}|{valid}")
     return res
-
-def insert_chunk(cur, sql, data, desc):
-    """Insert từng chunk với retry"""
-    total = len(data)
-    done = 0
-    for i in range(0, total, BATCH):
-        chunk = data[i:i+BATCH]
-        try:
-            cur.executemany(sql, chunk)
-            cur.connection.commit()
-            done += len(chunk)
-        except Exception as e:
-            # Thử từng dòng
-            for row in chunk:
-                try:
-                    cur.execute(sql, row)
-                    cur.connection.commit()
-                    done += 1
-                except:
-                    pass
-        if total > 100000:
-            print(f"    {desc}: {done:,}/{total:,}")
-    return done
 
 def main():
     t0 = time.time()
-    print("="*50, "\n📊 PIPELINE 2: FAST EXECUTEMANY\n", "="*50)
+    print("="*50, "\n📊 BƯỚC 1: PARSE & LƯU CSV\n", "="*50)
     
-    # Download & Parse
     blob = BlobServiceClient.from_connection_string(CONNECTION_STRING)
-    client = blob.get_container_client(CONTAINER_NAME).get_blob_client(f"{RAWDATA_PATH}/{SURVEY_FILE}")
+    container = blob.get_container_client(CONTAINER_NAME)
+    
+    # Download
+    client = container.get_blob_client(f"{RAWDATA_PATH}/{SURVEY_FILE}")
     content = client.download_blob().readall().decode('utf-8-sig')
     
+    # Parse (trả về list of string CSV)
     t1 = time.time()
     lines = [l.strip() for l in content.split('\n') if l.strip()]
     batches = [(lines[i:i+CHUNK], FILE_NAME) for i in range(0, len(lines), CHUNK)]
-    all_res = []
+    all_csv = []
     with Pool(NUM_WORKERS) as pool:
-        for res in pool.imap_unordered(parse_batch, batches): all_res.extend(res)
-    print(f"  Parse: {len(all_res):,} ({time.time()-t1:.1f}s)")
+        for res in pool.imap_unordered(parse_batch, batches): all_csv.extend(res)
+    print(f"  Parse: {len(all_csv):,} rows ({time.time()-t1:.1f}s)")
     
-    # Chuẩn bị data (dùng set cho O(1) lookup)
+    # Lưu CSV lên Azure Blob
     t1 = time.time()
-    fn = SURVEY_FILE.replace('.csv','').split('_')[-1]
-    yc, hk = int(fn[:-1]), int(fn[-1])
-    nbd = 2000 + yc - 1
-    mhk = f"HK{hk}_{nbd%100}{(nbd+1)%100}"
+    csv_content = "SubmissionID|MaSV|MaLop|MaHP|MaGV|MaLopHP|CauHoi|GiaTri|EssayText|Tag_HocPhan|Tag_DayHoc|Tag_KiemTra|Tag_Khac|Sentiment|Is_Valid\n"
+    csv_content += "\n".join(all_csv)
     
-    seen_lop, seen_sv, seen_gv, seen_lhp, seen_gy = set(), set(), set(), set(), set()
-    data_lop, data_sv, data_gv, data_lhp, data_gy, data_kq = [], [], [], [], [], []
+    blob_path = f"{PROCESSED_PATH}/{FILE_NAME}_parsed.csv"
+    container.get_blob_client(blob_path).upload_blob(csv_content, overwrite=True)
     
-    for r in all_res:
-        sid, sv, ml, hp, gv, lhp, ch, gt, essay, t1v, t2v, t3v, t4v, sent, valid = r
-        
-        if ml and ml not in seen_lop:
-            seen_lop.add(ml)
-            data_lop.append((ml, ml, ml))
-        if sv and sv not in seen_sv:
-            seen_sv.add(sv)
-            data_sv.append((sv, '', '', None, ml))
-        if gv and gv not in seen_gv:
-            seen_gv.add(gv)
-            data_gv.append((gv, '', ''))
-        if lhp and lhp not in seen_lhp:
-            seen_lhp.add(lhp)
-            data_lhp.append((lhp, lhp, hp, gv, mhk))
-        if essay and sid not in seen_gy:
-            seen_gy.add(sid)
-            data_gy.append((sid, sv, lhp, essay[:4000], sent, valid, t1v, t2v, t3v, t4v))
-            d = 5 if sent == 'POSITIVE' else (2 if sent == 'NEGATIVE' else 3)
-            for mc in [13,14,15,16]:
-                data_kq.append((sid, mc, d))
-        if ch and gt:
-            try:
-                mc, d = int(float(ch)), int(float(gt))
-                if 1 <= mc <= 12 and 1 <= d <= 5:
-                    data_kq.append((sid, mc, d))
-            except: pass
-    
-    print(f"  Prepare: LOP={len(data_lop)} SV={len(data_sv)} GV={len(data_gv)} LHP={len(data_lhp)} GY={len(data_gy)} KQ={len(data_kq)} ({time.time()-t1:.2f}s)")
-    
-    # INSERT
-    t1 = time.time()
-    conn = pyodbc.connect(CONN_STR, autocommit=False)
-    cur = conn.cursor()
-    cur.fast_executemany = True
-    
-    try:
-        cur.execute("BEGIN TRANSACTION")
-        
-        # Tắt constraint
-        for t in ['DIM_LOP_SINH_VIEN','DIM_SINH_VIEN','DIM_GIANG_VIEN','DIM_LOP_HOC_PHAN','FACT_GOP_Y_TU_LUAN','FACT_KET_QUA_DANH_GIA']:
-            try: cur.execute(f"ALTER TABLE {t} NOCHECK CONSTRAINT ALL")
-            except: pass
-        
-        cur.execute("IF NOT EXISTS(SELECT 1 FROM DIM_HOC_KY WHERE MaHocKy=?) INSERT INTO DIM_HOC_KY VALUES(?,?,?)", (mhk,mhk,f"{nbd}-{nbd+1}",hk))
-        
-        # Insert từng bảng
-        for sql, data, desc in [
-            ("INSERT INTO DIM_LOP_SINH_VIEN(MaLop,Lop,MaChuyenNganh) VALUES(?,?,?)", data_lop, "DIM_LOP"),
-            ("INSERT INTO DIM_SINH_VIEN(MaSV,HoDem,Ten,NgaySinh,MaLop) VALUES(?,?,?,?,?)", data_sv, "DIM_SV"),
-            ("INSERT INTO DIM_GIANG_VIEN(MaGV,HoDemGV,TenGV) VALUES(?,?,?)", data_gv, "DIM_GV"),
-            ("INSERT INTO DIM_LOP_HOC_PHAN(MaLopHP,LopHP,MaHP,MaGV,MaHocKy) VALUES(?,?,?,?,?)", data_lhp, "DIM_LHP"),
-            ("INSERT INTO FACT_GOP_Y_TU_LUAN(SubmissionID,MaSV,MaLopHP,NoiDungGopY,Sentiment,Is_Valid,Tag_HocPhan,Tag_DayHoc,Tag_KiemTra,Tag_Khac) VALUES(?,?,?,?,?,?,?,?,?,?)", data_gy, "FACT_GY"),
-            ("INSERT INTO FACT_KET_QUA_DANH_GIA(SubmissionID,MaCauHoi,Diem) VALUES(?,?,?)", data_kq, "FACT_KQ"),
-        ]:
-            insert_chunk(cur, sql, data, desc)
-        
-        cur.execute("COMMIT")
-        print(f"  ✅ COMMIT ({time.time()-t1:.1f}s)")
-    except Exception as e:
-        cur.execute("ROLLBACK")
-        print(f"  ❌ {e}")
-    finally:
-        for t in ['DIM_LOP_SINH_VIEN','DIM_SINH_VIEN','DIM_GIANG_VIEN','DIM_LOP_HOC_PHAN','FACT_GOP_Y_TU_LUAN','FACT_KET_QUA_DANH_GIA']:
-            try: cur.execute(f"ALTER TABLE {t} CHECK CONSTRAINT ALL"); conn.commit()
-            except: pass
-        conn.close()
-    
-    print(f"\n🎉 Total: {time.time()-t0:.1f}s | {len(all_res):,} rows")
+    size_mb = len(csv_content) / 1024 / 1024
+    print(f"  Upload: {blob_path} ({size_mb:.0f}MB) ({time.time()-t1:.1f}s)")
+    print(f"\n🎉 Done: {time.time()-t0:.1f}s")
+    print(f"\n👉 Chạy bước 2: python load_to_db.py")
 
 if __name__ == "__main__":
     main()

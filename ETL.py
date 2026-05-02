@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SURVEY ETL - FINAL STABLE VERSION
+SURVEY ETL - FINAL VERSION WITH DATABASE LOAD
 """
 
 import os
@@ -36,13 +36,13 @@ RAWDATA_PATH = "rawdata"
 
 NUM_WORKERS = 4
 CHUNK_SIZE = 20000
+BATCH_SIZE = 40000
 
 # ================= PATTERNS =================
 _DATE_RE = re.compile(r'^\d{2}/\d{2}/\d{4}$').match
 _MA_GV_RE = re.compile(r'^(\d{7}|TG\d{5}|gvDacThu_TKTH)$').match
 _LOP_RE = re.compile(r'^\d{2}K\d{2}$').match
 
-# Master cache
 _g_cn = {}
 _g_hp = {}
 _g_khoa_hp = {}
@@ -52,17 +52,11 @@ def load_master_from_db():
     try:
         conn = pyodbc.connect(CONN_STR)
         cursor = conn.cursor()
-        
-        # Load Chuyên ngành (theo schema bạn cung cấp)
-        cursor.execute("""
-            SELECT MaChuyenNganh, TenChuyenNganh, MaNganh 
-            FROM DIM_CHUYEN_NGANH
-        """)
+        cursor.execute("SELECT MaChuyenNganh, TenChuyenNganh, MaNganh FROM DIM_CHUYEN_NGANH")
         for r in cursor.fetchall():
             key = str(r[0]).strip()
             _g_cn[key] = (key, str(r[1]).strip(), str(r[2]).strip())
         
-        # Load Học phần
         cursor.execute("SELECT MaHP, TenHP, MaKhoa FROM DIM_HOC_PHAN")
         for r in cursor.fetchall():
             hp = str(r[0]).strip()
@@ -70,26 +64,24 @@ def load_master_from_db():
             _g_khoa_hp[hp] = str(r[2]).strip()
         
         conn.close()
-        print(f"✅ Master loaded: {len(_g_cn)} Chuyên ngành, {len(_g_hp)} Học phần")
+        print(f"✅ Master: {len(_g_cn)} CN | {len(_g_hp)} HP")
     except Exception as e:
-        print(f"⚠️ Load master error: {e}")
-        print("→ Sẽ dùng giá trị mặc định")
+        print(f"⚠️ Master load error: {e}")
 
 def nlp_fast(text):
     if not text or len(text) < 5:
         return 0,0,0,0,'NEUTRAL',0
     t = text.lower()
-    t1 = 1 if any(k in t for k in ('nội dung','chương trình','học phần','chuẩn')) else 0
-    t2 = 1 if any(k in t for k in ('giảng viên','thầy','cô','nhiệt tình','tận tâm')) else 0
-    t3 = 1 if any(k in t for k in ('kiểm tra','thi','đánh giá','chấm')) else 0
-    t4 = 1 if any(k in t for k in ('cơ sở','phòng','cải thiện','góp ý')) else 0
-    sent = 'POSITIVE' if t.count('tốt') + t.count('hay') > 1 else 'NEGATIVE' if any(x in t for x in ('kém','tệ','khó')) else 'NEUTRAL'
-    return t1, t2, t3, t4, sent, 1
+    t1 = 1 if any(k in t for k in ('nội dung','chương trình','học phần')) else 0
+    t2 = 1 if any(k in t for k in ('giảng viên','thầy','cô','nhiệt tình')) else 0
+    t3 = 1 if any(k in t for k in ('kiểm tra','thi','đánh giá')) else 0
+    t4 = 1 if any(k in t for k in ('cơ sở','cải thiện')) else 0
+    sent = 'POSITIVE' if 'tốt' in t or 'hay' in t else 'NEGATIVE' if 'kém' in t or 'không' in t else 'NEUTRAL'
+    return t1,t2,t3,t4,sent,1
 
 def parse_batch(args):
     lines, file_name = args
     results = []
-    
     for line in lines:
         if not line: continue
         line = line.strip()
@@ -132,23 +124,84 @@ def parse_batch(args):
             'Sentiment': sent,
             'Is_Valid': valid
         })
-    
     return results
+
+def safe_insert(cursor, table, columns, data, batch_size=BATCH_SIZE):
+    if not data: return 0
+    ph = ','.join(['?'] * len(columns))
+    sql = f"INSERT INTO {table} ({','.join(columns)}) VALUES ({ph})"
+    
+    inserted = 0
+    for i in range(0, len(data), batch_size):
+        try:
+            cursor.executemany(sql, data[i:i+batch_size])
+            cursor.connection.commit()
+            inserted += len(data[i:i+batch_size])
+        except Exception as e:
+            print(f"Batch error {i//batch_size}: {e}")
+            # Fallback
+            for row in data[i:i+batch_size]:
+                try:
+                    cursor.execute(sql, row)
+                    cursor.connection.commit()
+                    inserted += 1
+                except: pass
+    return inserted
+
+def load_to_database(df):
+    print("\n💾 LOADING TO DATABASE...")
+    t0 = time.time()
+    conn = pyodbc.connect(CONN_STR)
+    cursor = conn.cursor()
+    cursor.fast_executemany = True
+    
+    try:
+        # Tắt constraint
+        for tbl in ['FACT_GOP_Y_TU_LUAN']:
+            try: cursor.execute(f"ALTER TABLE {tbl} NOCHECK CONSTRAINT ALL")
+            except: pass
+        conn.commit()
+        
+        # Load FACT_GOP_Y_TU_LUAN
+        data = []
+        for _, r in df.iterrows():
+            data.append((
+                str(r['SubmissionID'])[:150],
+                str(r['MaSV'])[:20],
+                str(r['MaLopHP'])[:50],
+                str(r['EssayText'])[:4000],
+                str(r['Sentiment']),
+                int(r['Is_Valid']),
+                int(r['Tag_HocPhan']),
+                int(r['Tag_DayHoc']),
+                int(r['Tag_KiemTra']),
+                int(r['Tag_Khac'])
+            ))
+        
+        count = safe_insert(cursor, 'FACT_GOP_Y_TU_LUAN',
+                           ['SubmissionID','MaSV','MaLopHP','NoiDungGopY','Sentiment',
+                            'Is_Valid','Tag_HocPhan','Tag_DayHoc','Tag_KiemTra','Tag_Khac'],
+                           data)
+        
+        print(f"✅ Inserted {count:,} rows into FACT_GOP_Y_TU_LUAN")
+        
+    except Exception as e:
+        print(f"❌ Load error: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
+    
+    print(f"Load time: {time.time()-t0:.1f}s")
 
 def main():
     t0 = time.time()
     blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
     load_master_from_db()
     
-    # Download file
-    content = ""
-    try:
-        client = blob_service.get_container_client(CONTAINER_NAME).get_blob_client(f"{RAWDATA_PATH}/{SURVEY_FILE}")
-        content = client.download_blob().readall().decode('utf-8-sig')
-        print(f"Downloaded: {len(content):,} characters")
-    except Exception as e:
-        print(f"Download error: {e}")
-        sys.exit(1)
+    # Download
+    client = blob_service.get_container_client(CONTAINER_NAME).get_blob_client(f"{RAWDATA_PATH}/{SURVEY_FILE}")
+    content = client.download_blob().readall().decode('utf-8-sig')
+    print(f"Downloaded: {len(content):,} characters")
     
     lines = [l.strip() for l in content.split('\n') if l.strip()]
     print(f"Total lines: {len(lines):,}")
@@ -161,14 +214,12 @@ def main():
             all_results.extend(res)
     
     df = pd.DataFrame(all_results)
-    print(f"✅ Final DataFrame: {len(df):,} rows")
+    print(f"✅ Parsed: {len(df):,} rows")
     
     if not df.empty:
-        print("\nSample data:")
-        print(df.head(3))
+        load_to_database(df)
     
-    print(f"\nTotal time: {time.time()-t0:.1f}s")
-    # TODO: Gọi load_to_database(df) khi bạn muốn load
+    print(f"\n🎉 HOÀN THÀNH! Total time: {time.time()-t0:.1f}s")
 
 if __name__ == "__main__":
     main()

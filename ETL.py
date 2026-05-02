@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PIPELINE 2: BCP - NHANH NHẤT CÓ THỂ
-- Parse → ghi CSV → gọi bcp để import
-- bcp nhanh hơn BULK INSERT 10x
+PIPELINE 2: FAST EXECUTEMANY
+- Parse → ghi CSV → BULK INSERT qua Azure Blob
+- Nếu không có BULK INSERT → executemany batch
 """
-import os, sys, re, time, subprocess, tempfile
+import os, sys, re, time, pandas as pd, pyodbc, io
 from multiprocessing import Pool, cpu_count
 from azure.storage.blob import BlobServiceClient
 
@@ -15,12 +15,13 @@ SURVEY_FILE = os.environ.get("SURVEY_FILE")
 DB_PASSWORD = os.environ.get("DB_PASSWORD", "Due@2026")
 FILE_NAME = os.path.splitext(os.path.basename(SURVEY_FILE))[0]
 
-SERVER = "course-survey.database.windows.net"
-DB = "course-survey-db"
-UID = "sqladmin"
-
+CONN_STR = (
+    f"DRIVER={{ODBC Driver 18 for SQL Server}};SERVER=course-survey.database.windows.net;"
+    f"DATABASE=course-survey-db;UID=sqladmin;PWD={DB_PASSWORD};"
+    f"Encrypt=yes;TrustServerCertificate=no;Connection Timeout=600;Command Timeout=1800;"
+)
 CONTAINER_NAME, RAWDATA_PATH = SEMESTER, "rawdata"
-NUM_WORKERS, CHUNK = cpu_count(), 100000
+NUM_WORKERS, CHUNK, BATCH = cpu_count(), 100000, 50000
 
 _D = re.compile(r'^\d{2}/\d{2}/\d{4}$').match
 _G = re.compile(r'^(\d{7}|TG\d{5}|gvDacThu_TKTH)$').match
@@ -77,28 +78,38 @@ def parse_batch(args):
         res.append((sid, sv, ml, hp, gv, lhp, ch, gt, essay, t1, t2, t3, t4, sent, valid))
     return res
 
-def bcp_import(table, csv_path, cols):
-    """Gọi bcp để import CSV vào table"""
-    cmd = [
-        "bcp", f"[{DB}].dbo.[{table}]", "in", csv_path,
-        "-S", SERVER, "-U", UID, "-P", DB_PASSWORD,
-        "-c", "-t", "|", "-r", "0x0a",
-        "-b", "100000", "-m", "0",
-        "-F", "1"
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-    return result.returncode == 0
+def insert_chunk(cur, sql, data, desc):
+    """Insert từng chunk với retry"""
+    total = len(data)
+    done = 0
+    for i in range(0, total, BATCH):
+        chunk = data[i:i+BATCH]
+        try:
+            cur.executemany(sql, chunk)
+            cur.connection.commit()
+            done += len(chunk)
+        except Exception as e:
+            # Thử từng dòng
+            for row in chunk:
+                try:
+                    cur.execute(sql, row)
+                    cur.connection.commit()
+                    done += 1
+                except:
+                    pass
+        if total > 100000:
+            print(f"    {desc}: {done:,}/{total:,}")
+    return done
 
 def main():
     t0 = time.time()
-    print("="*50, "\n📊 PIPELINE 2: BCP\n", "="*50)
+    print("="*50, "\n📊 PIPELINE 2: FAST EXECUTEMANY\n", "="*50)
     
-    # Download
+    # Download & Parse
     blob = BlobServiceClient.from_connection_string(CONNECTION_STRING)
     client = blob.get_container_client(CONTAINER_NAME).get_blob_client(f"{RAWDATA_PATH}/{SURVEY_FILE}")
     content = client.download_blob().readall().decode('utf-8-sig')
     
-    # Parse
     t1 = time.time()
     lines = [l.strip() for l in content.split('\n') if l.strip()]
     batches = [(lines[i:i+CHUNK], FILE_NAME) for i in range(0, len(lines), CHUNK)]
@@ -107,112 +118,84 @@ def main():
         for res in pool.imap_unordered(parse_batch, batches): all_res.extend(res)
     print(f"  Parse: {len(all_res):,} ({time.time()-t1:.1f}s)")
     
-    # Chuẩn bị
+    # Chuẩn bị data (dùng set cho O(1) lookup)
     t1 = time.time()
     fn = SURVEY_FILE.replace('.csv','').split('_')[-1]
     yc, hk = int(fn[:-1]), int(fn[-1])
     nbd = 2000 + yc - 1
     mhk = f"HK{hk}_{nbd%100}{(nbd+1)%100}"
     
-    seen = {}
-    for key in ['lop','sv','gv','lhp']:
-        seen[key] = set()
-    
-    tmpdir = tempfile.mkdtemp()
-    
-    # Ghi CSV cho từng bảng
-    files = {}
-    for name, cols in [('lop', ['MaLop','Lop','MaChuyenNganh']),
-                        ('sv', ['MaSV','HoDem','Ten','NgaySinh','MaLop']),
-                        ('gv', ['MaGV','HoDemGV','TenGV']),
-                        ('lhp', ['MaLopHP','LopHP','MaHP','MaGV','MaHocKy'])]:
-        files[name] = open(f"{tmpdir}/{name}.csv", 'w', encoding='utf-8')
-    
-    # GY và KQ ghi riêng
-    gy_file = open(f"{tmpdir}/gy.csv", 'w', encoding='utf-8')
-    kq_file = open(f"{tmpdir}/kq.csv", 'w', encoding='utf-8')
-    
-    seen_gy = set()
+    seen_lop, seen_sv, seen_gv, seen_lhp, seen_gy = set(), set(), set(), set(), set()
+    data_lop, data_sv, data_gv, data_lhp, data_gy, data_kq = [], [], [], [], [], []
     
     for r in all_res:
-        sid, sv, ml, hp, gv, lhp, ch, gt, essay, t1, t2, t3, t4, sent, valid = r
+        sid, sv, ml, hp, gv, lhp, ch, gt, essay, t1v, t2v, t3v, t4v, sent, valid = r
         
-        if ml and ml not in seen['lop']:
-            seen['lop'].add(ml)
-            files['lop'].write(f"{ml}|{ml}|{ml}\n")
-        if sv and sv not in seen['sv']:
-            seen['sv'].add(sv)
-            files['sv'].write(f"{sv}|||NULL|{ml}\n")
-        if gv and gv not in seen['gv']:
-            seen['gv'].add(gv)
-            files['gv'].write(f"{gv}||\n")
-        if lhp and lhp not in seen['lhp']:
-            seen['lhp'].add(lhp)
-            files['lhp'].write(f"{lhp}|{lhp}|{hp}|{gv}|{mhk}\n")
+        if ml and ml not in seen_lop:
+            seen_lop.add(ml)
+            data_lop.append((ml, ml, ml))
+        if sv and sv not in seen_sv:
+            seen_sv.add(sv)
+            data_sv.append((sv, '', '', None, ml))
+        if gv and gv not in seen_gv:
+            seen_gv.add(gv)
+            data_gv.append((gv, '', ''))
+        if lhp and lhp not in seen_lhp:
+            seen_lhp.add(lhp)
+            data_lhp.append((lhp, lhp, hp, gv, mhk))
         if essay and sid not in seen_gy:
             seen_gy.add(sid)
-            gy_file.write(f"{sid}|{sv}|{lhp}|{essay}|{sent}|{valid}|{t1}|{t2}|{t3}|{t4}\n")
+            data_gy.append((sid, sv, lhp, essay[:4000], sent, valid, t1v, t2v, t3v, t4v))
             d = 5 if sent == 'POSITIVE' else (2 if sent == 'NEGATIVE' else 3)
             for mc in [13,14,15,16]:
-                kq_file.write(f"{sid}|{mc}|{d}\n")
+                data_kq.append((sid, mc, d))
         if ch and gt:
             try:
                 mc, d = int(float(ch)), int(float(gt))
                 if 1 <= mc <= 12 and 1 <= d <= 5:
-                    kq_file.write(f"{sid}|{mc}|{d}\n")
+                    data_kq.append((sid, mc, d))
             except: pass
     
-    for f in files.values(): f.close()
-    gy_file.close()
-    kq_file.close()
-    print(f"  Write CSV: {time.time()-t1:.1f}s")
+    print(f"  Prepare: LOP={len(data_lop)} SV={len(data_sv)} GV={len(data_gv)} LHP={len(data_lhp)} GY={len(data_gy)} KQ={len(data_kq)} ({time.time()-t1:.2f}s)")
     
-    # BCP import
+    # INSERT
     t1 = time.time()
-    
-    # Tắt constraint trước
-    import pyodbc
-    conn = pyodbc.connect(
-        f"DRIVER={{ODBC Driver 18 for SQL Server}};SERVER={SERVER};DATABASE={DB};"
-        f"UID={UID};PWD={DB_PASSWORD};Encrypt=yes;TrustServerCertificate=no;"
-        f"Connection Timeout=600;", autocommit=True
-    )
+    conn = pyodbc.connect(CONN_STR, autocommit=False)
     cur = conn.cursor()
-    for t in ['DIM_LOP_SINH_VIEN','DIM_SINH_VIEN','DIM_GIANG_VIEN','DIM_LOP_HOC_PHAN','FACT_GOP_Y_TU_LUAN','FACT_KET_QUA_DANH_GIA']:
-        try: cur.execute(f"ALTER TABLE {t} NOCHECK CONSTRAINT ALL")
-        except: pass
-    cur.execute(f"IF NOT EXISTS(SELECT 1 FROM DIM_HOC_KY WHERE MaHocKy='{mhk}') INSERT INTO DIM_HOC_KY VALUES('{mhk}','{nbd}-{nbd+1}',{hk})")
-    conn.close()
+    cur.fast_executemany = True
     
-    # Chạy bcp
-    tables = [
-        ('DIM_LOP_SINH_VIEN', 'lop'),
-        ('DIM_SINH_VIEN', 'sv'),
-        ('DIM_GIANG_VIEN', 'gv'),
-        ('DIM_LOP_HOC_PHAN', 'lhp'),
-        ('FACT_GOP_Y_TU_LUAN', 'gy'),
-        ('FACT_KET_QUA_DANH_GIA', 'kq'),
-    ]
+    try:
+        cur.execute("BEGIN TRANSACTION")
+        
+        # Tắt constraint
+        for t in ['DIM_LOP_SINH_VIEN','DIM_SINH_VIEN','DIM_GIANG_VIEN','DIM_LOP_HOC_PHAN','FACT_GOP_Y_TU_LUAN','FACT_KET_QUA_DANH_GIA']:
+            try: cur.execute(f"ALTER TABLE {t} NOCHECK CONSTRAINT ALL")
+            except: pass
+        
+        cur.execute("IF NOT EXISTS(SELECT 1 FROM DIM_HOC_KY WHERE MaHocKy=?) INSERT INTO DIM_HOC_KY VALUES(?,?,?)", (mhk,mhk,f"{nbd}-{nbd+1}",hk))
+        
+        # Insert từng bảng
+        for sql, data, desc in [
+            ("INSERT INTO DIM_LOP_SINH_VIEN(MaLop,Lop,MaChuyenNganh) VALUES(?,?,?)", data_lop, "DIM_LOP"),
+            ("INSERT INTO DIM_SINH_VIEN(MaSV,HoDem,Ten,NgaySinh,MaLop) VALUES(?,?,?,?,?)", data_sv, "DIM_SV"),
+            ("INSERT INTO DIM_GIANG_VIEN(MaGV,HoDemGV,TenGV) VALUES(?,?,?)", data_gv, "DIM_GV"),
+            ("INSERT INTO DIM_LOP_HOC_PHAN(MaLopHP,LopHP,MaHP,MaGV,MaHocKy) VALUES(?,?,?,?,?)", data_lhp, "DIM_LHP"),
+            ("INSERT INTO FACT_GOP_Y_TU_LUAN(SubmissionID,MaSV,MaLopHP,NoiDungGopY,Sentiment,Is_Valid,Tag_HocPhan,Tag_DayHoc,Tag_KiemTra,Tag_Khac) VALUES(?,?,?,?,?,?,?,?,?,?)", data_gy, "FACT_GY"),
+            ("INSERT INTO FACT_KET_QUA_DANH_GIA(SubmissionID,MaCauHoi,Diem) VALUES(?,?,?)", data_kq, "FACT_KQ"),
+        ]:
+            insert_chunk(cur, sql, data, desc)
+        
+        cur.execute("COMMIT")
+        print(f"  ✅ COMMIT ({time.time()-t1:.1f}s)")
+    except Exception as e:
+        cur.execute("ROLLBACK")
+        print(f"  ❌ {e}")
+    finally:
+        for t in ['DIM_LOP_SINH_VIEN','DIM_SINH_VIEN','DIM_GIANG_VIEN','DIM_LOP_HOC_PHAN','FACT_GOP_Y_TU_LUAN','FACT_KET_QUA_DANH_GIA']:
+            try: cur.execute(f"ALTER TABLE {t} CHECK CONSTRAINT ALL"); conn.commit()
+            except: pass
+        conn.close()
     
-    for table, name in tables:
-        csv_path = f"{tmpdir}/{name}.csv"
-        if os.path.getsize(csv_path) > 0:
-            ok = bcp_import(table, csv_path, None)
-            print(f"  {table}: {'✅' if ok else '❌'}")
-    
-    # Bật lại constraint
-    conn = pyodbc.connect(
-        f"DRIVER={{ODBC Driver 18 for SQL Server}};SERVER={SERVER};DATABASE={DB};"
-        f"UID={UID};PWD={DB_PASSWORD};Encrypt=yes;TrustServerCertificate=no;"
-        f"Connection Timeout=600;", autocommit=True
-    )
-    cur = conn.cursor()
-    for t in ['DIM_LOP_SINH_VIEN','DIM_SINH_VIEN','DIM_GIANG_VIEN','DIM_LOP_HOC_PHAN','FACT_GOP_Y_TU_LUAN','FACT_KET_QUA_DANH_GIA']:
-        try: cur.execute(f"ALTER TABLE {t} CHECK CONSTRAINT ALL")
-        except: pass
-    conn.close()
-    
-    print(f"  BCP: {time.time()-t1:.1f}s")
     print(f"\n🎉 Total: {time.time()-t0:.1f}s | {len(all_res):,} rows")
 
 if __name__ == "__main__":

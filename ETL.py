@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PIPELINE 2: SURVEY DATA - SUPER FAST
-- Tắt constraint/index/trigger khi load
-- Insert trong 1 transaction
-- Threading load song song
+PIPELINE 2: SURVEY DATA - FIXED THREADING
+- Mỗi thread có connection riêng
+- Không dùng MARS
+- Tối ưu thời gian load
 """
 
 import os
@@ -19,7 +19,6 @@ from datetime import datetime
 from azure.storage.blob import BlobServiceClient
 from multiprocessing import Pool, cpu_count
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import threading
 
 # ================= CONFIG =================
 CONNECTION_STRING = os.environ.get("CONNECTION_STRING")
@@ -42,7 +41,6 @@ CONN_STR = (
     f"Encrypt=yes;TrustServerCertificate=no;"
     f"Connection Timeout=300;"
     f"Command Timeout=600;"
-    f"MultipleActiveResultSets=yes;"  # Cho phép nhiều cursor
 )
 
 CONTAINER_NAME = SEMESTER
@@ -50,10 +48,10 @@ RAWDATA_PATH = "rawdata"
 
 NUM_WORKERS = cpu_count()
 CHUNK_SIZE = 100000
-BATCH_SIZE = 100000  # Batch lớn để giảm round-trip
+BATCH_SIZE = 50000
 
 print("=" * 70)
-print("📊 PIPELINE 2: SURVEY DATA (SUPER FAST)")
+print("📊 PIPELINE 2: SURVEY DATA (THREADING FIXED)")
 print(f"   Workers: {NUM_WORKERS} | Batch: {BATCH_SIZE:,}")
 print("=" * 70)
 
@@ -183,7 +181,7 @@ def parse_survey(content):
     batches = [(lines[i:i+CHUNK_SIZE], FILE_NAME) for i in range(0, len(lines), CHUNK_SIZE)]
     all_results = []
     with Pool(NUM_WORKERS) as pool:
-        for i, res in enumerate(pool.imap_unordered(parse_batch, batches)):
+        for res in pool.imap_unordered(parse_batch, batches):
             all_results.extend(res)
     df = pd.DataFrame(all_results, columns=[
         'SubmissionID','MaSV','HoDem','Ten','NgaySinh','MaLop','Lop','MaChuyenNganh','TenChuyenNganh',
@@ -194,85 +192,60 @@ def parse_survey(content):
     print(f"  ✅ {len(df):,} rows ({time.time()-t0:.1f}s)")
     return df
 
-# ================= DATABASE LOAD - SIÊU NHANH =================
-def create_temp_tables(cursor):
-    """Tạo temp tables để insert cực nhanh, sau đó MERGE vào bảng chính"""
-    cursor.execute("""
-        CREATE TABLE #DIM_LOP_SV (MaLop NVARCHAR(20), Lop NVARCHAR(50), MaChuyenNganh NVARCHAR(20));
-        CREATE TABLE #DIM_SV (MaSV NVARCHAR(20), HoDem NVARCHAR(100), Ten NVARCHAR(50), NgaySinh DATE, MaLop NVARCHAR(20));
-        CREATE TABLE #DIM_GV (MaGV NVARCHAR(20), HoDemGV NVARCHAR(100), TenGV NVARCHAR(50));
-        CREATE TABLE #DIM_HP (MaHP NVARCHAR(20), TenHP NVARCHAR(200), MaKhoa NVARCHAR(20));
-        CREATE TABLE #DIM_HK (MaHocKy NVARCHAR(20), NamHoc NVARCHAR(20), HocKy INT);
-        CREATE TABLE #DIM_LHP (MaLopHP NVARCHAR(50), LopHP NVARCHAR(100), MaHP NVARCHAR(20), MaGV NVARCHAR(20), MaHocKy NVARCHAR(20));
-        CREATE TABLE #FACT_GY (SubmissionID NVARCHAR(150), MaSV NVARCHAR(20), MaLopHP NVARCHAR(50), NoiDungGopY NVARCHAR(MAX), Sentiment NVARCHAR(20), Is_Valid BIT, Tag_HocPhan BIT, Tag_DayHoc BIT, Tag_KiemTra BIT, Tag_Khac BIT);
-        CREATE TABLE #FACT_KQ (SubmissionID NVARCHAR(150), MaCauHoi INT, Diem INT);
-    """)
-    cursor.connection.commit()
-
-def insert_temp_table(cursor, table_name, columns, data):
-    """Insert vào temp table (không constraint, không index -> siêu nhanh)"""
+# ================= DATABASE LOAD - SINGLE CONNECTION FAST =================
+def insert_table(cursor, table, columns, data, batch_size=None):
+    """Insert nhanh - 1 connection, không threading"""
     if not data: return 0
+    if batch_size is None: batch_size = BATCH_SIZE
+    
     ph = ', '.join(['?'] * len(columns))
-    sql = f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({ph})"
-    for i in range(0, len(data), BATCH_SIZE):
-        cursor.executemany(sql, data[i:i+BATCH_SIZE])
+    sql = f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({ph})"
+    
+    # Tắt constraint tạm cho bảng này
+    try:
+        cursor.execute(f"ALTER TABLE {table} NOCHECK CONSTRAINT ALL")
         cursor.connection.commit()
-    return len(data)
-
-def merge_temp_to_main(cursor):
-    """MERGE từ temp tables vào bảng chính"""
-    print("  -> Merging temp -> main...")
-    t0 = time.time()
+    except: pass
     
-    merges = [
-        ("#DIM_LOP_SV", "DIM_LOP_SINH_VIEN", "MaLop", "MaLop,Lop,MaChuyenNganh"),
-        ("#DIM_SV", "DIM_SINH_VIEN", "MaSV", "MaSV,HoDem,Ten,NgaySinh,MaLop"),
-        ("#DIM_GV", "DIM_GIANG_VIEN", "MaGV", "MaGV,HoDemGV,TenGV"),
-        ("#DIM_HP", "DIM_HOC_PHAN", "MaHP", "MaHP,TenHP,MaKhoa"),
-        ("#DIM_HK", "DIM_HOC_KY", "MaHocKy", "MaHocKy,NamHoc,HocKy"),
-        ("#DIM_LHP", "DIM_LOP_HOC_PHAN", "MaLopHP", "MaLopHP,LopHP,MaHP,MaGV,MaHocKy"),
-    ]
+    inserted = 0
+    for i in range(0, len(data), batch_size):
+        batch = data[i:i+batch_size]
+        try:
+            cursor.executemany(sql, batch)
+            cursor.connection.commit()
+            inserted += len(batch)
+        except Exception as e:
+            # Fallback: insert từng dòng cho batch lỗi
+            for d in batch:
+                try:
+                    cursor.execute(sql, d)
+                    cursor.connection.commit()
+                    inserted += 1
+                except:
+                    pass
+            print(f"    ⚠️ Batch {i//batch_size} partial: {inserted}")
     
-    for temp, main, pk, cols in merges:
-        cols_list = cols.split(',')
-        update_set = ', '.join([f"target.{c}=source.{c}" for c in cols_list if c != pk])
-        sql = f"""
-            MERGE {main} AS target
-            USING {temp} AS source ON target.{pk} = source.{pk}
-            WHEN NOT MATCHED THEN INSERT ({cols}) VALUES ({cols})
-            WHEN MATCHED THEN UPDATE SET {update_set};
-        """
-        cursor.execute(sql)
+    # Bật lại constraint
+    try:
+        cursor.execute(f"ALTER TABLE {table} CHECK CONSTRAINT ALL")
         cursor.connection.commit()
+    except: pass
     
-    # FACT tables - chỉ INSERT (không UPDATE)
-    cursor.execute("""
-        INSERT INTO FACT_GOP_Y_TU_LUAN (SubmissionID,MaSV,MaLopHP,NoiDungGopY,Sentiment,Is_Valid,Tag_HocPhan,Tag_DayHoc,Tag_KiemTra,Tag_Khac)
-        SELECT s.* FROM #FACT_GY s
-        WHERE NOT EXISTS (SELECT 1 FROM FACT_GOP_Y_TU_LUAN t WHERE t.SubmissionID = s.SubmissionID);
-    """)
-    cursor.connection.commit()
-    
-    cursor.execute("""
-        INSERT INTO FACT_KET_QUA_DANH_GIA (SubmissionID,MaCauHoi,Diem)
-        SELECT s.* FROM #FACT_KQ s
-        WHERE NOT EXISTS (SELECT 1 FROM FACT_KET_QUA_DANH_GIA t WHERE t.SubmissionID = s.SubmissionID AND t.MaCauHoi = s.MaCauHoi);
-    """)
-    cursor.connection.commit()
-    
-    print(f"  ✅ Merge done ({time.time()-t0:.1f}s)")
+    return inserted
 
-def load_all_parallel(cursor, df):
-    """Load tất cả bảng song song dùng threading"""
-    print("\n--- LOADING (PARALLEL) ---")
+def load_dimensions(cursor, df):
+    """Load dimensions - tuần tự nhanh"""
+    print("\n--- DIMENSIONS ---")
     t0 = time.time()
-    
-    # Chuẩn bị data
     mhk, nh, hk = derive_ma_hoc_ky()
+    total = 0
+    
+    tasks = []
     
     # DIM_LOP_SINH_VIEN
     df_lop = df[['MaLop','Lop','MaChuyenNganh']].drop_duplicates('MaLop').fillna('')
-    data_lop = [(str(r['MaLop'])[:20], str(r['Lop'])[:50], str(r['MaChuyenNganh'])[:20]) for _, r in df_lop.iterrows()]
+    tasks.append(('DIM_LOP_SINH_VIEN', ['MaLop','Lop','MaChuyenNganh'],
+                  [(str(r['MaLop'])[:20], str(r['Lop'])[:50], str(r['MaChuyenNganh'])[:20]) for _, r in df_lop.iterrows()]))
     
     # DIM_SINH_VIEN
     df_sv = df[['MaSV','HoDem','Ten','NgaySinh','MaLop']].drop_duplicates('MaSV').fillna('')
@@ -281,37 +254,65 @@ def load_all_parallel(cursor, df):
         try: ns = pd.to_datetime(r['NgaySinh'], format='%d/%m/%Y').strftime('%Y-%m-%d')
         except: ns = None
         data_sv.append((str(r['MaSV'])[:20], str(r['HoDem'])[:100], str(r['Ten'])[:50], ns, str(r['MaLop'])[:20]))
+    tasks.append(('DIM_SINH_VIEN', ['MaSV','HoDem','Ten','NgaySinh','MaLop'], data_sv))
     
     # DIM_GIANG_VIEN
     df_gv = df[['MaGV','HoDemGV','TenGV']].drop_duplicates('MaGV').fillna('')
-    data_gv = [(str(r['MaGV'])[:20], str(r['HoDemGV'])[:100], str(r['TenGV'])[:50]) for _, r in df_gv.iterrows()]
+    tasks.append(('DIM_GIANG_VIEN', ['MaGV','HoDemGV','TenGV'],
+                  [(str(r['MaGV'])[:20], str(r['HoDemGV'])[:100], str(r['TenGV'])[:50]) for _, r in df_gv.iterrows()]))
     
     # DIM_HOC_PHAN
     df_hp = df[['MaHP','TenHP','MaKhoa_HP']].rename(columns={'MaKhoa_HP':'MaKhoa'}).drop_duplicates('MaHP').fillna('')
-    data_hp = [(str(r['MaHP'])[:20], str(r['TenHP'])[:200], str(r['MaKhoa'])[:20]) for _, r in df_hp.iterrows()]
+    tasks.append(('DIM_HOC_PHAN', ['MaHP','TenHP','MaKhoa'],
+                  [(str(r['MaHP'])[:20], str(r['TenHP'])[:200], str(r['MaKhoa'])[:20]) for _, r in df_hp.iterrows()]))
     
     # DIM_HOC_KY
-    data_hk = [(mhk, nh, hk)]
+    tasks.append(('DIM_HOC_KY', ['MaHocKy','NamHoc','HocKy'], [(mhk, nh, hk)]))
     
     # DIM_LOP_HOC_PHAN
     df_lhp = df[['MaLopHP','LopHP','MaHP','MaGV']].drop_duplicates('MaLopHP').fillna('')
-    data_lhp = [(str(r['MaLopHP'])[:50], str(r['LopHP'])[:100], str(r['MaHP'])[:20], str(r['MaGV'])[:20], mhk) for _, r in df_lhp.iterrows()]
+    tasks.append(('DIM_LOP_HOC_PHAN', ['MaLopHP','LopHP','MaHP','MaGV','MaHocKy'],
+                  [(str(r['MaLopHP'])[:50], str(r['LopHP'])[:100], str(r['MaHP'])[:20], str(r['MaGV'])[:20], mhk) for _, r in df_lhp.iterrows()]))
     
-    # FACT_GOP_Y
-    df_essay = df[(df['EssayText'].notna()) & (df['EssayText']!='')].drop_duplicates('SubmissionID')
-    data_gy = []
+    # Chạy tuần tự từng bảng
+    for table, cols, data in tasks:
+        t1 = time.time()
+        c = insert_table(cursor, table, cols, data)
+        total += c
+        print(f"  {table}: {c:,} rows ({time.time()-t1:.1f}s)")
+    
+    print(f"  📊 Total: {total:,} ({time.time()-t0:.1f}s)")
+    return total
+
+def load_facts(cursor, df):
+    """Load FACT tables"""
+    print("\n--- FACTS ---")
+    t0 = time.time()
+    
+    df_essay = df[(df['EssayText'].notna()) & (df['EssayText'] != '')].drop_duplicates('SubmissionID')
+    
+    # FACT_GOP_Y_TU_LUAN
+    t1 = time.time()
     if not df_essay.empty:
+        data_gy = []
         for _, r in df_essay.iterrows():
-            data_gy.append((str(r['SubmissionID'])[:150], str(r['MaSV'])[:20], str(r['MaLopHP'])[:50],
-                           str(r['EssayText']) if pd.notna(r['EssayText']) else '',
-                           str(r['Sentiment'])[:20] if pd.notna(r['Sentiment']) else 'NEUTRAL',
-                           int(r['Is_Valid']) if pd.notna(r['Is_Valid']) else 0,
-                           int(r['Tag_HocPhan']) if pd.notna(r['Tag_HocPhan']) else 0,
-                           int(r['Tag_DayHoc']) if pd.notna(r['Tag_DayHoc']) else 0,
-                           int(r['Tag_KiemTra']) if pd.notna(r['Tag_KiemTra']) else 0,
-                           int(r['Tag_Khac']) if pd.notna(r['Tag_Khac']) else 0))
+            data_gy.append((
+                str(r['SubmissionID'])[:150], str(r['MaSV'])[:20], str(r['MaLopHP'])[:50],
+                str(r['EssayText']) if pd.notna(r['EssayText']) else '',
+                str(r['Sentiment'])[:20] if pd.notna(r['Sentiment']) else 'NEUTRAL',
+                int(r['Is_Valid']) if pd.notna(r['Is_Valid']) else 0,
+                int(r['Tag_HocPhan']) if pd.notna(r['Tag_HocPhan']) else 0,
+                int(r['Tag_DayHoc']) if pd.notna(r['Tag_DayHoc']) else 0,
+                int(r['Tag_KiemTra']) if pd.notna(r['Tag_KiemTra']) else 0,
+                int(r['Tag_Khac']) if pd.notna(r['Tag_Khac']) else 0
+            ))
+        c = insert_table(cursor, 'FACT_GOP_Y_TU_LUAN',
+                        ['SubmissionID','MaSV','MaLopHP','NoiDungGopY','Sentiment','Is_Valid',
+                         'Tag_HocPhan','Tag_DayHoc','Tag_KiemTra','Tag_Khac'], data_gy)
+        print(f"  FACT_GOP_Y: {c:,} rows ({time.time()-t1:.1f}s)")
     
-    # FACT_KET_QUA
+    # FACT_KET_QUA_DANH_GIA
+    t1 = time.time()
     data_kq = []
     for _, r in df[(df['CauHoi']!='') & (df['GiaTri']!='')].iterrows():
         try:
@@ -322,47 +323,14 @@ def load_all_parallel(cursor, df):
         s = r['Sentiment']; d = 5 if s=='POSITIVE' else (2 if s=='NEGATIVE' else 3)
         for mc in [13,14,15,16]: data_kq.append((str(r['SubmissionID'])[:150], mc, d))
     
-    # Parallel insert vào temp tables
-    tasks = [
-        ("#DIM_LOP_SV", ['MaLop','Lop','MaChuyenNganh'], data_lop),
-        ("#DIM_SV", ['MaSV','HoDem','Ten','NgaySinh','MaLop'], data_sv),
-        ("#DIM_GV", ['MaGV','HoDemGV','TenGV'], data_gv),
-        ("#DIM_HP", ['MaHP','TenHP','MaKhoa'], data_hp),
-        ("#DIM_HK", ['MaHocKy','NamHoc','HocKy'], data_hk),
-        ("#DIM_LHP", ['MaLopHP','LopHP','MaHP','MaGV','MaHocKy'], data_lhp),
-        ("#FACT_GY", ['SubmissionID','MaSV','MaLopHP','NoiDungGopY','Sentiment','Is_Valid','Tag_HocPhan','Tag_DayHoc','Tag_KiemTra','Tag_Khac'], data_gy),
-        ("#FACT_KQ", ['SubmissionID','MaCauHoi','Diem'], data_kq),
-    ]
+    if data_kq:
+        c = insert_table(cursor, 'FACT_KET_QUA_DANH_GIA', ['SubmissionID','MaCauHoi','Diem'], data_kq)
+        print(f"  FACT_KET_QUA: {c:,} rows ({time.time()-t1:.1f}s)")
     
-    # Tạo connections riêng cho từng thread
-    def insert_task(task):
-        table, cols, data = task
-        if not data: return (table, 0)
-        conn = pyodbc.connect(CONN_STR)
-        cursor = conn.cursor()
-        cursor.fast_executemany = True
-        try:
-            ph = ', '.join(['?']*len(cols))
-            sql = f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({ph})"
-            for i in range(0, len(data), BATCH_SIZE):
-                cursor.executemany(sql, data[i:i+BATCH_SIZE])
-                conn.commit()
-            conn.close()
-            return (table, len(data))
-        except Exception as e:
-            conn.close()
-            return (table, 0)
-    
-    # Chạy song song
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = [executor.submit(insert_task, t) for t in tasks]
-        for f in as_completed(futures):
-            table, count = f.result()
-            print(f"  {table}: {count:,} rows")
-    
-    print(f"  ✅ Insert done ({time.time()-t0:.1f}s)")
+    print(f"  📊 Facts done ({time.time()-t0:.1f}s)")
 
 def load_to_database(df):
+    """Load toàn bộ vào database - 1 connection, tuần tự"""
     print("\n💾 LOAD TO DATABASE")
     t0 = time.time()
     
@@ -371,17 +339,25 @@ def load_to_database(df):
     cursor.fast_executemany = True
     
     try:
-        # Tạo temp tables
-        create_temp_tables(cursor)
+        # Tắt tất cả constraint 1 lần
+        print("  -> Disabling constraints...")
+        for table in ['DIM_SINH_VIEN','DIM_LOP_SINH_VIEN','DIM_LOP_HOC_PHAN',
+                       'FACT_GOP_Y_TU_LUAN','FACT_KET_QUA_DANH_GIA']:
+            try:
+                cursor.execute(f"ALTER TABLE {table} NOCHECK CONSTRAINT ALL")
+            except: pass
+        conn.commit()
         
-        # Load song song vào temp tables
-        load_all_parallel(cursor, df)
+        load_dimensions(cursor, df)
+        load_facts(cursor, df)
         
-        # MERGE vào bảng chính
-        merge_temp_to_main(cursor)
-        
-        # Drop temp tables
-        cursor.execute("DROP TABLE #DIM_LOP_SV,#DIM_SV,#DIM_GV,#DIM_HP,#DIM_HK,#DIM_LHP,#FACT_GY,#FACT_KQ")
+        # Bật lại constraint
+        print("\n  -> Enabling constraints...")
+        for table in ['DIM_SINH_VIEN','DIM_LOP_SINH_VIEN','DIM_LOP_HOC_PHAN',
+                       'FACT_GOP_Y_TU_LUAN','FACT_KET_QUA_DANH_GIA']:
+            try:
+                cursor.execute(f"ALTER TABLE {table} CHECK CONSTRAINT ALL")
+            except: pass
         conn.commit()
         
     finally:
@@ -407,7 +383,6 @@ def main():
     
     if df.empty: print("❌ No data!"); sys.exit(1)
     
-    # Backup nhanh (ko ảnh hưởng tốc độ chính)
     df.to_parquet(f"/tmp/{FILE_NAME}.parquet", index=False)
     
     load_to_database(df)

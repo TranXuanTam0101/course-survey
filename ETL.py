@@ -32,7 +32,9 @@ CONN_STR = (
     f"UID=sqladmin;PWD={DB_PASSWORD};"
     f"Encrypt=yes;TrustServerCertificate=no;"
     f"Connection Timeout=600;Command Timeout=1800;"
+    f"LongAsMax=yes;"
 )
+
 
 CONTAINER_NAME = SEMESTER
 RAWDATA_PATH = "rawdata"

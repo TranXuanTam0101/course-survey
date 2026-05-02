@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SURVEY ETL - FINAL FIXED VERSION
+SURVEY ETL - FINAL STABLE VERSION
 """
 
 import os
@@ -33,7 +33,6 @@ CONN_STR = (
 
 CONTAINER_NAME = SEMESTER
 RAWDATA_PATH = "rawdata"
-TAILIEU_PATH = "tailieu"
 
 NUM_WORKERS = 4
 CHUNK_SIZE = 20000
@@ -54,10 +53,16 @@ def load_master_from_db():
         conn = pyodbc.connect(CONN_STR)
         cursor = conn.cursor()
         
-        cursor.execute("SELECT MaChuyenNganh, TenChuyenNganh, MaNganh, TenNganh, MaKhoa FROM DIM_CHUYEN_NGANH")
+        # Load Chuyên ngành (theo schema bạn cung cấp)
+        cursor.execute("""
+            SELECT MaChuyenNganh, TenChuyenNganh, MaNganh 
+            FROM DIM_CHUYEN_NGANH
+        """)
         for r in cursor.fetchall():
-            _g_cn[str(r[0]).strip()] = [str(x).strip() for x in r]
+            key = str(r[0]).strip()
+            _g_cn[key] = (key, str(r[1]).strip(), str(r[2]).strip())
         
+        # Load Học phần
         cursor.execute("SELECT MaHP, TenHP, MaKhoa FROM DIM_HOC_PHAN")
         for r in cursor.fetchall():
             hp = str(r[0]).strip()
@@ -67,7 +72,8 @@ def load_master_from_db():
         conn.close()
         print(f"✅ Master loaded: {len(_g_cn)} Chuyên ngành, {len(_g_hp)} Học phần")
     except Exception as e:
-        print(f"⚠️ Load master thất bại: {e}")
+        print(f"⚠️ Load master error: {e}")
+        print("→ Sẽ dùng giá trị mặc định")
 
 def nlp_fast(text):
     if not text or len(text) < 5:
@@ -77,7 +83,7 @@ def nlp_fast(text):
     t2 = 1 if any(k in t for k in ('giảng viên','thầy','cô','nhiệt tình','tận tâm')) else 0
     t3 = 1 if any(k in t for k in ('kiểm tra','thi','đánh giá','chấm')) else 0
     t4 = 1 if any(k in t for k in ('cơ sở','phòng','cải thiện','góp ý')) else 0
-    sent = 'POSITIVE' if t.count('tốt') + t.count('hay') > 2 else 'NEGATIVE' if 'không' in t or 'kém' in t else 'NEUTRAL'
+    sent = 'POSITIVE' if t.count('tốt') + t.count('hay') > 1 else 'NEGATIVE' if any(x in t for x in ('kém','tệ','khó')) else 'NEUTRAL'
     return t1, t2, t3, t4, sent, 1
 
 def parse_batch(args):
@@ -134,7 +140,7 @@ def main():
     blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
     load_master_from_db()
     
-    # Download
+    # Download file
     content = ""
     try:
         client = blob_service.get_container_client(CONTAINER_NAME).get_blob_client(f"{RAWDATA_PATH}/{SURVEY_FILE}")
@@ -158,12 +164,11 @@ def main():
     print(f"✅ Final DataFrame: {len(df):,} rows")
     
     if not df.empty:
+        print("\nSample data:")
         print(df.head(3))
-        print("\nColumns:", df.columns.tolist())
-    else:
-        print("❌ DataFrame rỗng!")
     
-    print(f"Total time: {time.time()-t0:.1f}s")
+    print(f"\nTotal time: {time.time()-t0:.1f}s")
+    # TODO: Gọi load_to_database(df) khi bạn muốn load
 
 if __name__ == "__main__":
     main()

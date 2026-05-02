@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PIPELINE 2: PANDAS TO_SQL - NHANH NHẤT
-- Dùng SQLAlchemy + pandas to_sql
-- method='multi' - insert nhiều dòng 1 lần
+PIPELINE 2: PANDAS TO_SQL - FIXED
+- chunksize=500 để tránh lỗi 2100 params
 """
 
 import os, sys, re, time, pandas as pd, numpy as np
@@ -20,10 +19,8 @@ DB_PASSWORD = os.environ.get("DB_PASSWORD", "Due@2026")
 
 FILE_NAME = os.path.splitext(os.path.basename(SURVEY_FILE))[0]
 
-# Encode password cho URL
 pwd = urllib.parse.quote_plus(DB_PASSWORD)
 
-# SQLAlchemy engine
 ENGINE_STR = (
     f"mssql+pyodbc://sqladmin:{pwd}@course-survey.database.windows.net:1433/"
     f"course-survey-db?driver=ODBC+Driver+18+for+SQL+Server"
@@ -36,9 +33,13 @@ RAWDATA_PATH = "rawdata"
 NUM_WORKERS = cpu_count()
 CHUNK = 100000
 
+# Chunksize an toàn: số cột × chunksize < 2100
+CS_DIM = 500    # 3-5 cột × 500 = 1500-2500
+CS_FACT = 200   # 10 cột × 200 = 2000
+
 print("="*70)
-print("📊 PIPELINE 2: PANDAS TO_SQL")
-print(f"   Workers: {NUM_WORKERS}")
+print("📊 PIPELINE 2: PANDAS TO_SQL (FIXED)")
+print(f"   Workers: {NUM_WORKERS} | Chunk DIM={CS_DIM} FACT={CS_FACT}")
 print("="*70)
 
 # ================= PATTERNS =================
@@ -78,7 +79,6 @@ def parse_batch(args):
         for i in range(nsi+1,min(nsi+25,rl)):
             if _G(row[i].strip()): mgi=i; break
         if mgi==-1: mgi=min(rl-1,nsi+8)
-        
         sv=row[1].strip(); hp=row[nsi+1].strip() if nsi+1<rl else ''
         gv=row[mgi].strip() if mgi<rl else ''
         lhp=row[mgi+3].strip() if mgi+3<rl else f"{hp}_{gv}"
@@ -104,9 +104,9 @@ def parse_survey(content):
     print(f"  ✅ {len(df):,} rows ({time.time()-t0:.1f}s)")
     return df
 
-# ================= LOAD (to_sql) =================
+# ================= LOAD =================
 def load_all(df):
-    print("\n💾 LOAD (pandas to_sql)...")
+    print("\n💾 LOAD (to_sql)...")
     t0=time.time()
     
     fn=SURVEY_FILE.replace('.csv','').split('_')[-1]
@@ -114,61 +114,57 @@ def load_all(df):
     nbd=2000+(yc-1); nkt=nbd+1
     mhk=f"HK{hk}_{nbd%100}{nkt%100}"; nh=f"{nbd}-{nkt}"
     
-    # Tạo engine
     engine = create_engine(ENGINE_STR, fast_executemany=True)
     
-    # ===== 1. DIM_HOC_KY =====
+    # 1. DIM_HOC_KY
     t1=time.time()
-    df_hk = pd.DataFrame([{'MaHocKy': mhk, 'NamHoc': nh, 'HocKy': hk}])
-    df_hk.to_sql('DIM_HOC_KY', engine, if_exists='append', index=False, method='multi')
-    print(f"  DIM_HOC_KY: done ({time.time()-t1:.1f}s)")
+    pd.DataFrame([{'MaHocKy':mhk,'NamHoc':nh,'HocKy':hk}]).to_sql('DIM_HOC_KY',engine,if_exists='append',index=False,method='multi')
+    print(f"  DIM_HOC_KY ({time.time()-t1:.1f}s)")
     
-    # ===== 2. DIM_LOP_SINH_VIEN =====
+    # 2. DIM_LOP_SINH_VIEN
     t1=time.time()
-    df_lop = df[['MaLopHP']].drop_duplicates().copy()
-    df_lop.columns = ['MaLop']
-    df_lop['Lop'] = df_lop['MaLop']
-    df_lop['MaChuyenNganh'] = df_lop['MaLop']
-    df_lop = df_lop[df_lop['MaLop'] != '']
-    df_lop.to_sql('DIM_LOP_SINH_VIEN', engine, if_exists='append', index=False, method='multi', chunksize=50000)
+    df_lop=df[['MaLopHP']].drop_duplicates().copy()
+    df_lop.columns=['MaLop']; df_lop['Lop']=df_lop['MaLop']; df_lop['MaChuyenNganh']=df_lop['MaLop']
+    df_lop=df_lop[df_lop['MaLop']!='']
+    df_lop.to_sql('DIM_LOP_SINH_VIEN',engine,if_exists='append',index=False,method='multi',chunksize=CS_DIM)
     print(f"  DIM_LOP: {len(df_lop):,} ({time.time()-t1:.1f}s)")
     
-    # ===== 3. DIM_SINH_VIEN =====
+    # 3. DIM_SINH_VIEN
     t1=time.time()
-    df_sv = df[['MaSV']].drop_duplicates().copy()
-    df_sv['HoDem'] = ''; df_sv['Ten'] = ''; df_sv['NgaySinh'] = None; df_sv['MaLop'] = df_sv['MaSV']
-    df_sv = df_sv[df_sv['MaSV'] != '']
-    df_sv.to_sql('DIM_SINH_VIEN', engine, if_exists='append', index=False, method='multi', chunksize=50000)
+    df_sv=df[['MaSV']].drop_duplicates().copy()
+    df_sv['HoDem']=''; df_sv['Ten']=''; df_sv['NgaySinh']=None; df_sv['MaLop']=df_sv['MaSV']
+    df_sv=df_sv[df_sv['MaSV']!='']
+    df_sv.to_sql('DIM_SINH_VIEN',engine,if_exists='append',index=False,method='multi',chunksize=CS_DIM)
     print(f"  DIM_SV: {len(df_sv):,} ({time.time()-t1:.1f}s)")
     
-    # ===== 4. DIM_GIANG_VIEN =====
+    # 4. DIM_GIANG_VIEN
     t1=time.time()
-    df_gv = df[['MaGV']].drop_duplicates().copy()
-    df_gv['HoDemGV'] = ''; df_gv['TenGV'] = ''
-    df_gv = df_gv[df_gv['MaGV'] != '']
-    df_gv.to_sql('DIM_GIANG_VIEN', engine, if_exists='append', index=False, method='multi', chunksize=50000)
+    df_gv=df[['MaGV']].drop_duplicates().copy()
+    df_gv['HoDemGV']=''; df_gv['TenGV']=''
+    df_gv=df_gv[df_gv['MaGV']!='']
+    df_gv.to_sql('DIM_GIANG_VIEN',engine,if_exists='append',index=False,method='multi',chunksize=CS_DIM)
     print(f"  DIM_GV: {len(df_gv):,} ({time.time()-t1:.1f}s)")
     
-    # ===== 5. DIM_LOP_HOC_PHAN =====
+    # 5. DIM_LOP_HOC_PHAN
     t1=time.time()
-    df_lhp = df[['MaLopHP','MaHP','MaGV']].drop_duplicates('MaLopHP').copy()
-    df_lhp['LopHP'] = df_lhp['MaLopHP']; df_lhp['MaHocKy'] = mhk
-    df_lhp = df_lhp[df_lhp['MaLopHP'] != '']
-    df_lhp.to_sql('DIM_LOP_HOC_PHAN', engine, if_exists='append', index=False, method='multi', chunksize=50000)
+    df_lhp=df[['MaLopHP','MaHP','MaGV']].drop_duplicates('MaLopHP').copy()
+    df_lhp['LopHP']=df_lhp['MaLopHP']; df_lhp['MaHocKy']=mhk
+    df_lhp=df_lhp[df_lhp['MaLopHP']!='']
+    df_lhp.to_sql('DIM_LOP_HOC_PHAN',engine,if_exists='append',index=False,method='multi',chunksize=CS_DIM)
     print(f"  DIM_LHP: {len(df_lhp):,} ({time.time()-t1:.1f}s)")
     
-    # ===== 6. FACT_GOP_Y_TU_LUAN =====
+    # 6. FACT_GOP_Y_TU_LUAN
     t1=time.time()
-    df_gy = df[(df['EssayText'].notna())&(df['EssayText']!='')].drop_duplicates('SubmissionID').copy()
-    df_gy = df_gy[['SubmissionID','MaSV','MaLopHP','EssayText','Sentiment','Is_Valid',
-                     'Tag_HocPhan','Tag_DayHoc','Tag_KiemTra','Tag_Khac']]
-    df_gy.columns = ['SubmissionID','MaSV','MaLopHP','NoiDungGopY','Sentiment','Is_Valid',
-                      'Tag_HocPhan','Tag_DayHoc','Tag_KiemTra','Tag_Khac']
-    df_gy['NoiDungGopY'] = df_gy['NoiDungGopY'].str[:4000]
-    df_gy.to_sql('FACT_GOP_Y_TU_LUAN', engine, if_exists='append', index=False, method='multi', chunksize=50000)
+    df_gy=df[(df['EssayText'].notna())&(df['EssayText']!='')].drop_duplicates('SubmissionID').copy()
+    df_gy=df_gy[['SubmissionID','MaSV','MaLopHP','EssayText','Sentiment','Is_Valid',
+                   'Tag_HocPhan','Tag_DayHoc','Tag_KiemTra','Tag_Khac']]
+    df_gy.columns=['SubmissionID','MaSV','MaLopHP','NoiDungGopY','Sentiment','Is_Valid',
+                    'Tag_HocPhan','Tag_DayHoc','Tag_KiemTra','Tag_Khac']
+    df_gy['NoiDungGopY']=df_gy['NoiDungGopY'].str[:4000]
+    df_gy.to_sql('FACT_GOP_Y_TU_LUAN',engine,if_exists='append',index=False,method='multi',chunksize=CS_FACT)
     print(f"  FACT_GY: {len(df_gy):,} ({time.time()-t1:.1f}s)")
     
-    # ===== 7. FACT_KET_QUA_DANH_GIA =====
+    # 7. FACT_KET_QUA_DANH_GIA
     t1=time.time()
     rows=[]
     for _,r in df[(df['CauHoi']!='')&(df['GiaTri']!='')].iterrows():
@@ -179,10 +175,9 @@ def load_all(df):
     for _,r in df_gy.iterrows():
         s=r['Sentiment']; d=5 if s=='POSITIVE' else (2 if s=='NEGATIVE' else 3)
         for mc in [13,14,15,16]: rows.append({'SubmissionID':str(r['SubmissionID'])[:150],'MaCauHoi':mc,'Diem':d})
-    
     if rows:
-        df_kq = pd.DataFrame(rows)
-        df_kq.to_sql('FACT_KET_QUA_DANH_GIA', engine, if_exists='append', index=False, method='multi', chunksize=100000)
+        df_kq=pd.DataFrame(rows)
+        df_kq.to_sql('FACT_KET_QUA_DANH_GIA',engine,if_exists='append',index=False,method='multi',chunksize=CS_DIM)
     print(f"  FACT_KQ: {len(rows):,} ({time.time()-t1:.1f}s)")
     
     engine.dispose()
@@ -191,14 +186,11 @@ def load_all(df):
 # ================= MAIN =================
 def main():
     t0=time.time()
-    
     blob=BlobServiceClient.from_connection_string(CONNECTION_STRING)
     client=blob.get_container_client(CONTAINER_NAME).get_blob_client(f"{RAWDATA_PATH}/{SURVEY_FILE}")
     content=client.download_blob().readall().decode('utf-8-sig')
-    
     df=parse_survey(content)
     if df.empty: print("❌ No data!"); return
-    
     load_all(df)
     print(f"\n🎉 Total: {time.time()-t0:.1f}s | {len(df):,} rows")
 

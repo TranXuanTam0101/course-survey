@@ -162,10 +162,10 @@ def upload_and_bulk_insert(blob_service, cur, table, df, columns, blob_name):
     container_client = blob_service.get_container_client(CONTAINER_NAME)
     container_client.get_blob_client(blob_path).upload_blob(csv_content, overwrite=True)
     
-    # BULK INSERT (chỉ dùng tên file, DATA SOURCE đã trỏ đến container)
+    # ✅ BULK INSERT với full path: processed-data/lop_khaosat_252.csv
     sql = f"""
         BULK INSERT {table}
-        FROM '{blob_name}'
+        FROM '{blob_path}'
         WITH (
             DATA_SOURCE = 'MyAzureBlobStorage',
             FORMAT = 'CSV',

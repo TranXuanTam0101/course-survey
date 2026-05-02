@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PIPELINE 2: BULK INSERT - SIÊU NHANH
-- Ghi CSV tạm
-- BULK INSERT thẳng vào SQL Server
-- Không validation, không FK check
+PIPELINE 2: BULK INSERT TỪ AZURE BLOB
+- Upload CSV lên Azure Blob
+- BULK INSERT từ Azure Blob URL
 """
 
 import os, sys, re, time, pandas as pd, numpy as np, pyodbc, tempfile
 from multiprocessing import Pool, cpu_count
-from azure.storage.blob import BlobServiceClient, BlobClient
+from azure.storage.blob import BlobServiceClient
 
 # ================= CONFIG =================
 CONNECTION_STRING = os.environ.get("CONNECTION_STRING")
@@ -33,15 +32,17 @@ CONN_STR = (
 
 CONTAINER_NAME = SEMESTER
 RAWDATA_PATH = "rawdata"
+PROCESSED_PATH = "processed-data"
 NUM_WORKERS = cpu_count()
 CHUNK = 100000
 
-# Azure Storage Account info từ CONNECTION_STRING
-STORAGE_ACCOUNT = CONNECTION_STRING.split('AccountName=')[1].split(';')[0] if 'AccountName=' in CONNECTION_STRING else ''
-STORAGE_KEY = CONNECTION_STRING.split('AccountKey=')[1].split(';')[0] if 'AccountKey=' in CONNECTION_STRING else ''
+# Lấy thông tin storage từ CONNECTION_STRING
+parts = dict(p.split('=', 1) for p in CONNECTION_STRING.split(';') if '=' in p)
+STORAGE_ACCOUNT = parts.get('AccountName', '')
+STORAGE_KEY = parts.get('AccountKey', '')
 
 print("="*70)
-print("📊 PIPELINE 2: BULK INSERT (SIÊU NHANH)")
+print("📊 PIPELINE 2: BULK INSERT FROM AZURE BLOB")
 print(f"   Workers: {NUM_WORKERS}")
 print("="*70)
 
@@ -108,9 +109,9 @@ def parse_survey(content):
     print(f"  ✅ {len(df):,} rows ({time.time()-t0:.1f}s)")
     return df
 
-# ================= BULK INSERT =================
-def bulk_insert_csv(cursor, table, df, columns, csv_path):
-    """Ghi CSV + BULK INSERT"""
+# ================= UPLOAD + BULK INSERT =================
+def upload_and_bulk_insert(blob_service, cursor, table, df, columns, blob_path):
+    """Upload CSV lên Azure Blob rồi BULK INSERT"""
     if df.empty: return 0
     
     # Chuẩn bị DataFrame
@@ -118,27 +119,62 @@ def bulk_insert_csv(cursor, table, df, columns, csv_path):
     for c in df_out.columns:
         df_out[c] = df_out[c].astype(str).str.replace('|',' ').str.replace('\n',' ').str.replace('\r',' ').fillna('')
     
-    # Ghi CSV với delimiter |
-    df_out.to_csv(csv_path, index=False, header=False, sep='|', encoding='utf-8', quoting=1)
+    # Tạo CSV string trong memory
+    csv_content = df_out.to_csv(index=False, header=False, sep='|', encoding='utf-8', quoting=1)
     
-    # BULK INSERT
+    # Upload lên Azure Blob
+    container_client = blob_service.get_container_client(CONTAINER_NAME)
+    blob_client = container_client.get_blob_client(blob_path)
+    blob_client.upload_blob(csv_content, overwrite=True)
+    
+    # Tạo SAS URL hoặc dùng storage key
+    blob_url = f"https://{STORAGE_ACCOUNT}.blob.core.windows.net/{CONTAINER_NAME}/{blob_path}"
+    
+    # BULK INSERT từ Azure Blob
     sql = f"""
         BULK INSERT {table}
-        FROM '{csv_path}'
+        FROM '{blob_url}'
         WITH (
+            DATA_SOURCE = 'MyAzureBlobStorage',
+            FORMAT = 'CSV',
             FIELDTERMINATOR = '|',
             ROWTERMINATOR = '\\n',
-            CODEPAGE = '65001',
             BATCHSIZE = 100000,
             TABLOCK
         )
     """
-    cursor.execute(sql)
-    cursor.connection.commit()
-    return len(df_out)
+    try:
+        cursor.execute(sql)
+        cursor.connection.commit()
+        return len(df_out)
+    except Exception as e:
+        # Fallback: nếu chưa có DATA_SOURCE, thử dùng CREDENTIAL
+        if 'DATA_SOURCE' in str(e):
+            # Tạo CREDENTIAL và EXTERNAL DATA SOURCE nếu chưa có
+            cursor.execute(f"""
+                IF NOT EXISTS (SELECT 1 FROM sys.database_scoped_credentials WHERE name = 'AzureBlobCred')
+                CREATE DATABASE SCOPED CREDENTIAL AzureBlobCred
+                WITH IDENTITY = 'SHARED ACCESS SIGNATURE',
+                SECRET = '{STORAGE_KEY}'
+            """)
+            cursor.execute(f"""
+                IF NOT EXISTS (SELECT 1 FROM sys.external_data_sources WHERE name = 'MyAzureBlobStorage')
+                CREATE EXTERNAL DATA SOURCE MyAzureBlobStorage
+                WITH (
+                    TYPE = BLOB_STORAGE,
+                    LOCATION = 'https://{STORAGE_ACCOUNT}.blob.core.windows.net/{CONTAINER_NAME}',
+                    CREDENTIAL = AzureBlobCred
+                )
+            """)
+            cursor.connection.commit()
+            # Thử lại
+            cursor.execute(sql)
+            cursor.connection.commit()
+            return len(df_out)
+        raise
 
-def load_all_bulk(df):
-    print("\n💾 BULK INSERT...")
+def load_all_bulk(df, blob_service):
+    print("\n💾 BULK INSERT FROM AZURE BLOB...")
     t0=time.time()
     
     fn=SURVEY_FILE.replace('.csv','').split('_')[-1]
@@ -148,7 +184,6 @@ def load_all_bulk(df):
     
     de=df[(df['EssayText'].notna())&(df['EssayText']!='')].drop_duplicates('SubmissionID')
     
-    # FACT_KET_QUA
     kq=[]
     for _,r in df[(df['CauHoi']!='')&(df['GiaTri']!='')].iterrows():
         try:
@@ -162,103 +197,105 @@ def load_all_bulk(df):
     conn = pyodbc.connect(CONN_STR, autocommit=True)
     cur = conn.cursor()
     
-    with tempfile.TemporaryDirectory() as tmp:
-        try:
-            # Tắt constraint
-            for t in ['DIM_LOP_SINH_VIEN','DIM_SINH_VIEN','DIM_GIANG_VIEN',
-                       'DIM_LOP_HOC_PHAN','FACT_GOP_Y_TU_LUAN','FACT_KET_QUA_DANH_GIA']:
-                try: cur.execute(f"ALTER TABLE {t} NOCHECK CONSTRAINT ALL")
-                except: pass
-            
-            # 1. DIM_HOC_KY
-            cur.execute("IF NOT EXISTS(SELECT 1 FROM DIM_HOC_KY WHERE MaHocKy=?) INSERT INTO DIM_HOC_KY(MaHocKy,NamHoc,HocKy) VALUES(?,?,?)",(mhk,mhk,nh,hk))
-            
-            # 2. DIM_LOP_SINH_VIEN
-            t1=time.time()
-            df_lop = df[['MaLopHP']].drop_duplicates().copy()
-            df_lop['MaLop'] = df_lop['MaLopHP'].str[:50]
-            df_lop['Lop'] = df_lop['MaLopHP'].str[:50]
-            df_lop['MaChuyenNganh'] = df_lop['MaLopHP'].str[:50]
-            c = bulk_insert_csv(cur, 'DIM_LOP_SINH_VIEN', df_lop,
-                               ['MaLop','Lop','MaChuyenNganh'], f"{tmp}/lop.csv")
-            print(f"  DIM_LOP: {c:,} ({time.time()-t1:.1f}s)")
-            
-            # 3. DIM_SINH_VIEN
-            t1=time.time()
-            df_sv = df[['MaSV','MaLopHP']].drop_duplicates('MaSV').copy()
-            df_sv['HoDem'] = ''; df_sv['Ten'] = ''; df_sv['NgaySinh'] = None
-            df_sv['MaSV'] = df_sv['MaSV'].str[:50]
-            df_sv['MaLop'] = df_sv['MaLopHP'].str[:50]
-            c = bulk_insert_csv(cur, 'DIM_SINH_VIEN', df_sv,
-                               ['MaSV','HoDem','Ten','NgaySinh','MaLop'], f"{tmp}/sv.csv")
-            print(f"  DIM_SV: {c:,} ({time.time()-t1:.1f}s)")
-            
-            # 4. DIM_GIANG_VIEN
-            t1=time.time()
-            df_gv = df[['MaGV']].drop_duplicates().copy()
-            df_gv['HoDemGV'] = ''; df_gv['TenGV'] = ''
-            df_gv['MaGV'] = df_gv['MaGV'].str[:50]
-            c = bulk_insert_csv(cur, 'DIM_GIANG_VIEN', df_gv,
-                               ['MaGV','HoDemGV','TenGV'], f"{tmp}/gv.csv")
-            print(f"  DIM_GV: {c:,} ({time.time()-t1:.1f}s)")
-            
-            # 5. DIM_LOP_HOC_PHAN
-            t1=time.time()
-            df_lhp = df[['MaLopHP','MaHP','MaGV']].drop_duplicates('MaLopHP').copy()
-            df_lhp['LopHP'] = df_lhp['MaLopHP'].str[:100]
-            df_lhp['MaLopHP'] = df_lhp['MaLopHP'].str[:100]
-            df_lhp['MaHP'] = df_lhp['MaHP'].str[:50]
-            df_lhp['MaGV'] = df_lhp['MaGV'].str[:50]
-            df_lhp['MaHocKy'] = mhk
-            c = bulk_insert_csv(cur, 'DIM_LOP_HOC_PHAN', df_lhp,
-                               ['MaLopHP','LopHP','MaHP','MaGV','MaHocKy'], f"{tmp}/lhp.csv")
-            print(f"  DIM_LHP: {c:,} ({time.time()-t1:.1f}s)")
-            
-            # 6. FACT_GOP_Y
-            t1=time.time()
-            if not de.empty:
-                df_gy = de[['SubmissionID','MaSV','MaLopHP','EssayText','Sentiment','Is_Valid',
-                             'Tag_HocPhan','Tag_DayHoc','Tag_KiemTra','Tag_Khac']].copy()
-                df_gy.columns = ['SubmissionID','MaSV','MaLopHP','NoiDungGopY','Sentiment','Is_Valid',
-                                  'Tag_HocPhan','Tag_DayHoc','Tag_KiemTra','Tag_Khac']
-                df_gy['SubmissionID'] = df_gy['SubmissionID'].str[:200]
-                df_gy['MaSV'] = df_gy['MaSV'].str[:50]
-                df_gy['MaLopHP'] = df_gy['MaLopHP'].str[:100]
-                df_gy['NoiDungGopY'] = df_gy['NoiDungGopY'].str[:4000]
-                df_gy['Sentiment'] = df_gy['Sentiment'].str[:20]
-                c = bulk_insert_csv(cur, 'FACT_GOP_Y_TU_LUAN', df_gy,
-                                   ['SubmissionID','MaSV','MaLopHP','NoiDungGopY','Sentiment','Is_Valid',
-                                    'Tag_HocPhan','Tag_DayHoc','Tag_KiemTra','Tag_Khac'], f"{tmp}/gy.csv")
-                print(f"  FACT_GY: {c:,} ({time.time()-t1:.1f}s)")
-            
-            # 7. FACT_KET_QUA
-            t1=time.time()
-            if kq:
-                df_kq = pd.DataFrame(kq)
-                c = bulk_insert_csv(cur, 'FACT_KET_QUA_DANH_GIA', df_kq,
-                                   ['SubmissionID','MaCauHoi','Diem'], f"{tmp}/kq.csv")
-                print(f"  FACT_KQ: {c:,} ({time.time()-t1:.1f}s)")
-            
-        except Exception as e:
-            print(f"  ❌ Error: {e}")
-        finally:
-            for t in ['DIM_LOP_SINH_VIEN','DIM_SINH_VIEN','DIM_GIANG_VIEN',
-                       'DIM_LOP_HOC_PHAN','FACT_GOP_Y_TU_LUAN','FACT_KET_QUA_DANH_GIA']:
-                try: cur.execute(f"ALTER TABLE {t} CHECK CONSTRAINT ALL")
-                except: pass
-            conn.close()
+    try:
+        # Tắt constraint
+        for t in ['DIM_LOP_SINH_VIEN','DIM_SINH_VIEN','DIM_GIANG_VIEN',
+                   'DIM_LOP_HOC_PHAN','FACT_GOP_Y_TU_LUAN','FACT_KET_QUA_DANH_GIA']:
+            try: cur.execute(f"ALTER TABLE {t} NOCHECK CONSTRAINT ALL")
+            except: pass
+        
+        # 1. DIM_HOC_KY
+        cur.execute("IF NOT EXISTS(SELECT 1 FROM DIM_HOC_KY WHERE MaHocKy=?) INSERT INTO DIM_HOC_KY(MaHocKy,NamHoc,HocKy) VALUES(?,?,?)",(mhk,mhk,nh,hk))
+        print(f"  ✅ DIM_HOC_KY")
+        
+        # 2. DIM_LOP_SINH_VIEN
+        t1=time.time()
+        df_lop = df[['MaLopHP']].drop_duplicates().copy()
+        df_lop['MaLop'] = df_lop['MaLopHP'].str[:50]
+        df_lop['Lop'] = df_lop['MaLopHP'].str[:50]
+        df_lop['MaChuyenNganh'] = df_lop['MaLopHP'].str[:50]
+        c = upload_and_bulk_insert(blob_service, cur, 'DIM_LOP_SINH_VIEN', df_lop,
+                                   ['MaLop','Lop','MaChuyenNganh'], f"{PROCESSED_PATH}/lop_{FILE_NAME}.csv")
+        print(f"  ✅ DIM_LOP: {c:,} ({time.time()-t1:.1f}s)")
+        
+        # 3. DIM_SINH_VIEN
+        t1=time.time()
+        df_sv = df[['MaSV','MaLopHP']].drop_duplicates('MaSV').copy()
+        df_sv['HoDem'] = ''; df_sv['Ten'] = ''; df_sv['NgaySinh'] = None
+        df_sv['MaSV'] = df_sv['MaSV'].str[:50]
+        df_sv['MaLop'] = df_sv['MaLopHP'].str[:50]
+        c = upload_and_bulk_insert(blob_service, cur, 'DIM_SINH_VIEN', df_sv,
+                                   ['MaSV','HoDem','Ten','NgaySinh','MaLop'], f"{PROCESSED_PATH}/sv_{FILE_NAME}.csv")
+        print(f"  ✅ DIM_SV: {c:,} ({time.time()-t1:.1f}s)")
+        
+        # 4. DIM_GIANG_VIEN
+        t1=time.time()
+        df_gv = df[['MaGV']].drop_duplicates().copy()
+        df_gv['HoDemGV'] = ''; df_gv['TenGV'] = ''
+        df_gv['MaGV'] = df_gv['MaGV'].str[:50]
+        c = upload_and_bulk_insert(blob_service, cur, 'DIM_GIANG_VIEN', df_gv,
+                                   ['MaGV','HoDemGV','TenGV'], f"{PROCESSED_PATH}/gv_{FILE_NAME}.csv")
+        print(f"  ✅ DIM_GV: {c:,} ({time.time()-t1:.1f}s)")
+        
+        # 5. DIM_LOP_HOC_PHAN
+        t1=time.time()
+        df_lhp = df[['MaLopHP','MaHP','MaGV']].drop_duplicates('MaLopHP').copy()
+        df_lhp['LopHP'] = df_lhp['MaLopHP'].str[:100]
+        df_lhp['MaLopHP'] = df_lhp['MaLopHP'].str[:100]
+        df_lhp['MaHP'] = df_lhp['MaHP'].str[:50]
+        df_lhp['MaGV'] = df_lhp['MaGV'].str[:50]
+        df_lhp['MaHocKy'] = mhk
+        c = upload_and_bulk_insert(blob_service, cur, 'DIM_LOP_HOC_PHAN', df_lhp,
+                                   ['MaLopHP','LopHP','MaHP','MaGV','MaHocKy'], f"{PROCESSED_PATH}/lhp_{FILE_NAME}.csv")
+        print(f"  ✅ DIM_LHP: {c:,} ({time.time()-t1:.1f}s)")
+        
+        # 6. FACT_GOP_Y
+        t1=time.time()
+        if not de.empty:
+            df_gy = de[['SubmissionID','MaSV','MaLopHP','EssayText','Sentiment','Is_Valid',
+                         'Tag_HocPhan','Tag_DayHoc','Tag_KiemTra','Tag_Khac']].copy()
+            df_gy.columns = ['SubmissionID','MaSV','MaLopHP','NoiDungGopY','Sentiment','Is_Valid',
+                              'Tag_HocPhan','Tag_DayHoc','Tag_KiemTra','Tag_Khac']
+            df_gy['SubmissionID'] = df_gy['SubmissionID'].str[:200]
+            df_gy['MaSV'] = df_gy['MaSV'].str[:50]
+            df_gy['MaLopHP'] = df_gy['MaLopHP'].str[:100]
+            df_gy['NoiDungGopY'] = df_gy['NoiDungGopY'].str[:4000]
+            df_gy['Sentiment'] = df_gy['Sentiment'].str[:20]
+            c = upload_and_bulk_insert(blob_service, cur, 'FACT_GOP_Y_TU_LUAN', df_gy,
+                                       ['SubmissionID','MaSV','MaLopHP','NoiDungGopY','Sentiment','Is_Valid',
+                                        'Tag_HocPhan','Tag_DayHoc','Tag_KiemTra','Tag_Khac'],
+                                       f"{PROCESSED_PATH}/gy_{FILE_NAME}.csv")
+            print(f"  ✅ FACT_GY: {c:,} ({time.time()-t1:.1f}s)")
+        
+        # 7. FACT_KET_QUA
+        t1=time.time()
+        if kq:
+            df_kq = pd.DataFrame(kq)
+            c = upload_and_bulk_insert(blob_service, cur, 'FACT_KET_QUA_DANH_GIA', df_kq,
+                                       ['SubmissionID','MaCauHoi','Diem'], f"{PROCESSED_PATH}/kq_{FILE_NAME}.csv")
+            print(f"  ✅ FACT_KQ: {c:,} ({time.time()-t1:.1f}s)")
+        
+    except Exception as e:
+        print(f"  ❌ Error: {e}")
+        import traceback; traceback.print_exc()
+    finally:
+        for t in ['DIM_LOP_SINH_VIEN','DIM_SINH_VIEN','DIM_GIANG_VIEN',
+                   'DIM_LOP_HOC_PHAN','FACT_GOP_Y_TU_LUAN','FACT_KET_QUA_DANH_GIA']:
+            try: cur.execute(f"ALTER TABLE {t} CHECK CONSTRAINT ALL")
+            except: pass
+        conn.close()
     
     print(f"  ⏱️ Total load: {time.time()-t0:.1f}s")
 
 # ================= MAIN =================
 def main():
     t0=time.time()
-    blob=BlobServiceClient.from_connection_string(CONNECTION_STRING)
-    client=blob.get_container_client(CONTAINER_NAME).get_blob_client(f"{RAWDATA_PATH}/{SURVEY_FILE}")
-    content=client.download_blob().readall().decode('utf-8-sig')
-    df=parse_survey(content)
+    blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
+    client = blob_service.get_container_client(CONTAINER_NAME).get_blob_client(f"{RAWDATA_PATH}/{SURVEY_FILE}")
+    content = client.download_blob().readall().decode('utf-8-sig')
+    df = parse_survey(content)
     if df.empty: print("❌ No data!"); return
-    load_all_bulk(df)
+    load_all_bulk(df, blob_service)
     print(f"\n🎉 Total: {time.time()-t0:.1f}s | {len(df):,} rows")
 
 if __name__=="__main__":

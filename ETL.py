@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PIPELINE 2: SURVEY DATA - FIXED TRUNCATION
-- autocommit=True
-- SET NOCOUNT ON
+PIPELINE 2: BULK INSERT - SIÊU NHANH
+- Ghi CSV tạm
+- BULK INSERT thẳng vào SQL Server
+- Không validation, không FK check
 """
 
-import os, sys, re, time, pandas as pd, numpy as np, pyodbc
+import os, sys, re, time, pandas as pd, numpy as np, pyodbc, tempfile
 from multiprocessing import Pool, cpu_count
-from azure.storage.blob import BlobServiceClient
+from azure.storage.blob import BlobServiceClient, BlobClient
 
 # ================= CONFIG =================
 CONNECTION_STRING = os.environ.get("CONNECTION_STRING")
@@ -28,7 +29,6 @@ CONN_STR = (
     f"UID=sqladmin;PWD={DB_PASSWORD};"
     f"Encrypt=yes;TrustServerCertificate=no;"
     f"Connection Timeout=600;Command Timeout=1800;"
-    f"LongAsMax=yes;"
 )
 
 CONTAINER_NAME = SEMESTER
@@ -36,8 +36,12 @@ RAWDATA_PATH = "rawdata"
 NUM_WORKERS = cpu_count()
 CHUNK = 100000
 
+# Azure Storage Account info từ CONNECTION_STRING
+STORAGE_ACCOUNT = CONNECTION_STRING.split('AccountName=')[1].split(';')[0] if 'AccountName=' in CONNECTION_STRING else ''
+STORAGE_KEY = CONNECTION_STRING.split('AccountKey=')[1].split(';')[0] if 'AccountKey=' in CONNECTION_STRING else ''
+
 print("="*70)
-print("📊 PIPELINE 2: SURVEY DATA (FIXED)")
+print("📊 PIPELINE 2: BULK INSERT (SIÊU NHANH)")
 print(f"   Workers: {NUM_WORKERS}")
 print("="*70)
 
@@ -49,11 +53,11 @@ _G = re.compile(r'^(\d{7}|TG\d{5}|gvDacThu_TKTH)$').match
 def nlp(t):
     if not t or len(t)<5: return 0,0,0,0,'NEUTRAL',0
     w=set(t.lower().split())
-    t1=1 if len(w&{'nội dung','chương trình','học phần','kiến thức','chuẩn','tài liệu','giáo trình','thực hành','phù hợp','bổ ích'})>=2 else 0
-    t2=1 if len(w&{'giảng viên','thầy','cô','dạy','giảng','nhiệt tình','tận tâm','dễ hiểu','sinh động','thú vị'})>=2 else 0
-    t3=1 if len(w&{'kiểm tra','đánh giá','thi','đề thi','chấm','công bằng','khách quan'})>=2 else 0
-    t4=1 if len(w&{'cơ sở','phòng học','máy chiếu','wifi','hỗ trợ','góp ý','cải thiện'})>=2 else 0
-    p=len(w&{'tốt','hay','hài lòng','bổ ích','hiệu quả','tuyệt vời','nhiệt tình','dễ hiểu','công bằng'})
+    t1=1 if len(w&{'nội dung','chương trình','học phần','kiến thức','chuẩn','tài liệu'})>=2 else 0
+    t2=1 if len(w&{'giảng viên','thầy','cô','dạy','nhiệt tình','tận tâm','dễ hiểu'})>=2 else 0
+    t3=1 if len(w&{'kiểm tra','đánh giá','thi','chấm','công bằng','khách quan'})>=2 else 0
+    t4=1 if len(w&{'cơ sở','phòng học','máy chiếu','wifi','góp ý','cải thiện'})>=2 else 0
+    p=len(w&{'tốt','hay','hài lòng','bổ ích','hiệu quả','tuyệt vời','nhiệt tình'})
     n=len(w&{'tệ','kém','chán','khó hiểu','nhàm chán','thiếu','thất vọng'})
     if 'không' in w: p=max(0,p-1); n+=1
     s='POSITIVE' if p>n else ('NEGATIVE' if n>p else 'NEUTRAL')
@@ -104,10 +108,37 @@ def parse_survey(content):
     print(f"  ✅ {len(df):,} rows ({time.time()-t0:.1f}s)")
     return df
 
-# ================= LOAD =================
-# ================= LOAD =================
-def load_all(df):
-    print("\n💾 LOAD TO DATABASE...")
+# ================= BULK INSERT =================
+def bulk_insert_csv(cursor, table, df, columns, csv_path):
+    """Ghi CSV + BULK INSERT"""
+    if df.empty: return 0
+    
+    # Chuẩn bị DataFrame
+    df_out = df[columns].copy()
+    for c in df_out.columns:
+        df_out[c] = df_out[c].astype(str).str.replace('|',' ').str.replace('\n',' ').str.replace('\r',' ').fillna('')
+    
+    # Ghi CSV với delimiter |
+    df_out.to_csv(csv_path, index=False, header=False, sep='|', encoding='utf-8', quoting=1)
+    
+    # BULK INSERT
+    sql = f"""
+        BULK INSERT {table}
+        FROM '{csv_path}'
+        WITH (
+            FIELDTERMINATOR = '|',
+            ROWTERMINATOR = '\\n',
+            CODEPAGE = '65001',
+            BATCHSIZE = 100000,
+            TABLOCK
+        )
+    """
+    cursor.execute(sql)
+    cursor.connection.commit()
+    return len(df_out)
+
+def load_all_bulk(df):
+    print("\n💾 BULK INSERT...")
     t0=time.time()
     
     fn=SURVEY_FILE.replace('.csv','').split('_')[-1]
@@ -117,128 +148,107 @@ def load_all(df):
     
     de=df[(df['EssayText'].notna())&(df['EssayText']!='')].drop_duplicates('SubmissionID')
     
+    # FACT_KET_QUA
     kq=[]
     for _,r in df[(df['CauHoi']!='')&(df['GiaTri']!='')].iterrows():
         try:
             mc=int(float(r['CauHoi'])); d=int(float(r['GiaTri']))
-            if 1<=mc<=12 and 1<=d<=5: kq.append((str(r['SubmissionID'])[:200],mc,d))
+            if 1<=mc<=12 and 1<=d<=5: kq.append({'SubmissionID':str(r['SubmissionID'])[:200],'MaCauHoi':mc,'Diem':d})
         except: pass
     for _,r in de.iterrows():
         s=r['Sentiment']; d=5 if s=='POSITIVE' else (2 if s=='NEGATIVE' else 3)
-        for mc in [13,14,15,16]: kq.append((str(r['SubmissionID'])[:200],mc,d))
-    
-    # ===== FIX: pyodbc.pooling = False =====
-    pyodbc.pooling = False
+        for mc in [13,14,15,16]: kq.append({'SubmissionID':str(r['SubmissionID'])[:200],'MaCauHoi':mc,'Diem':d})
     
     conn = pyodbc.connect(CONN_STR, autocommit=True)
     cur = conn.cursor()
     
-    # ===== FIX: Dùng cursor.execute thay vì executemany =====
-    # Chia nhỏ batch và dùng execute thay vì executemany
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            # Tắt constraint
+            for t in ['DIM_LOP_SINH_VIEN','DIM_SINH_VIEN','DIM_GIANG_VIEN',
+                       'DIM_LOP_HOC_PHAN','FACT_GOP_Y_TU_LUAN','FACT_KET_QUA_DANH_GIA']:
+                try: cur.execute(f"ALTER TABLE {t} NOCHECK CONSTRAINT ALL")
+                except: pass
+            
+            # 1. DIM_HOC_KY
+            cur.execute("IF NOT EXISTS(SELECT 1 FROM DIM_HOC_KY WHERE MaHocKy=?) INSERT INTO DIM_HOC_KY(MaHocKy,NamHoc,HocKy) VALUES(?,?,?)",(mhk,mhk,nh,hk))
+            
+            # 2. DIM_LOP_SINH_VIEN
+            t1=time.time()
+            df_lop = df[['MaLopHP']].drop_duplicates().copy()
+            df_lop['MaLop'] = df_lop['MaLopHP'].str[:50]
+            df_lop['Lop'] = df_lop['MaLopHP'].str[:50]
+            df_lop['MaChuyenNganh'] = df_lop['MaLopHP'].str[:50]
+            c = bulk_insert_csv(cur, 'DIM_LOP_SINH_VIEN', df_lop,
+                               ['MaLop','Lop','MaChuyenNganh'], f"{tmp}/lop.csv")
+            print(f"  DIM_LOP: {c:,} ({time.time()-t1:.1f}s)")
+            
+            # 3. DIM_SINH_VIEN
+            t1=time.time()
+            df_sv = df[['MaSV','MaLopHP']].drop_duplicates('MaSV').copy()
+            df_sv['HoDem'] = ''; df_sv['Ten'] = ''; df_sv['NgaySinh'] = None
+            df_sv['MaSV'] = df_sv['MaSV'].str[:50]
+            df_sv['MaLop'] = df_sv['MaLopHP'].str[:50]
+            c = bulk_insert_csv(cur, 'DIM_SINH_VIEN', df_sv,
+                               ['MaSV','HoDem','Ten','NgaySinh','MaLop'], f"{tmp}/sv.csv")
+            print(f"  DIM_SV: {c:,} ({time.time()-t1:.1f}s)")
+            
+            # 4. DIM_GIANG_VIEN
+            t1=time.time()
+            df_gv = df[['MaGV']].drop_duplicates().copy()
+            df_gv['HoDemGV'] = ''; df_gv['TenGV'] = ''
+            df_gv['MaGV'] = df_gv['MaGV'].str[:50]
+            c = bulk_insert_csv(cur, 'DIM_GIANG_VIEN', df_gv,
+                               ['MaGV','HoDemGV','TenGV'], f"{tmp}/gv.csv")
+            print(f"  DIM_GV: {c:,} ({time.time()-t1:.1f}s)")
+            
+            # 5. DIM_LOP_HOC_PHAN
+            t1=time.time()
+            df_lhp = df[['MaLopHP','MaHP','MaGV']].drop_duplicates('MaLopHP').copy()
+            df_lhp['LopHP'] = df_lhp['MaLopHP'].str[:100]
+            df_lhp['MaLopHP'] = df_lhp['MaLopHP'].str[:100]
+            df_lhp['MaHP'] = df_lhp['MaHP'].str[:50]
+            df_lhp['MaGV'] = df_lhp['MaGV'].str[:50]
+            df_lhp['MaHocKy'] = mhk
+            c = bulk_insert_csv(cur, 'DIM_LOP_HOC_PHAN', df_lhp,
+                               ['MaLopHP','LopHP','MaHP','MaGV','MaHocKy'], f"{tmp}/lhp.csv")
+            print(f"  DIM_LHP: {c:,} ({time.time()-t1:.1f}s)")
+            
+            # 6. FACT_GOP_Y
+            t1=time.time()
+            if not de.empty:
+                df_gy = de[['SubmissionID','MaSV','MaLopHP','EssayText','Sentiment','Is_Valid',
+                             'Tag_HocPhan','Tag_DayHoc','Tag_KiemTra','Tag_Khac']].copy()
+                df_gy.columns = ['SubmissionID','MaSV','MaLopHP','NoiDungGopY','Sentiment','Is_Valid',
+                                  'Tag_HocPhan','Tag_DayHoc','Tag_KiemTra','Tag_Khac']
+                df_gy['SubmissionID'] = df_gy['SubmissionID'].str[:200]
+                df_gy['MaSV'] = df_gy['MaSV'].str[:50]
+                df_gy['MaLopHP'] = df_gy['MaLopHP'].str[:100]
+                df_gy['NoiDungGopY'] = df_gy['NoiDungGopY'].str[:4000]
+                df_gy['Sentiment'] = df_gy['Sentiment'].str[:20]
+                c = bulk_insert_csv(cur, 'FACT_GOP_Y_TU_LUAN', df_gy,
+                                   ['SubmissionID','MaSV','MaLopHP','NoiDungGopY','Sentiment','Is_Valid',
+                                    'Tag_HocPhan','Tag_DayHoc','Tag_KiemTra','Tag_Khac'], f"{tmp}/gy.csv")
+                print(f"  FACT_GY: {c:,} ({time.time()-t1:.1f}s)")
+            
+            # 7. FACT_KET_QUA
+            t1=time.time()
+            if kq:
+                df_kq = pd.DataFrame(kq)
+                c = bulk_insert_csv(cur, 'FACT_KET_QUA_DANH_GIA', df_kq,
+                                   ['SubmissionID','MaCauHoi','Diem'], f"{tmp}/kq.csv")
+                print(f"  FACT_KQ: {c:,} ({time.time()-t1:.1f}s)")
+            
+        except Exception as e:
+            print(f"  ❌ Error: {e}")
+        finally:
+            for t in ['DIM_LOP_SINH_VIEN','DIM_SINH_VIEN','DIM_GIANG_VIEN',
+                       'DIM_LOP_HOC_PHAN','FACT_GOP_Y_TU_LUAN','FACT_KET_QUA_DANH_GIA']:
+                try: cur.execute(f"ALTER TABLE {t} CHECK CONSTRAINT ALL")
+                except: pass
+            conn.close()
     
-    try:
-        # Tắt constraint
-        for t in ['DIM_LOP_SINH_VIEN','DIM_SINH_VIEN','DIM_GIANG_VIEN',
-                   'DIM_LOP_HOC_PHAN','FACT_GOP_Y_TU_LUAN','FACT_KET_QUA_DANH_GIA']:
-            try: cur.execute(f"ALTER TABLE {t} NOCHECK CONSTRAINT ALL")
-            except: pass
-        
-        # 1. DIM_HOC_KY
-        cur.execute("IF NOT EXISTS(SELECT 1 FROM DIM_HOC_KY WHERE MaHocKy=?) INSERT INTO DIM_HOC_KY(MaHocKy,NamHoc,HocKy) VALUES(?,?,?)",(mhk,mhk,nh,hk))
-        print(f"  ✅ DIM_HOC_KY: done")
-        
-        # 2. DIM_LOP_SINH_VIEN - dùng execute từng dòng
-        print(f"  -> DIM_LOP_SINH_VIEN...")
-        lops=df[['MaLopHP']].drop_duplicates().fillna('')
-        count=0
-        for _,r in lops.iterrows():
-            v = str(r['MaLopHP']).strip()
-            if v:
-                try:
-                    cur.execute("INSERT INTO DIM_LOP_SINH_VIEN(MaLop,Lop,MaChuyenNganh) VALUES(?,?,?)",
-                               (v[:50], v[:50], v[:50]))
-                    count+=1
-                except: pass
-        print(f"  ✅ DIM_LOP: {count:,}")
-        
-        # 3. DIM_SINH_VIEN
-        print(f"  -> DIM_SINH_VIEN...")
-        svs=df[['MaSV','MaLopHP']].drop_duplicates('MaSV').fillna('')
-        count=0
-        for _,r in svs.iterrows():
-            sv = str(r['MaSV']).strip()
-            ml = str(r['MaLopHP']).strip()
-            if sv:
-                try:
-                    cur.execute("INSERT INTO DIM_SINH_VIEN(MaSV,HoDem,Ten,NgaySinh,MaLop) VALUES(?,?,?,?,?)",
-                               (sv[:50], '', '', None, ml[:50]))
-                    count+=1
-                except: pass
-        print(f"  ✅ DIM_SV: {count:,}")
-        
-        # 4. DIM_GIANG_VIEN
-        print(f"  -> DIM_GIANG_VIEN...")
-        gvs=df[['MaGV']].drop_duplicates().fillna('')
-        count=0
-        for _,r in gvs.iterrows():
-            gv = str(r['MaGV']).strip()
-            if gv:
-                try:
-                    cur.execute("INSERT INTO DIM_GIANG_VIEN(MaGV,HoDemGV,TenGV) VALUES(?,?,?)",
-                               (gv[:50], '', ''))
-                    count+=1
-                except: pass
-        print(f"  ✅ DIM_GV: {count:,}")
-        
-        # 5. DIM_LOP_HOC_PHAN
-        print(f"  -> DIM_LOP_HOC_PHAN...")
-        lhps=df[['MaLopHP','MaHP','MaGV']].drop_duplicates('MaLopHP').fillna('')
-        count=0
-        for _,r in lhps.iterrows():
-            ml = str(r['MaLopHP']).strip()
-            if ml:
-                try:
-                    cur.execute("INSERT INTO DIM_LOP_HOC_PHAN(MaLopHP,LopHP,MaHP,MaGV,MaHocKy) VALUES(?,?,?,?,?)",
-                               (ml[:100], ml[:100], str(r['MaHP'])[:50], str(r['MaGV'])[:50], mhk))
-                    count+=1
-                except: pass
-        print(f"  ✅ DIM_LHP: {count:,}")
-        
-        # 6. FACT_GOP_Y
-        print(f"  -> FACT_GOP_Y...")
-        count=0
-        if not de.empty:
-            for _,r in de.iterrows():
-                try:
-                    cur.execute("INSERT INTO FACT_GOP_Y_TU_LUAN(SubmissionID,MaSV,MaLopHP,NoiDungGopY,Sentiment,Is_Valid,Tag_HocPhan,Tag_DayHoc,Tag_KiemTra,Tag_Khac) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                               (str(r['SubmissionID'])[:200], str(r['MaSV'])[:50], str(r['MaLopHP'])[:100],
-                                str(r['EssayText'])[:4000], str(r['Sentiment'])[:20], int(r['Is_Valid']),
-                                int(r['Tag_HocPhan']), int(r['Tag_DayHoc']), int(r['Tag_KiemTra']), int(r['Tag_Khac'])))
-                    count+=1
-                except: pass
-        print(f"  ✅ FACT_GY: {count:,}")
-        
-        # 7. FACT_KET_QUA
-        print(f"  -> FACT_KET_QUA...")
-        count=0
-        if kq:
-            for d in kq:
-                try:
-                    cur.execute("INSERT INTO FACT_KET_QUA_DANH_GIA(SubmissionID,MaCauHoi,Diem) VALUES(?,?,?)", d)
-                    count+=1
-                except: pass
-        print(f"  ✅ FACT_KQ: {count:,}")
-        
-    except Exception as e:
-        print(f"  ❌ Error: {e}")
-    finally:
-        for t in ['DIM_LOP_SINH_VIEN','DIM_SINH_VIEN','DIM_GIANG_VIEN',
-                   'DIM_LOP_HOC_PHAN','FACT_GOP_Y_TU_LUAN','FACT_KET_QUA_DANH_GIA']:
-            try: cur.execute(f"ALTER TABLE {t} CHECK CONSTRAINT ALL")
-            except: pass
-        conn.close()
-    
-    print(f"  ⏱️ Load: {time.time()-t0:.1f}s")
+    print(f"  ⏱️ Total load: {time.time()-t0:.1f}s")
 
 # ================= MAIN =================
 def main():
@@ -248,7 +258,7 @@ def main():
     content=client.download_blob().readall().decode('utf-8-sig')
     df=parse_survey(content)
     if df.empty: print("❌ No data!"); return
-    load_all(df)
+    load_all_bulk(df)
     print(f"\n🎉 Total: {time.time()-t0:.1f}s | {len(df):,} rows")
 
 if __name__=="__main__":

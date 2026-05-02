@@ -75,68 +75,84 @@ def parse_batch(args):
         res.append([f"{ma_sv}_{lhp}_{ma_gv}_{file_name}"[:150], ma_sv, lhp, right[:4000], sent, valid, t1, t2, t3, t4, ch, gt])
     return res
 
-# ================= DATABASE LOAD (STABLE BATCHING) =================
+# ================= DATABASE LOAD =================
 def load_to_db(df):
-    print("\n💾 Loading to Database (Mini-Batch Mode)...")
+    print("\n💾 Loading to Database (Deduplicated Mode)...")
     t0 = time.time()
-    SUB_BATCH_SIZE = 5000  # Kích thước an toàn cho Azure SQL
+    SUB_BATCH_SIZE = 5000 
 
     try:
         with pyodbc.connect(CONN_STR) as conn:
             cursor = conn.cursor()
             cursor.fast_executemany = True
             
+            # --- OPTIONAL: XÓA DỮ LIỆU CŨ CỦA FILE NÀY NẾU MUỐN CHÈN ĐÈ ---
+            # cursor.execute("DELETE FROM FACT_GOP_Y_TU_LUAN WHERE SubmissionID LIKE ?", (f"%_{FILE_NAME}",))
+            # cursor.execute("DELETE FROM FACT_KET_QUA_DANH_GIA WHERE SubmissionID LIKE ?", (f"%_{FILE_NAME}",))
+            # conn.commit()
+
             # 1. FACT_GOP_Y_TU_LUAN
-            df_gy = df[df['EssayText'] != ''].copy()
+            df_gy = df[df['EssayText'] != ''].drop_duplicates(subset=['SubmissionID']).copy()
             if not df_gy.empty:
-                print(f"   -> Inserting FACT_GOP_Y ({len(df_gy):,} rows)...")
+                print(f"   -> Inserting FACT_GOP_Y ({len(df_gy):,} unique rows)...")
                 cols_gy = ['SubmissionID','MaSV','MaLopHP','NoiDungGopY','Sentiment','Is_Valid','Tag_HocPhan','Tag_DayHoc','Tag_KiemTra','Tag_Khac']
                 data_gy = df_gy.iloc[:, 0:10].values.tolist()
-                sql_gy = f"INSERT INTO FACT_GOP_Y_TU_LUAN ({','.join(cols_gy)}) VALUES ({','.join(['?']*10)})"
                 
-                for i in range(0, len(data_gy), SUB_BATCH_SIZE):
-                    batch = data_gy[i : i + SUB_BATCH_SIZE]
-                    cursor.executemany(sql_gy, batch)
-                    conn.commit() # Commit ngay để tránh tràn Transaction Log
+                # Sử dụng cú pháp INSERT ... WHERE NOT EXISTS để tránh lỗi PK nếu dữ liệu đã có trong DB
+                sql_gy = f"""
+                    INSERT INTO FACT_GOP_Y_TU_LUAN ({','.join(cols_gy)})
+                    SELECT {','.join(['?']*10)}
+                    WHERE NOT EXISTS (SELECT 1 FROM FACT_GOP_Y_TU_LUAN WHERE SubmissionID = ?)
+                """
+                # Chuẩn bị dữ liệu: mỗi row cần thêm SubmissionID ở cuối để phục vụ mệnh đề WHERE
+                data_gy_final = [row + [row[0]] for row in data_gy]
+                
+                for i in range(0, len(data_gy_final), SUB_BATCH_SIZE):
+                    cursor.executemany(sql_gy, data_gy_final[i : i + SUB_BATCH_SIZE])
+                    conn.commit()
             
-            # 2. FACT_KET_QUA_DANH_GIA (Vectorized Processing)
+            # 2. FACT_KET_QUA_DANH_GIA
             print("   -> Preparing FACT_KET_QUA...")
-            df_kq = df[(df['CH'] != '') & (df['GT'] != '')].copy()
-            df_kq['MaCauHoi'] = pd.to_numeric(df_kq['CH'], errors='coerce')
-            df_kq['Diem'] = pd.to_numeric(df_kq['GT'], errors='coerce')
-            df_kq = df_kq[df_kq['MaCauHoi'].between(1, 12)][['SubmissionID','MaCauHoi','Diem']]
+            df_kq_raw = df[(df['CH'] != '') & (df['GT'] != '')].copy()
+            df_kq_raw['MaCauHoi'] = pd.to_numeric(df_kq_raw['CH'], errors='coerce')
+            df_kq_raw['Diem'] = pd.to_numeric(df_kq_raw['GT'], errors='coerce')
+            df_kq = df_kq_raw[df_kq_raw['MaCauHoi'].between(1, 12)][['SubmissionID','MaCauHoi','Diem']]
             
             df_ess = df[df['EssayText'] != ''].drop_duplicates('SubmissionID').copy()
             s_map = {'POSITIVE': 5, 'NEUTRAL': 3, 'NEGATIVE': 2}
             df_ess['Diem'] = df_ess['Sentiment'].map(s_map).fillna(3)
             
-            ess_rows = []
+            ess_list = []
             for mc in [13, 14, 15, 16]:
                 tmp = df_ess[['SubmissionID', 'Diem']].copy()
                 tmp['MaCauHoi'] = mc
-                ess_rows.append(tmp)
+                ess_list.append(tmp)
             
-            final_kq = pd.concat([df_kq] + ess_rows).dropna()
+            final_kq = pd.concat([df_kq] + ess_list).dropna().drop_duplicates(subset=['SubmissionID', 'MaCauHoi'])
+            
             if not final_kq.empty:
                 print(f"   -> Inserting FACT_KET_QUA ({len(final_kq):,} rows)...")
                 data_kq = final_kq.values.tolist()
-                sql_kq = "INSERT INTO FACT_KET_QUA_DANH_GIA (SubmissionID, MaCauHoi, Diem) VALUES (?, ?, ?)"
-                for i in range(0, len(data_kq), SUB_BATCH_SIZE):
-                    batch = data_kq[i : i + SUB_BATCH_SIZE]
-                    cursor.executemany(sql_kq, batch)
+                sql_kq = """
+                    INSERT INTO FACT_KET_QUA_DANH_GIA (SubmissionID, MaCauHoi, Diem)
+                    SELECT ?, ?, ?
+                    WHERE NOT EXISTS (SELECT 1 FROM FACT_KET_QUA_DANH_GIA WHERE SubmissionID = ? AND MaCauHoi = ?)
+                """
+                # Data: SubID, MaCH, Diem, SubID, MaCH
+                data_kq_final = [ [r[0], r[1], r[2], r[0], r[1]] for r in data_kq ]
+                
+                for i in range(0, len(data_kq_final), SUB_BATCH_SIZE):
+                    cursor.executemany(sql_kq, data_kq_final[i : i + SUB_BATCH_SIZE])
                     conn.commit()
 
     except pyodbc.Error as e:
         print(f"❌ SQL Error: {e}")
         sys.exit(1)
-    
     print(f"   ⏱️ SQL Load Time: {time.time()-t0:.1f}s")
 
 # ================= MAIN =================
 def main():
     start_time = time.time()
-    
-    print(f"📥 Downloading {SURVEY_FILE} from Blob...")
     blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
     client = blob_service.get_container_client(CONTAINER_NAME).get_blob_client(f"{RAWDATA_PATH}/{SURVEY_FILE}")
     content = client.download_blob().readall().decode('utf-8-sig')
@@ -146,7 +162,7 @@ def main():
     chunk_size = max(1, num_lines // cpu_count())
     batches = [(lines[i:i+chunk_size], FILE_NAME) for i in range(0, num_lines, chunk_size)]
     
-    print(f"📝 Parsing {num_lines:,} lines with {cpu_count()} cores...")
+    print(f"📝 Parsing {num_lines:,} lines...")
     with Pool(cpu_count()) as pool:
         all_res = []
         for res in pool.imap_unordered(parse_batch, batches):
@@ -155,7 +171,7 @@ def main():
     df = pd.DataFrame(all_res, columns=['SubmissionID','MaSV','MaLopHP','EssayText','Sentiment','Is_Valid','Tag_HocPhan','Tag_DayHoc','Tag_KiemTra','Tag_Khac','CH','GT'])
     
     load_to_db(df)
-    print(f"\n🎉 HOÀN THÀNH! Tổng thời gian: {time.time()-start_time:.1f}s")
+    print(f"\n🎉 THÀNH CÔNG! Tổng thời gian: {time.time()-start_time:.1f}s")
 
 if __name__ == "__main__":
     main()

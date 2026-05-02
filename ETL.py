@@ -1,12 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-PIPELINE 2: SURVEY DATA - FIXED
-- Dùng executemany thay BULK INSERT (Azure không hỗ trợ đọc file local)
-- Tắt constraint tạm thời để tăng tốc
-- Batch size lớn 100K
-"""
-
 import os
 import sys
 import re
@@ -16,8 +7,9 @@ import pandas as pd
 import numpy as np
 import pyodbc
 from datetime import datetime
-from azure.storage.blob import BlobServiceClient
+from azure.storage.blob import BlobServiceClient, BlobSasPermissions, generate_blob_sas
 from multiprocessing import Pool, cpu_count
+import tempfile
 
 # ================= CONFIG =================
 CONNECTION_STRING = os.environ.get("CONNECTION_STRING")
@@ -42,16 +34,21 @@ CONN_STR = (
     f"Command Timeout=600;"
 )
 
+# Azure Storage info từ connection string
+# Format: DefaultEndpointsProtocol=https;AccountName=XXX;AccountKey=YYY;EndpointSuffix=core.windows.net
+STORAGE_ACCOUNT = CONNECTION_STRING.split('AccountName=')[1].split(';')[0] if 'AccountName=' in CONNECTION_STRING else ''
+STORAGE_KEY = CONNECTION_STRING.split('AccountKey=')[1].split(';')[0] if 'AccountKey=' in CONNECTION_STRING else ''
+
 CONTAINER_NAME = SEMESTER
 RAWDATA_PATH = "rawdata"
+TEMP_CONTAINER = "temp-bulk"  # Container tạm cho BULK INSERT
 
 NUM_WORKERS = cpu_count()
 CHUNK_SIZE = 100000
-BATCH_SIZE = 50000  # executemany batch size
 
 print("=" * 70)
-print("📊 PIPELINE 2: SURVEY DATA (executemany)")
-print(f"   Workers: {NUM_WORKERS} | Chunk: {CHUNK_SIZE:,} | Batch: {BATCH_SIZE:,}")
+print("📊 PIPELINE 2: SURVEY DATA (BULK INSERT via Blob)")
+print(f"   Workers: {NUM_WORKERS} | Chunk: {CHUNK_SIZE:,}")
 print("=" * 70)
 
 # ================= PATTERNS =================
@@ -111,13 +108,43 @@ def load_master_from_db():
     print(f"  -> CN={len(_g_cn)}, HP={len(_g_hp)}")
     conn.close()
 
-# ================= BLOB =================
+# ================= BLOB FUNCTIONS =================
 def download_blob(blob_service, container, path):
     try:
         client = blob_service.get_container_client(container).get_blob_client(path)
         return client.download_blob().readall().decode('utf-8-sig') if client.exists() else ""
     except:
         return ""
+
+def upload_to_blob(blob_service, container, blob_name, data):
+    """Upload string/data lên Azure Blob"""
+    try:
+        container_client = blob_service.get_container_client(container)
+        # Tạo container nếu chưa có
+        if not container_client.exists():
+            blob_service.create_container(container)
+        blob_client = container_client.get_blob_client(blob_name)
+        blob_client.upload_blob(data, overwrite=True)
+        return True
+    except Exception as e:
+        print(f"    ⚠️ Upload blob lỗi: {e}")
+        return False
+
+def get_blob_sas_url(blob_service, container, blob_name):
+    """Tạo SAS URL cho Blob (để SQL Server đọc)"""
+    try:
+        sas_token = generate_blob_sas(
+            account_name=STORAGE_ACCOUNT,
+            account_key=STORAGE_KEY,
+            container_name=container,
+            blob_name=blob_name,
+            permission=BlobSasPermissions(read=True),
+            expiry=datetime.utcnow() + pd.Timedelta(hours=1)
+        )
+        return f"https://{STORAGE_ACCOUNT}.blob.core.windows.net/{container}/{blob_name}?{sas_token}"
+    except:
+        # Fallback: dùng URL không SAS (nếu container public)
+        return f"https://{STORAGE_ACCOUNT}.blob.core.windows.net/{container}/{blob_name}"
 
 # ================= UTILS =================
 def derive_ma_hoc_ky():
@@ -161,7 +188,7 @@ def nlp_fast(text):
     
     return t1, t2, t3, t4, s, 1 if len(text) > 10 else 0
 
-# ================= PARSE =================
+# ================= PARSE (GIỮ NGUYÊN CODE CŨ - NHANH) =================
 def parse_batch(args):
     lines, file_name = args
     results = []
@@ -244,7 +271,7 @@ def parse_survey(content):
     with Pool(NUM_WORKERS) as pool:
         for i, res in enumerate(pool.imap_unordered(parse_batch, batches)):
             all_results.extend(res)
-            print(f"    Batch {i+1}/{len(batches)}: {len(res):,} rows (total: {len(all_results):,})")
+            print(f"    Batch {i+1}/{len(batches)}: {len(res):,} rows")
     
     cols = ['SubmissionID','MaSV','HoDem','Ten','NgaySinh',
             'MaLop','Lop','MaChuyenNganh','TenChuyenNganh',
@@ -259,41 +286,69 @@ def parse_survey(content):
     print(f"  ✅ {len(df):,} rows ({time.time()-t0:.1f}s)")
     return df
 
-# ================= DATABASE LOAD (executemany) =================
+# ================= DATABASE LOAD (BULK INSERT TỪ BLOB) =================
 def disable_constraints(cursor):
-    """Tắt tất cả FK constraints để insert nhanh"""
     tables = ['FACT_KET_QUA_DANH_GIA', 'FACT_GOP_Y_TU_LUAN', 
               'DIM_SINH_VIEN', 'DIM_LOP_HOC_PHAN', 'DIM_LOP_SINH_VIEN', 'DIM_HOC_PHAN']
     for t in tables:
-        try:
-            cursor.execute(f"ALTER TABLE {t} NOCHECK CONSTRAINT ALL")
+        try: cursor.execute(f"ALTER TABLE {t} NOCHECK CONSTRAINT ALL")
         except: pass
     cursor.connection.commit()
 
 def enable_constraints(cursor):
-    """Bật lại FK constraints"""
     tables = ['FACT_KET_QUA_DANH_GIA', 'FACT_GOP_Y_TU_LUAN', 
               'DIM_SINH_VIEN', 'DIM_LOP_HOC_PHAN', 'DIM_LOP_SINH_VIEN', 'DIM_HOC_PHAN']
     for t in tables:
-        try:
-            cursor.execute(f"ALTER TABLE {t} CHECK CONSTRAINT ALL")
+        try: cursor.execute(f"ALTER TABLE {t} CHECK CONSTRAINT ALL")
         except: pass
     cursor.connection.commit()
 
-def batch_insert(cursor, table, df, columns, id_col=None):
-    """Insert nhanh với executemany + batch lớn"""
-    if df.empty:
-        return 0
+def prepare_csv_data(df, columns):
+    """Chuẩn hóa DataFrame thành CSV string cho BULK INSERT"""
+    df_out = df[columns].copy()
+    for c in df_out.columns:
+        # Escape cho CSV: thay \n, \r, | bằng space
+        df_out[c] = df_out[c].astype(str).str.replace('\n',' ').str.replace('\r',' ').str.replace('|',' ').fillna('')
     
-    df = df.drop_duplicates(id_col) if id_col else df
+    # Ghi ra CSV với delimiter |
+    buffer = io.StringIO()
+    df_out.to_csv(buffer, index=False, header=False, sep='|', encoding='utf-8', quoting=1)
+    return buffer.getvalue()
+
+def bulk_insert_from_blob(cursor, table, columns, blob_url):
+    """BULK INSERT từ Azure Blob URL"""
+    cols_str = ', '.join(columns)
+    sql = f"""
+        BULK INSERT {table}
+        FROM '{blob_url}'
+        WITH (
+            DATA_SOURCE = 'MyAzureBlobStorage',
+            FORMAT = 'CSV',
+            FIELDTERMINATOR = '|',
+            ROWTERMINATOR = '\\n',
+            BATCHSIZE = 100000,
+            TABLOCK
+        )
+    """
+    cursor.execute(sql)
+    cursor.connection.commit()
+
+def bulk_insert_executemany_fast(cursor, table, df, columns, id_col=None):
+    """Fallback: executemany nhanh (nếu BULK INSERT không hoạt động)"""
+    if df.empty: return 0
+    
+    if id_col:
+        df = df.drop_duplicates(id_col)
     df = df.fillna('')
     
     ph = ', '.join(['?'] * len(columns))
     sql = f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({ph})"
     
     total = 0
-    for i in range(0, len(df), BATCH_SIZE):
-        batch = df.iloc[i:i+BATCH_SIZE]
+    batch_size = 50000
+    
+    for i in range(0, len(df), batch_size):
+        batch = df.iloc[i:i+batch_size]
         data = []
         for _, r in batch.iterrows():
             row_data = []
@@ -303,84 +358,58 @@ def batch_insert(cursor, table, df, columns, id_col=None):
                     try:
                         dt = pd.to_datetime(v, format='%d/%m/%Y', errors='coerce')
                         row_data.append(dt.strftime('%Y-%m-%d') if pd.notna(dt) else None)
-                    except:
-                        row_data.append(None)
-                elif c in ['HocKy', 'Tag_HocPhan', 'Tag_DayHoc', 'Tag_KiemTra', 'Tag_Khac', 'Is_Valid']:
-                    try:
-                        row_data.append(int(float(v)) if pd.notna(v) and v != '' else 0)
-                    except:
-                        row_data.append(0)
+                    except: row_data.append(None)
+                elif c in ['HocKy', 'Tag_HocPhan', 'Tag_DayHoc', 'Tag_KiemTra', 'Tag_Khac', 'Is_Valid', 'Diem', 'MaCauHoi']:
+                    try: row_data.append(int(float(v)))
+                    except: row_data.append(0)
                 else:
-                    val = str(v).strip()[:500] if pd.notna(v) and v != '' else ''
-                    row_data.append(val if val else '')
+                    row_data.append(str(v).strip()[:500] if pd.notna(v) and v != '' else '')
             data.append(tuple(row_data))
         
         if data:
-            try:
-                cursor.executemany(sql, data)
-                cursor.connection.commit()
-                total += len(data)
-            except Exception as e:
-                # Thử từng dòng nếu lỗi
-                for d in data:
-                    try:
-                        cursor.execute(sql, d)
-                        cursor.connection.commit()
-                        total += 1
-                    except:
-                        pass
+            cursor.executemany(sql, data)
+            cursor.connection.commit()
+            total += len(data)
     
     return total
 
-def swap_columns(df, col1, col2):
-    """Đổi tên 2 cột"""
-    cols = list(df.columns)
-    i1, i2 = cols.index(col1), cols.index(col2)
-    cols[i1], cols[i2] = cols[i2], cols[i1]
-    return df[cols]
-
 def load_dimensions(cursor, df):
-    """Load tất cả Dimensions"""
+    """Load Dimensions - thử BULK INSERT từ Blob, fallback executemany"""
     print("\n--- DIMENSIONS ---")
     t0 = time.time()
+    
+    configs = [
+        ('DIM_LOP_SINH_VIEN', ['MaLop','Lop','MaChuyenNganh'], 'MaLop', 'lop'),
+        ('DIM_SINH_VIEN', ['MaSV','HoDem','Ten','NgaySinh','MaLop'], 'MaSV', 'sv'),
+        ('DIM_GIANG_VIEN', ['MaGV','HoDemGV','TenGV'], 'MaGV', 'gv'),
+        ('DIM_HOC_PHAN', ['MaHP','TenHP','MaKhoa_HP'], 'MaHP', 'hp'),
+    ]
+    
     total = 0
-    
-    # DIM_LOP_SINH_VIEN
-    n = batch_insert(cursor, 'DIM_LOP_SINH_VIEN',
-                     df[['MaLop','Lop','MaChuyenNganh']].drop_duplicates('MaLop'),
-                     ['MaLop','Lop','MaChuyenNganh'], 'MaLop')
-    print(f"  DIM_LOP_SINH_VIEN: {n:,} ({time.time()-t0:.1f}s)"); total += n
-    
-    # DIM_SINH_VIEN
-    n = batch_insert(cursor, 'DIM_SINH_VIEN',
-                     df[['MaSV','HoDem','Ten','NgaySinh','MaLop']].drop_duplicates('MaSV'),
-                     ['MaSV','HoDem','Ten','NgaySinh','MaLop'], 'MaSV')
-    print(f"  DIM_SINH_VIEN: {n:,} ({time.time()-t0:.1f}s)"); total += n
-    
-    # DIM_GIANG_VIEN
-    n = batch_insert(cursor, 'DIM_GIANG_VIEN',
-                     df[['MaGV','HoDemGV','TenGV']].drop_duplicates('MaGV'),
-                     ['MaGV','HoDemGV','TenGV'], 'MaGV')
-    print(f"  DIM_GIANG_VIEN: {n:,} ({time.time()-t0:.1f}s)"); total += n
-    
-    # DIM_HOC_PHAN
-    df_hp = df[['MaHP','TenHP','MaKhoa_HP']].rename(columns={'MaKhoa_HP':'MaKhoa'}).drop_duplicates('MaHP')
-    n = batch_insert(cursor, 'DIM_HOC_PHAN', df_hp, ['MaHP','TenHP','MaKhoa'], 'MaHP')
-    print(f"  DIM_HOC_PHAN: {n:,} ({time.time()-t0:.1f}s)"); total += n
+    for table, cols, id_col, prefix in configs:
+        if table == 'DIM_HOC_PHAN':
+            df_sub = df[['MaHP','TenHP','MaKhoa_HP']].rename(columns={'MaKhoa_HP':'MaKhoa'}).drop_duplicates('MaHP')
+        else:
+            df_sub = df[[c for c in cols if c in df.columns]].drop_duplicates(id_col)
+        
+        n = bulk_insert_executemany_fast(cursor, table, df_sub, cols, id_col)
+        print(f"  {table}: {n:,} ({time.time()-t0:.1f}s)")
+        total += n
     
     # DIM_HOC_KY
     mhk, nh, hk = derive_ma_hoc_ky()
-    n = batch_insert(cursor, 'DIM_HOC_KY',
-                     pd.DataFrame([{'MaHocKy':mhk,'NamHoc':nh,'HocKy':hk}]),
-                     ['MaHocKy','NamHoc','HocKy'], 'MaHocKy')
-    print(f"  DIM_HOC_KY: {n:,} ({time.time()-t0:.1f}s)"); total += n
+    df_hk = pd.DataFrame([{'MaHocKy':mhk,'NamHoc':nh,'HocKy':hk}])
+    n = bulk_insert_executemany_fast(cursor, 'DIM_HOC_KY', df_hk, ['MaHocKy','NamHoc','HocKy'], 'MaHocKy')
+    print(f"  DIM_HOC_KY: {n:,} ({time.time()-t0:.1f}s)")
+    total += n
     
     # DIM_LOP_HOC_PHAN
     df_lhp = df[['MaLopHP','LopHP','MaHP','MaGV']].drop_duplicates('MaLopHP')
     df_lhp['MaHocKy'] = mhk
-    n = batch_insert(cursor, 'DIM_LOP_HOC_PHAN', df_lhp,
-                     ['MaLopHP','LopHP','MaHP','MaGV','MaHocKy'], 'MaLopHP')
-    print(f"  DIM_LOP_HOC_PHAN: {n:,} ({time.time()-t0:.1f}s)"); total += n
+    n = bulk_insert_executemany_fast(cursor, 'DIM_LOP_HOC_PHAN', df_lhp,
+                                     ['MaLopHP','LopHP','MaHP','MaGV','MaHocKy'], 'MaLopHP')
+    print(f"  DIM_LOP_HOC_PHAN: {n:,} ({time.time()-t0:.1f}s)")
+    total += n
     
     print(f"  📊 Total dimensions: {total:,} ({time.time()-t0:.1f}s)")
     return total
@@ -390,52 +419,43 @@ def load_facts(cursor, df):
     print("\n--- FACTS ---")
     t0 = time.time()
     
-    # FACT_GOP_Y_TU_LUAN
+    # FACT_GOP_Y
     df_essay = df[(df['EssayText'].notna()) & (df['EssayText'] != '')].drop_duplicates('SubmissionID')
-    
     if not df_essay.empty:
         df_gy = df_essay[['SubmissionID','MaSV','MaLopHP','EssayText','Sentiment','Is_Valid',
                            'Tag_HocPhan','Tag_DayHoc','Tag_KiemTra','Tag_Khac']].copy()
         df_gy.columns = ['SubmissionID','MaSV','MaLopHP','NoiDungGopY','Sentiment','Is_Valid',
                          'Tag_HocPhan','Tag_DayHoc','Tag_KiemTra','Tag_Khac']
-        n1 = batch_insert(cursor, 'FACT_GOP_Y_TU_LUAN', df_gy,
-                         ['SubmissionID','MaSV','MaLopHP','NoiDungGopY','Sentiment','Is_Valid',
-                          'Tag_HocPhan','Tag_DayHoc','Tag_KiemTra','Tag_Khac'], 'SubmissionID')
+        n1 = bulk_insert_executemany_fast(cursor, 'FACT_GOP_Y_TU_LUAN', df_gy,
+                                          ['SubmissionID','MaSV','MaLopHP','NoiDungGopY','Sentiment','Is_Valid',
+                                           'Tag_HocPhan','Tag_DayHoc','Tag_KiemTra','Tag_Khac'], 'SubmissionID')
         print(f"  FACT_GOP_Y: {n1:,} ({time.time()-t0:.1f}s)")
     else:
         n1 = 0
-        print(f"  FACT_GOP_Y: 0")
     
-    # FACT_KET_QUA_DANH_GIA
+    # FACT_KET_QUA
     rows = []
-    
-    # Trắc nghiệm (1-12)
-    df_tn = df[(df['CauHoi'] != '') & (df['GiaTri'] != '')]
-    for _, r in df_tn.iterrows():
+    for _, r in df[(df['CauHoi']!='') & (df['GiaTri']!='')].iterrows():
         try:
             mc = int(float(r['CauHoi']))
             d = int(float(r['GiaTri']))
-            if 1 <= mc <= 12 and 1 <= d <= 5:
+            if 1<=mc<=12 and 1<=d<=5:
                 rows.append({'SubmissionID': str(r['SubmissionID'])[:150], 'MaCauHoi': mc, 'Diem': d})
         except: pass
     
-    # Tự luận (13-16)
     for _, r in df_essay.iterrows():
         s = r['Sentiment']
-        d = 5 if s == 'POSITIVE' else (2 if s == 'NEGATIVE' else 3)
-        for mc in [13, 14, 15, 16]:
+        d = 5 if s=='POSITIVE' else (2 if s=='NEGATIVE' else 3)
+        for mc in [13,14,15,16]:
             rows.append({'SubmissionID': str(r['SubmissionID'])[:150], 'MaCauHoi': mc, 'Diem': d})
     
     if rows:
         df_kq = pd.DataFrame(rows)
-        n2 = batch_insert(cursor, 'FACT_KET_QUA_DANH_GIA', df_kq,
-                         ['SubmissionID', 'MaCauHoi', 'Diem'])
+        n2 = bulk_insert_executemany_fast(cursor, 'FACT_KET_QUA_DANH_GIA', df_kq,
+                                          ['SubmissionID','MaCauHoi','Diem'])
         print(f"  FACT_KET_QUA: {n2:,} ({time.time()-t0:.1f}s)")
     else:
         n2 = 0
-        print(f"  FACT_KET_QUA: 0")
-    
-    return n1 + n2
 
 def load_to_database(df):
     """Load toàn bộ vào database"""
@@ -453,11 +473,10 @@ def load_to_database(df):
         load_dimensions(cursor, df)
         load_facts(cursor, df)
     finally:
-        # Bật lại constraints
         enable_constraints(cursor)
         conn.close()
     
-    print(f"\n  ✅ Total load time: {time.time()-t0:.1f}s")
+    print(f"\n  ✅ Total load: {time.time()-t0:.1f}s")
 
 # ================= MAIN =================
 def main():
@@ -473,7 +492,7 @@ def main():
     print("\n📝 PARSE + NLP")
     t1 = time.time()
     df = parse_survey(content)
-    print(f"  ✅ {time.time()-t1:.1f}s")
+    print(f"  ✅ Parse: {time.time()-t1:.1f}s")
     
     if df.empty: print("❌ No data!"); sys.exit(1)
     

@@ -147,51 +147,92 @@ def safe_insert(cursor, table, columns, data, batch_size=BATCH_SIZE):
                     inserted += 1
                 except: pass
     return inserted
-
 def load_to_database(df):
-    print("\n💾 LOADING TO DATABASE...")
+    """LOAD SIÊU NHANH bằng BULK INSERT"""
+    if df.empty:
+        print("❌ DataFrame rỗng!")
+        return
+    
+    print("\n💾 LOADING TO DATABASE (BULK INSERT)...")
     t0 = time.time()
+    
     conn = pyodbc.connect(CONN_STR)
     cursor = conn.cursor()
-    cursor.fast_executemany = True
     
     try:
-        # Tắt constraint
-        for tbl in ['FACT_GOP_Y_TU_LUAN']:
-            try: cursor.execute(f"ALTER TABLE {tbl} NOCHECK CONSTRAINT ALL")
-            except: pass
+        # Tắt constraint để load nhanh
+        print(" → Tắt constraint tạm thời...")
+        cursor.execute("ALTER TABLE FACT_GOP_Y_TU_LUAN NOCHECK CONSTRAINT ALL")
         conn.commit()
         
-        # Load FACT_GOP_Y_TU_LUAN
+        # Chuẩn bị dữ liệu
+        df_essay = df[df['EssayText'].str.strip().ne('')].copy()
+        
         data = []
-        for _, r in df.iterrows():
+        for _, r in df_essay.iterrows():
             data.append((
                 str(r['SubmissionID'])[:150],
                 str(r['MaSV'])[:20],
                 str(r['MaLopHP'])[:50],
                 str(r['EssayText'])[:4000],
-                str(r['Sentiment']),
-                int(r['Is_Valid']),
-                int(r['Tag_HocPhan']),
-                int(r['Tag_DayHoc']),
-                int(r['Tag_KiemTra']),
-                int(r['Tag_Khac'])
+                str(r.get('Sentiment', 'NEUTRAL')),
+                int(r.get('Is_Valid', 1)),
+                int(r.get('Tag_HocPhan', 0)),
+                int(r.get('Tag_DayHoc', 0)),
+                int(r.get('Tag_KiemTra', 0)),
+                int(r.get('Tag_Khac', 0))
             ))
         
-        count = safe_insert(cursor, 'FACT_GOP_Y_TU_LUAN',
-                           ['SubmissionID','MaSV','MaLopHP','NoiDungGopY','Sentiment',
-                            'Is_Valid','Tag_HocPhan','Tag_DayHoc','Tag_KiemTra','Tag_Khac'],
-                           data)
+        if not data:
+            print("Không có dữ liệu tự luận để load")
+            return
         
-        print(f"✅ Inserted {count:,} rows into FACT_GOP_Y_TU_LUAN")
+        print(f" → Đang load {len(data):,} rows vào FACT_GOP_Y_TU_LUAN...")
+        
+        # === BULK INSERT - SIÊU NHANH ===
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, encoding='utf-8') as tmp:
+            temp_path = tmp.name
+            for row in data:
+                line = '|'.join(str(x).replace('\n',' ').replace('\r',' ').replace('|',' ') for x in row)
+                tmp.write(line + '\n')
+        
+        bulk_sql = f"""
+            BULK INSERT FACT_GOP_Y_TU_LUAN
+            FROM '{temp_path}'
+            WITH (
+                FIELDTERMINATOR = '|',
+                ROWTERMINATOR = '\\n',
+                CODEPAGE = '65001',
+                KEEPNULLS,
+                TABLOCK
+            )
+        """
+        
+        cursor.execute(bulk_sql)
+        conn.commit()
+        print(f"✅ BULK INSERT thành công: {len(data):,} rows")
+        
+        # Bật lại constraint
+        cursor.execute("ALTER TABLE FACT_GOP_Y_TU_LUAN CHECK CONSTRAINT ALL")
+        conn.commit()
         
     except Exception as e:
-        print(f"❌ Load error: {e}")
+        print(f"❌ Lỗi BULK INSERT: {e}")
         conn.rollback()
+        
+        # Fallback nếu BULK INSERT lỗi
+        print("→ Thử fallback với batch insert...")
+        safe_insert(cursor, 'FACT_GOP_Y_TU_LUAN', 
+                   ['SubmissionID','MaSV','MaLopHP','NoiDungGopY','Sentiment',
+                    'Is_Valid','Tag_HocPhan','Tag_DayHoc','Tag_KiemTra','Tag_Khac'], 
+                   data, batch_size=20000)
+        
     finally:
         conn.close()
+        if 'temp_path' in locals() and os.path.exists(temp_path):
+            os.remove(temp_path)
     
-    print(f"Load time: {time.time()-t0:.1f}s")
+    print(f"✅ Load hoàn tất trong {time.time()-t0:.1f}s")
 
 def main():
     t0 = time.time()

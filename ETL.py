@@ -1,57 +1,31 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PIPELINE 2: SURVEY DATA - ĐÚNG DỮ LIỆU
-- MaLop = Lop gốc (cột đầu tiên)
-- MaLopHP = LopHP (lớp học phần)
-- MaSV, MaGV, MaHP từ parse
+PIPELINE 2: SIÊU TỐC - 1 LẦN INSERT
+- Chuẩn bị tất cả data trong Python (list comprehension)
+- 1 executemany cho mỗi bảng
+- 1 transaction, 1 commit
 """
-
-import os, sys, re, time, pandas as pd, numpy as np, pyodbc
+import os, sys, re, time, pandas as pd, pyodbc
 from multiprocessing import Pool, cpu_count
 from azure.storage.blob import BlobServiceClient
 
-# ================= CONFIG =================
 CONNECTION_STRING = os.environ.get("CONNECTION_STRING")
 SEMESTER = os.environ.get("SEMESTER")
 SURVEY_FILE = os.environ.get("SURVEY_FILE")
 DB_PASSWORD = os.environ.get("DB_PASSWORD", "Due@2026")
-
-if not SEMESTER or not SURVEY_FILE:
-    print("Thiếu SEMESTER hoặc SURVEY_FILE"); sys.exit(1)
-
 FILE_NAME = os.path.splitext(os.path.basename(SURVEY_FILE))[0]
 
 CONN_STR = (
-    f"DRIVER={{ODBC Driver 18 for SQL Server}};"
-    f"SERVER=course-survey.database.windows.net;"
-    f"DATABASE=course-survey-db;"
-    f"UID=sqladmin;PWD={DB_PASSWORD};"
-    f"Encrypt=yes;TrustServerCertificate=no;"
-    f"Connection Timeout=600;Command Timeout=1800;"
-    f"LongAsMax=yes;"
+    f"DRIVER={{ODBC Driver 18 for SQL Server}};SERVER=course-survey.database.windows.net;"
+    f"DATABASE=course-survey-db;UID=sqladmin;PWD={DB_PASSWORD};"
+    f"Encrypt=yes;TrustServerCertificate=no;Connection Timeout=600;Command Timeout=1800;"
 )
+CONTAINER_NAME, RAWDATA_PATH = SEMESTER, "rawdata"
+NUM_WORKERS, CHUNK = cpu_count(), 100000
 
-CONTAINER_NAME = SEMESTER
-RAWDATA_PATH = "rawdata"
-NUM_WORKERS = cpu_count()
-CHUNK = 100000
-
-print("="*70)
-print("📊 PIPELINE 2: ĐÚNG DỮ LIỆU")
-print("="*70)
-
-# ================= PATTERNS =================
 _D = re.compile(r'^\d{2}/\d{2}/\d{4}$').match
 _G = re.compile(r'^(\d{7}|TG\d{5}|gvDacThu_TKTH)$').match
-
-def normalize_lop(lop):
-    if not isinstance(lop, str): return ""
-    lop = lop.strip()
-    if lop.upper().startswith('CTS-'): lop = lop[4:]
-    for sep in ['.', '-', '_']:
-        if sep in lop: lop = lop.split(sep)[0]
-    return lop.strip()
 
 def nlp(t):
     if not t or len(t)<5: return 0,0,0,0,'NEUTRAL',0
@@ -63,10 +37,16 @@ def nlp(t):
     p=len(w&{'tốt','hay','hài lòng','bổ ích','hiệu quả','tuyệt vời','nhiệt tình'})
     n=len(w&{'tệ','kém','chán','khó hiểu','nhàm chán','thiếu','thất vọng'})
     if 'không' in w: p=max(0,p-1); n+=1
-    s='POSITIVE' if p>n else ('NEGATIVE' if n>p else 'NEUTRAL')
-    return t1,t2,t3,t4,s,1 if len(t)>10 else 0
+    return t1,t2,t3,t4,'POSITIVE' if p>n else ('NEGATIVE' if n>p else 'NEUTRAL'),1
 
-# ================= PARSE =================
+def normalize_lop(lop):
+    if not isinstance(lop, str): return ""
+    lop = lop.strip()
+    if lop.upper().startswith('CTS-'): lop = lop[4:]
+    for sep in ['.','-','_']:
+        if sep in lop: lop = lop.split(sep)[0]
+    return lop.strip()
+
 def parse_batch(args):
     lines, fn = args
     res = []
@@ -75,153 +55,136 @@ def parse_batch(args):
         ni = line.find('NULL')
         left = line[:ni].rstrip(', \t') if ni>=0 else line
         right = line[ni+4:].lstrip(', \t') if ni>=0 else ''
-        row = left.split(','); rl=len(row)
-        if rl<10: continue
-        nsi=-1
-        for i in range(2,min(12,rl)):
-            if _D(row[i].strip()): nsi=i; break
-        if nsi==-1: continue
-        mgi=-1
-        for i in range(nsi+1,min(nsi+25,rl)):
-            if _G(row[i].strip()): mgi=i; break
-        if mgi==-1: mgi=min(rl-1,nsi+8)
+        row = left.split(','); rl = len(row)
+        if rl < 10: continue
+        nsi = -1
+        for i in range(2, min(12, rl)):
+            if _D(row[i].strip()): nsi = i; break
+        if nsi == -1: continue
+        mgi = -1
+        for i in range(nsi+1, min(nsi+25, rl)):
+            if _G(row[i].strip()): mgi = i; break
+        if mgi == -1: mgi = min(rl-1, nsi+8)
         
-        # Lop gốc (cột 0) -> MaLop
-        lop_goc = normalize_lop(row[0].strip())
-        sv=row[1].strip()
-        hp=row[nsi+1].strip() if nsi+1<rl else ''
-        gv=row[mgi].strip() if mgi<rl else ''
-        lhp=row[mgi+3].strip() if mgi+3<rl else f"{hp}_{gv}"
-        ch=row[mgi+4].strip() if mgi+4<rl else ''
-        gt=row[mgi+5].strip() if mgi+5<rl else ''
-        essay=right.replace(' , ',', ').strip()
-        t1,t2,t3,t4,sent,valid=nlp(essay) if essay else (0,0,0,0,'NEUTRAL',0)
-        sid=f"{sv}_{lhp}_{gv}_{fn}"
-        
-        # Trả về: SubmissionID, MaSV, MaLop, MaHP, MaGV, MaLopHP, CauHoi, GiaTri, EssayText, Tags, Sentiment, Is_Valid
-        res.append([sid, sv, lop_goc, hp, gv, lhp, ch, gt, essay, t1, t2, t3, t4, sent, valid])
+        sv = row[1].strip()
+        ml = normalize_lop(row[0].strip())
+        hp = row[nsi+1].strip() if nsi+1 < rl else ''
+        gv = row[mgi].strip() if mgi < rl else ''
+        lhp = row[mgi+3].strip() if mgi+3 < rl else f"{hp}_{gv}"
+        ch = row[mgi+4].strip() if mgi+4 < rl else ''
+        gt = row[mgi+5].strip() if mgi+5 < rl else ''
+        essay = right.replace(' , ', ', ').strip()
+        t1,t2,t3,t4,sent,valid = nlp(essay) if essay else (0,0,0,0,'NEUTRAL',0)
+        sid = f"{sv}_{lhp}_{gv}_{fn}"
+        res.append((sid, sv, ml, hp, gv, lhp, ch, gt, essay, t1, t2, t3, t4, sent, valid))
     return res
 
-def parse_survey(content):
-    print(f"  -> Parsing..."); t0=time.time()
-    lines=[l.strip() for l in content.split('\n') if l.strip()]
-    batches=[(lines[i:i+CHUNK],FILE_NAME) for i in range(0,len(lines),CHUNK)]
-    all_res=[]
+def main():
+    t0 = time.time()
+    print("="*50, "\n📊 PIPELINE 2: SIÊU TỐC\n", "="*50)
+    
+    # Download
+    blob = BlobServiceClient.from_connection_string(CONNECTION_STRING)
+    client = blob.get_container_client(CONTAINER_NAME).get_blob_client(f"{RAWDATA_PATH}/{SURVEY_FILE}")
+    content = client.download_blob().readall().decode('utf-8-sig')
+    
+    # Parse
+    t1 = time.time()
+    lines = [l.strip() for l in content.split('\n') if l.strip()]
+    batches = [(lines[i:i+CHUNK], FILE_NAME) for i in range(0, len(lines), CHUNK)]
+    all_res = []
     with Pool(NUM_WORKERS) as pool:
-        for res in pool.imap_unordered(parse_batch,batches): all_res.extend(res)
-    df=pd.DataFrame(all_res,columns=['SubmissionID','MaSV','MaLop','MaHP','MaGV','MaLopHP',
-                                      'CauHoi','GiaTri','EssayText',
-                                      'Tag_HocPhan','Tag_DayHoc','Tag_KiemTra','Tag_Khac',
-                                      'Sentiment','Is_Valid'])
-    print(f"  ✅ {len(df):,} rows ({time.time()-t0:.1f}s)")
-    return df
-
-# ================= LOAD =================
-def load_all(df):
-    print("\n💾 LOAD...")
-    t0=time.time()
+        for res in pool.imap_unordered(parse_batch, batches): all_res.extend(res)
+    print(f"  Parse: {len(all_res):,} rows ({time.time()-t1:.1f}s)")
     
-    fn=SURVEY_FILE.replace('.csv','').split('_')[-1]
-    yc=int(fn[:-1]); hk=int(fn[-1])
-    nbd=2000+(yc-1); nkt=nbd+1
-    mhk=f"HK{hk}_{nbd%100}{nkt%100}"; nh=f"{nbd}-{nkt}"
+    # Tạo dicts để lookup nhanh
+    t1 = time.time()
+    seen_lop, seen_sv, seen_gv, seen_lhp, seen_gy = set(), set(), set(), set(), set()
+    data_lop, data_sv, data_gv, data_lhp, data_gy, data_kq = [], [], [], [], [], []
     
-    de=df[(df['EssayText'].notna())&(df['EssayText']!='')].drop_duplicates('SubmissionID')
+    fn = SURVEY_FILE.replace('.csv','').split('_')[-1]
+    yc, hk = int(fn[:-1]), int(fn[-1])
+    nbd = 2000 + yc - 1
+    mhk = f"HK{hk}_{nbd%100}{nbd%100+1}"
     
-    kq=[]
-    for _,r in df[(df['CauHoi']!='')&(df['GiaTri']!='')].iterrows():
-        try:
-            mc=int(float(r['CauHoi'])); d=int(float(r['GiaTri']))
-            if 1<=mc<=12 and 1<=d<=5: kq.append((str(r['SubmissionID'])[:200],mc,d))
-        except: pass
-    for _,r in de.iterrows():
-        s=r['Sentiment']; d=5 if s=='POSITIVE' else (2 if s=='NEGATIVE' else 3)
-        for mc in [13,14,15,16]: kq.append((str(r['SubmissionID'])[:200],mc,d))
+    for r in all_res:
+        sid, sv, ml, hp, gv, lhp, ch, gt, essay, t1, t2, t3, t4, sent, valid = r
+        
+        # DIM_LOP
+        if ml and ml not in seen_lop:
+            seen_lop.add(ml)
+            data_lop.append((ml[:50], ml[:50], ml[:50]))
+        
+        # DIM_SV
+        if sv and sv not in seen_sv:
+            seen_sv.add(sv)
+            data_sv.append((sv[:50], '', '', None, ml[:50]))
+        
+        # DIM_GV
+        if gv and gv not in seen_gv:
+            seen_gv.add(gv)
+            data_gv.append((gv[:50], '', ''))
+        
+        # DIM_LHP
+        if lhp and lhp not in seen_lhp:
+            seen_lhp.add(lhp)
+            data_lhp.append((lhp[:100], lhp[:100], hp[:50], gv[:50], mhk))
+        
+        # FACT_GY
+        if essay and sid not in seen_gy:
+            seen_gy.add(sid)
+            data_gy.append((sid[:200], sv[:50], lhp[:100], essay[:4000], sent[:20], valid, t1, t2, t3, t4))
+        
+        # FACT_KQ - trắc nghiệm
+        if ch and gt:
+            try:
+                mc, d = int(float(ch)), int(float(gt))
+                if 1 <= mc <= 12 and 1 <= d <= 5:
+                    data_kq.append((sid[:200], mc, d))
+            except: pass
     
-    conn=pyodbc.connect(CONN_STR, autocommit=False)
-    cur=conn.cursor()
-    cur.fast_executemany=True
+    # FACT_KQ - tự luận
+    for r in all_res:
+        sid, sv, ml, hp, gv, lhp, ch, gt, essay, t1, t2, t3, t4, sent, valid = r
+        if essay:
+            d = 5 if sent == 'POSITIVE' else (2 if sent == 'NEGATIVE' else 3)
+            for mc in [13,14,15,16]:
+                data_kq.append((sid[:200], mc, d))
+    
+    print(f"  Prepare: LOP={len(data_lop)} SV={len(data_sv)} GV={len(data_gv)} LHP={len(data_lhp)} GY={len(data_gy)} KQ={len(data_kq)} ({time.time()-t1:.1f}s)")
+    
+    # INSERT
+    t1 = time.time()
+    conn = pyodbc.connect(CONN_STR, autocommit=False)
+    cur = conn.cursor()
+    cur.fast_executemany = True
     
     try:
         cur.execute("BEGIN TRANSACTION")
-        
-        for t in ['DIM_LOP_SINH_VIEN','DIM_SINH_VIEN','DIM_GIANG_VIEN',
-                   'DIM_LOP_HOC_PHAN','FACT_GOP_Y_TU_LUAN','FACT_KET_QUA_DANH_GIA']:
+        for t in ['DIM_LOP_SINH_VIEN','DIM_SINH_VIEN','DIM_GIANG_VIEN','DIM_LOP_HOC_PHAN','FACT_GOP_Y_TU_LUAN','FACT_KET_QUA_DANH_GIA']:
             try: cur.execute(f"ALTER TABLE {t} NOCHECK CONSTRAINT ALL")
             except: pass
         
-        # 1. DIM_HOC_KY
-        cur.execute("IF NOT EXISTS(SELECT 1 FROM DIM_HOC_KY WHERE MaHocKy=?) INSERT INTO DIM_HOC_KY(MaHocKy,NamHoc,HocKy) VALUES(?,?,?)",(mhk,mhk,nh,hk))
-        
-        # 2. DIM_LOP_SINH_VIEN - MaLop = Lop gốc (chuẩn hóa)
-        t1=time.time()
-        lops=df[['MaLop']].drop_duplicates().fillna('')
-        data=[(str(r['MaLop'])[:50], str(r['MaLop'])[:50], str(r['MaLop'])[:50]) 
-              for _,r in lops.iterrows() if str(r['MaLop']).strip()]
-        if data: cur.executemany("INSERT INTO DIM_LOP_SINH_VIEN(MaLop,Lop,MaChuyenNganh) VALUES(?,?,?)",data)
-        print(f"  DIM_LOP: {len(data):,} ({time.time()-t1:.1f}s)")
-        
-        # 3. DIM_SINH_VIEN - MaLop = Lop gốc
-        t1=time.time()
-        svs=df[['MaSV','MaLop']].drop_duplicates('MaSV').fillna('')
-        data=[(str(r['MaSV'])[:50], '', '', None, str(r['MaLop'])[:50]) 
-              for _,r in svs.iterrows() if str(r['MaSV']).strip()]
-        if data: cur.executemany("INSERT INTO DIM_SINH_VIEN(MaSV,HoDem,Ten,NgaySinh,MaLop) VALUES(?,?,?,?,?)",data)
-        print(f"  DIM_SV: {len(data):,} ({time.time()-t1:.1f}s)")
-        
-        # 4. DIM_GIANG_VIEN
-        t1=time.time()
-        gvs=df[['MaGV']].drop_duplicates().fillna('')
-        data=[(str(r['MaGV'])[:50], '', '') for _,r in gvs.iterrows() if str(r['MaGV']).strip()]
-        if data: cur.executemany("INSERT INTO DIM_GIANG_VIEN(MaGV,HoDemGV,TenGV) VALUES(?,?,?)",data)
-        print(f"  DIM_GV: {len(data):,} ({time.time()-t1:.1f}s)")
-        
-        # 5. DIM_LOP_HOC_PHAN - MaLopHP = LopHP
-        t1=time.time()
-        lhps=df[['MaLopHP','MaHP','MaGV']].drop_duplicates('MaLopHP').fillna('')
-        data=[(str(r['MaLopHP'])[:100], str(r['MaLopHP'])[:100], str(r['MaHP'])[:50], str(r['MaGV'])[:50], mhk)
-              for _,r in lhps.iterrows() if str(r['MaLopHP']).strip()]
-        if data: cur.executemany("INSERT INTO DIM_LOP_HOC_PHAN(MaLopHP,LopHP,MaHP,MaGV,MaHocKy) VALUES(?,?,?,?,?)",data)
-        print(f"  DIM_LHP: {len(data):,} ({time.time()-t1:.1f}s)")
-        
-        # 6. FACT_GOP_Y - MaLopHP = LopHP
-        t1=time.time()
-        if not de.empty:
-            data=[(str(r['SubmissionID'])[:200], str(r['MaSV'])[:50], str(r['MaLopHP'])[:100],
-                   str(r['EssayText'])[:4000], str(r['Sentiment'])[:20], int(r['Is_Valid']),
-                   int(r['Tag_HocPhan']), int(r['Tag_DayHoc']), int(r['Tag_KiemTra']), int(r['Tag_Khac']))
-                  for _,r in de.iterrows()]
-            cur.executemany("INSERT INTO FACT_GOP_Y_TU_LUAN(SubmissionID,MaSV,MaLopHP,NoiDungGopY,Sentiment,Is_Valid,Tag_HocPhan,Tag_DayHoc,Tag_KiemTra,Tag_Khac) VALUES(?,?,?,?,?,?,?,?,?,?)",data)
-        print(f"  FACT_GY: {len(data):,} ({time.time()-t1:.1f}s)")
-        
-        # 7. FACT_KET_QUA
-        t1=time.time()
-        if kq: cur.executemany("INSERT INTO FACT_KET_QUA_DANH_GIA(SubmissionID,MaCauHoi,Diem) VALUES(?,?,?)",kq)
-        print(f"  FACT_KQ: {len(kq):,} ({time.time()-t1:.1f}s)")
+        cur.execute("IF NOT EXISTS(SELECT 1 FROM DIM_HOC_KY WHERE MaHocKy=?) INSERT INTO DIM_HOC_KY VALUES(?,?,?)", (mhk,mhk,f"{nbd}-{nbd+1}",hk))
+        if data_lop: cur.executemany("INSERT INTO DIM_LOP_SINH_VIEN(MaLop,Lop,MaChuyenNganh) VALUES(?,?,?)", data_lop)
+        if data_sv:  cur.executemany("INSERT INTO DIM_SINH_VIEN(MaSV,HoDem,Ten,NgaySinh,MaLop) VALUES(?,?,?,?,?)", data_sv)
+        if data_gv:  cur.executemany("INSERT INTO DIM_GIANG_VIEN(MaGV,HoDemGV,TenGV) VALUES(?,?,?)", data_gv)
+        if data_lhp: cur.executemany("INSERT INTO DIM_LOP_HOC_PHAN(MaLopHP,LopHP,MaHP,MaGV,MaHocKy) VALUES(?,?,?,?,?)", data_lhp)
+        if data_gy:  cur.executemany("INSERT INTO FACT_GOP_Y_TU_LUAN(SubmissionID,MaSV,MaLopHP,NoiDungGopY,Sentiment,Is_Valid,Tag_HocPhan,Tag_DayHoc,Tag_KiemTra,Tag_Khac) VALUES(?,?,?,?,?,?,?,?,?,?)", data_gy)
+        if data_kq:  cur.executemany("INSERT INTO FACT_KET_QUA_DANH_GIA(SubmissionID,MaCauHoi,Diem) VALUES(?,?,?)", data_kq)
         
         cur.execute("COMMIT")
-        print(f"  ✅ COMMIT OK!")
+        print(f"  ✅ COMMIT ({time.time()-t1:.1f}s)")
     except Exception as e:
         cur.execute("ROLLBACK")
         print(f"  ❌ {e}")
     finally:
-        for t in ['DIM_LOP_SINH_VIEN','DIM_SINH_VIEN','DIM_GIANG_VIEN',
-                   'DIM_LOP_HOC_PHAN','FACT_GOP_Y_TU_LUAN','FACT_KET_QUA_DANH_GIA']:
+        for t in ['DIM_LOP_SINH_VIEN','DIM_SINH_VIEN','DIM_GIANG_VIEN','DIM_LOP_HOC_PHAN','FACT_GOP_Y_TU_LUAN','FACT_KET_QUA_DANH_GIA']:
             try: cur.execute(f"ALTER TABLE {t} CHECK CONSTRAINT ALL"); conn.commit()
             except: pass
         conn.close()
     
-    print(f"  ⏱️ Total: {time.time()-t0:.1f}s")
+    print(f"\n🎉 Total: {time.time()-t0:.1f}s | {len(all_res):,} rows")
 
-def main():
-    t0=time.time()
-    blob=BlobServiceClient.from_connection_string(CONNECTION_STRING)
-    client=blob.get_container_client(CONTAINER_NAME).get_blob_client(f"{RAWDATA_PATH}/{SURVEY_FILE}")
-    content=client.download_blob().readall().decode('utf-8-sig')
-    df=parse_survey(content)
-    if df.empty: print("❌"); return
-    load_all(df)
-    print(f"\n🎉 Done: {time.time()-t0:.1f}s | {len(df):,} rows")
-
-if __name__=="__main__":
+if __name__ == "__main__":
     main()

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SURVEY ETL - ULTRA FAST VERSION
+SURVEY ETL - FIXED LOAD
+- Dùng executemany thay vì to_sql
+- Load siêu nhanh vào FACT_GOP_Y_TU_LUAN
 """
 
 import os
@@ -9,6 +11,7 @@ import sys
 import re
 import time
 import pandas as pd
+import numpy as np
 import pyodbc
 from datetime import datetime
 from azure.storage.blob import BlobServiceClient
@@ -37,10 +40,11 @@ RAWDATA_PATH = "rawdata"
 
 NUM_WORKERS = 4
 CHUNK_SIZE = 25000
+BATCH_SIZE = 50000
 
 print("="*90)
-print("🚀 SURVEY ETL - ULTRA FAST PIPELINE")
-print(f"Workers: {NUM_WORKERS} | Chunk: {CHUNK_SIZE:,}")
+print("🚀 SURVEY ETL - FIXED LOAD")
+print(f"Workers: {NUM_WORKERS} | Chunk: {CHUNK_SIZE:,} | Batch: {BATCH_SIZE:,}")
 print("="*90)
 
 # ================= PATTERNS =================
@@ -132,7 +136,7 @@ def parse_batch(args):
     return results
 
 def load_to_database(df):
-    """LOAD NHANH NHẤT CÓ THỂ"""
+    """LOAD DÙNG executemany - siêu nhanh"""
     if df.empty:
         print("❌ No data to load!")
         return
@@ -140,67 +144,107 @@ def load_to_database(df):
     print("\n💾 LOADING TO DATABASE...")
     t0 = time.time()
     
+    # Lọc dòng có EssayText
+    df_essay = df[(df['EssayText'].notna()) & (df['EssayText'].astype(str).str.strip() != '')].copy()
+    
+    if df_essay.empty:
+        print("❌ No essay data!")
+        return
+    
+    print(f" → Preparing {len(df_essay):,} rows...")
+    
+    # Chuẩn bị data dạng list of tuples
+    data = []
+    for _, r in df_essay.iterrows():
+        data.append((
+            str(r['SubmissionID'])[:150],
+            str(r['MaSV'])[:20],
+            str(r['MaLopHP'])[:50],
+            str(r['EssayText'])[:4000] if pd.notna(r['EssayText']) else '',
+            str(r['Sentiment'])[:20] if pd.notna(r['Sentiment']) else 'NEUTRAL',
+            int(r['Is_Valid']) if pd.notna(r['Is_Valid']) else 0,
+            int(r['Tag_HocPhan']) if pd.notna(r['Tag_HocPhan']) else 0,
+            int(r['Tag_DayHoc']) if pd.notna(r['Tag_DayHoc']) else 0,
+            int(r['Tag_KiemTra']) if pd.notna(r['Tag_KiemTra']) else 0,
+            int(r['Tag_Khac']) if pd.notna(r['Tag_Khac']) else 0
+        ))
+    
     conn = pyodbc.connect(CONN_STR)
     cursor = conn.cursor()
+    cursor.fast_executemany = True
     
     try:
         # Tắt constraint
-        cursor.execute("ALTER TABLE FACT_GOP_Y_TU_LUAN NOCHECK CONSTRAINT ALL")
-        conn.commit()
+        try:
+            cursor.execute("ALTER TABLE FACT_GOP_Y_TU_LUAN NOCHECK CONSTRAINT ALL")
+            conn.commit()
+        except: pass
         
-        df_essay = df[df['EssayText'].str.strip() != ''].copy()
+        # Insert
+        sql = """INSERT INTO FACT_GOP_Y_TU_LUAN 
+                 (SubmissionID, MaSV, MaLopHP, NoiDungGopY, Sentiment, Is_Valid,
+                  Tag_HocPhan, Tag_DayHoc, Tag_KiemTra, Tag_Khac)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
         
-        load_df = pd.DataFrame({
-            'SubmissionID': df_essay['SubmissionID'].astype(str).str[:150],
-            'MaSV': df_essay['MaSV'].astype(str).str[:20],
-            'MaLopHP': df_essay['MaLopHP'].astype(str).str[:50],
-            'NoiDungGopY': df_essay['EssayText'].astype(str).str[:4000],
-            'Sentiment': df_essay['Sentiment'].astype(str),
-            'Is_Valid': df_essay['Is_Valid'].astype(int),
-            'Tag_HocPhan': df_essay['Tag_HocPhan'].astype(int),
-            'Tag_DayHoc': df_essay['Tag_DayHoc'].astype(int),
-            'Tag_KiemTra': df_essay['Tag_KiemTra'].astype(int),
-            'Tag_Khac': df_essay['Tag_Khac'].astype(int)
-        })
+        inserted = 0
+        total_batches = (len(data) + BATCH_SIZE - 1) // BATCH_SIZE
         
-        print(f" → Inserting {len(load_df):,} rows...")
-        
-        # Load nhanh
-        load_df.to_sql(
-            name='FACT_GOP_Y_TU_LUAN',
-            con=conn,
-            if_exists='append',
-            index=False,
-            method='multi',
-            chunksize=15000
-        )
+        for i in range(0, len(data), BATCH_SIZE):
+            batch = data[i:i+BATCH_SIZE]
+            batch_num = i // BATCH_SIZE + 1
+            try:
+                cursor.executemany(sql, batch)
+                conn.commit()
+                inserted += len(batch)
+                print(f" → Batch {batch_num}/{total_batches}: {len(batch):,} rows")
+            except Exception as e:
+                print(f" ⚠️ Batch {batch_num} error: {str(e)[:100]}")
+                # Fallback: insert từng dòng
+                for d in batch:
+                    try:
+                        cursor.execute(sql, d)
+                        conn.commit()
+                        inserted += 1
+                    except:
+                        pass
         
         # Bật lại constraint
-        cursor.execute("ALTER TABLE FACT_GOP_Y_TU_LUAN CHECK CONSTRAINT ALL")
-        conn.commit()
+        try:
+            cursor.execute("ALTER TABLE FACT_GOP_Y_TU_LUAN CHECK CONSTRAINT ALL")
+            conn.commit()
+        except: pass
         
-        print(f"✅ LOAD HOÀN TẤT: {len(load_df):,} rows")
+        print(f" ✅ LOAD HOÀN TẤT: {inserted:,} rows")
         
     except Exception as e:
-        print(f"❌ Load error: {e}")
-        conn.rollback()
+        print(f" ❌ Load error: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         conn.close()
     
-    print(f"⏱️ Load time: {time.time()-t0:.1f}s")
+    print(f" ⏱️ Load time: {time.time()-t0:.1f}s")
 
 def main():
     t0 = time.time()
+    
+    # Kết nối Azure
     blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
+    
+    # Load master từ DB
     load_master_from_db()
     
-    # Download
+    # Download file
+    print(f"\n📥 Downloading {SURVEY_FILE}...")
     client = blob_service.get_container_client(CONTAINER_NAME).get_blob_client(f"{RAWDATA_PATH}/{SURVEY_FILE}")
     content = client.download_blob().readall().decode('utf-8-sig')
-    print(f"Downloaded: {len(content):,} characters")
+    print(f"   Downloaded: {len(content):,} characters")
     
+    # Parse
+    print(f"\n📝 Parsing...")
+    t1 = time.time()
     lines = [l.strip() for l in content.split('\n') if l.strip()]
-    print(f"Total lines: {len(lines):,}")
+    print(f"   Total lines: {len(lines):,}")
     
     batches = [(lines[i:i+CHUNK_SIZE], FILE_NAME) for i in range(0, len(lines), CHUNK_SIZE)]
     
@@ -210,8 +254,14 @@ def main():
             all_results.extend(res)
     
     df = pd.DataFrame(all_results)
-    print(f"✅ Parsed: {len(df):,} rows")
+    print(f" ✅ Parsed: {len(df):,} rows ({time.time()-t1:.1f}s)")
     
+    # Backup
+    backup_path = f"/tmp/{FILE_NAME}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.parquet"
+    df.to_parquet(backup_path, index=False)
+    print(f" 📁 Backup: {backup_path}")
+    
+    # Load DB
     if not df.empty:
         load_to_database(df)
     

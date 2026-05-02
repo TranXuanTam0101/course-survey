@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PIPELINE 2: INSTANT LOAD
-- DIM: INSERT IF NOT EXISTS (xét trùng lặp)
-- FACT: INSERT thẳng (không xét trùng)
+PIPELINE 2: ULTRA FAST
+- Load existing IDs 1 lần (1 query)
+- Lọc trong Python (set lookup O(1))
+- INSERT thẳng không WHERE
 - 1 transaction, 1 commit
 """
 
@@ -34,7 +35,7 @@ NUM_WORKERS = cpu_count()
 CHUNK = 100000
 
 print("="*70)
-print("📊 PIPELINE 2: DIM (no dup) | FACT (direct)")
+print("📊 PIPELINE 2: ULTRA FAST (Python filter)")
 print(f"   Workers: {NUM_WORKERS}")
 print("="*70)
 
@@ -107,7 +108,7 @@ def parse_survey(content):
 
 # ================= LOAD =================
 def load_all(df):
-    print("\n💾 LOAD (DIM: no dup | FACT: direct)...")
+    print("\n💾 LOAD (Python filter)...")
     t0=time.time()
     
     fn=SURVEY_FILE.replace('.csv','').split('_')[-1]
@@ -117,6 +118,7 @@ def load_all(df):
     
     de=df[(df['EssayText'].notna())&(df['EssayText']!='')].drop_duplicates('SubmissionID')
     
+    # Chuẩn bị FACT_KET_QUA
     kq=[]
     for _,r in df[(df['CauHoi']!='')&(df['GiaTri']!='')].iterrows():
         try:
@@ -131,105 +133,113 @@ def load_all(df):
     cur=conn.cursor()
     cur.fast_executemany=True
     
+    # ===== BƯỚC 1: LOAD EXISTING IDs (5 query, <1s) =====
+    print("  -> Loading existing IDs...")
+    t1=time.time()
+    
+    cur.execute("SELECT MaLop FROM DIM_LOP_SINH_VIEN")
+    existing_lop = {r[0] for r in cur.fetchall()}
+    
+    cur.execute("SELECT MaSV FROM DIM_SINH_VIEN")
+    existing_sv = {r[0] for r in cur.fetchall()}
+    
+    cur.execute("SELECT MaGV FROM DIM_GIANG_VIEN")
+    existing_gv = {r[0] for r in cur.fetchall()}
+    
+    cur.execute("SELECT MaLopHP FROM DIM_LOP_HOC_PHAN")
+    existing_lhp = {r[0] for r in cur.fetchall()}
+    
+    cur.execute("SELECT MaHocKy FROM DIM_HOC_KY WHERE MaHocKy = ?", (mhk,))
+    existing_hk = cur.fetchone() is not None
+    
+    print(f"  ✅ Loaded IDs ({time.time()-t1:.1f}s)")
+    print(f"     Lop={len(existing_lop):,} SV={len(existing_sv):,} GV={len(existing_gv):,} LHP={len(existing_lhp):,} HK={existing_hk}")
+    
+    # ===== BƯỚC 2: LỌC TRONG PYTHON (set lookup O(1)) =====
+    t1=time.time()
+    
+    # DIM_HOC_KY
+    if not existing_hk:
+        cur.execute("INSERT INTO DIM_HOC_KY(MaHocKy,NamHoc,HocKy) VALUES(?,?,?)",(mhk,nh,hk))
+    
+    # DIM_LOP_SINH_VIEN
+    lops=df[['MaLopHP']].drop_duplicates().fillna('')
+    new_lop=[(str(r['MaLopHP'])[:20],str(r['MaLopHP'])[:50],str(r['MaLopHP'])[:20])
+             for _,r in lops.iterrows()
+             if str(r['MaLopHP']).strip() and str(r['MaLopHP'])[:20] not in existing_lop]
+    
+    # DIM_SINH_VIEN
+    svs=df[['MaSV']].drop_duplicates().fillna('')
+    new_sv=[(str(r['MaSV'])[:20],'','',None,str(r['MaSV'])[:20])
+            for _,r in svs.iterrows()
+            if str(r['MaSV']).strip() and str(r['MaSV'])[:20] not in existing_sv]
+    
+    # DIM_GIANG_VIEN
+    gvs=df[['MaGV']].drop_duplicates().fillna('')
+    new_gv=[(str(r['MaGV'])[:20],'','')
+            for _,r in gvs.iterrows()
+            if str(r['MaGV']).strip() and str(r['MaGV'])[:20] not in existing_gv]
+    
+    # DIM_LOP_HOC_PHAN
+    lhps=df[['MaLopHP','MaHP','MaGV']].drop_duplicates('MaLopHP').fillna('')
+    new_lhp=[(str(r['MaLopHP'])[:50],str(r['MaLopHP'])[:100],str(r['MaHP'])[:20],str(r['MaGV'])[:20],mhk)
+             for _,r in lhps.iterrows()
+             if str(r['MaLopHP']).strip() and str(r['MaLopHP'])[:50] not in existing_lhp]
+    
+    print(f"  ✅ Filtered in Python ({time.time()-t1:.1f}s)")
+    print(f"     New: Lop={len(new_lop):,} SV={len(new_sv):,} GV={len(new_gv):,} LHP={len(new_lhp):,}")
+    
     try:
-        # ===== TẮT CONSTRAINT =====
+        # Tắt constraint
         for t in ['DIM_LOP_SINH_VIEN','DIM_SINH_VIEN','DIM_GIANG_VIEN',
                    'DIM_LOP_HOC_PHAN','FACT_GOP_Y_TU_LUAN','FACT_KET_QUA_DANH_GIA']:
             try: cur.execute(f"ALTER TABLE {t} NOCHECK CONSTRAINT ALL")
             except: pass
         
-        # ==========================================
-        # DIM: INSERT IF NOT EXISTS (xét trùng lặp)
-        # ==========================================
+        # ===== BƯỚC 3: INSERT THẲNG (không WHERE) =====
+        t1=time.time()
         
-        # 1. DIM_HOC_KY
-        cur.execute("""
-            IF NOT EXISTS (SELECT 1 FROM DIM_HOC_KY WHERE MaHocKy = ?)
-            INSERT INTO DIM_HOC_KY (MaHocKy, NamHoc, HocKy) VALUES (?, ?, ?)
-        """, (mhk, mhk, nh, hk))
-        print(f"  DIM_HOC_KY: done")
+        if new_lop:
+            cur.executemany("INSERT INTO DIM_LOP_SINH_VIEN(MaLop,Lop,MaChuyenNganh) VALUES(?,?,?)",new_lop)
+        print(f"  DIM_LOP: {len(new_lop):,} ({time.time()-t1:.1f}s)")
         
-        # 2. DIM_LOP_SINH_VIEN - INSERT WHERE NOT EXISTS
-        lops=df[['MaLopHP']].drop_duplicates().fillna('')
-        data=[(str(r['MaLopHP'])[:20],str(r['MaLopHP'])[:50],str(r['MaLopHP'])[:20]) 
-              for _,r in lops.iterrows() if str(r['MaLopHP']).strip()]
-        if data:
-            cur.executemany("""
-                INSERT INTO DIM_LOP_SINH_VIEN (MaLop, Lop, MaChuyenNganh)
-                SELECT ?, ?, ?
-                WHERE NOT EXISTS (SELECT 1 FROM DIM_LOP_SINH_VIEN WHERE MaLop = ?)
-            """, [(d[0],d[1],d[2],d[0]) for d in data])
-        print(f"  DIM_LOP_SINH_VIEN: {len(data):,} (skip dup)")
+        t1=time.time()
+        if new_sv:
+            cur.executemany("INSERT INTO DIM_SINH_VIEN(MaSV,HoDem,Ten,NgaySinh,MaLop) VALUES(?,?,?,?,?)",new_sv)
+        print(f"  DIM_SV: {len(new_sv):,} ({time.time()-t1:.1f}s)")
         
-        # 3. DIM_SINH_VIEN - INSERT WHERE NOT EXISTS
-        svs=df[['MaSV']].drop_duplicates().fillna('')
-        data=[(str(r['MaSV'])[:20],'', '', None, str(r['MaSV'])[:20]) 
-              for _,r in svs.iterrows() if str(r['MaSV']).strip()]
-        if data:
-            cur.executemany("""
-                INSERT INTO DIM_SINH_VIEN (MaSV, HoDem, Ten, NgaySinh, MaLop)
-                SELECT ?, ?, ?, ?, ?
-                WHERE NOT EXISTS (SELECT 1 FROM DIM_SINH_VIEN WHERE MaSV = ?)
-            """, [(d[0],d[1],d[2],d[3],d[4],d[0]) for d in data])
-        print(f"  DIM_SINH_VIEN: {len(data):,} (skip dup)")
+        t1=time.time()
+        if new_gv:
+            cur.executemany("INSERT INTO DIM_GIANG_VIEN(MaGV,HoDemGV,TenGV) VALUES(?,?,?)",new_gv)
+        print(f"  DIM_GV: {len(new_gv):,} ({time.time()-t1:.1f}s)")
         
-        # 4. DIM_GIANG_VIEN - INSERT WHERE NOT EXISTS
-        gvs=df[['MaGV']].drop_duplicates().fillna('')
-        data=[(str(r['MaGV'])[:20],'', '') 
-              for _,r in gvs.iterrows() if str(r['MaGV']).strip()]
-        if data:
-            cur.executemany("""
-                INSERT INTO DIM_GIANG_VIEN (MaGV, HoDemGV, TenGV)
-                SELECT ?, ?, ?
-                WHERE NOT EXISTS (SELECT 1 FROM DIM_GIANG_VIEN WHERE MaGV = ?)
-            """, [(d[0],d[1],d[2],d[0]) for d in data])
-        print(f"  DIM_GIANG_VIEN: {len(data):,} (skip dup)")
+        t1=time.time()
+        if new_lhp:
+            cur.executemany("INSERT INTO DIM_LOP_HOC_PHAN(MaLopHP,LopHP,MaHP,MaGV,MaHocKy) VALUES(?,?,?,?,?)",new_lhp)
+        print(f"  DIM_LHP: {len(new_lhp):,} ({time.time()-t1:.1f}s)")
         
-        # 5. DIM_LOP_HOC_PHAN - INSERT WHERE NOT EXISTS
-        lhps=df[['MaLopHP','MaHP','MaGV']].drop_duplicates('MaLopHP').fillna('')
-        data=[(str(r['MaLopHP'])[:50],str(r['MaLopHP'])[:100],str(r['MaHP'])[:20],str(r['MaGV'])[:20],mhk)
-              for _,r in lhps.iterrows() if str(r['MaLopHP']).strip()]
-        if data:
-            cur.executemany("""
-                INSERT INTO DIM_LOP_HOC_PHAN (MaLopHP, LopHP, MaHP, MaGV, MaHocKy)
-                SELECT ?, ?, ?, ?, ?
-                WHERE NOT EXISTS (SELECT 1 FROM DIM_LOP_HOC_PHAN WHERE MaLopHP = ?)
-            """, [(d[0],d[1],d[2],d[3],d[4],d[0]) for d in data])
-        print(f"  DIM_LOP_HOC_PHAN: {len(data):,} (skip dup)")
-        
-        # ==========================================
-        # FACT: INSERT THẲNG (không xét trùng)
-        # ==========================================
-        
-        # 6. FACT_GOP_Y_TU_LUAN - INSERT thẳng
+        # ===== FACT: INSERT THẲNG =====
+        t1=time.time()
         if not de.empty:
             data=[(str(r['SubmissionID'])[:150],str(r['MaSV'])[:20],str(r['MaLopHP'])[:50],
                    str(r['EssayText'])[:4000],str(r['Sentiment'])[:20],int(r['Is_Valid']),
                    int(r['Tag_HocPhan']),int(r['Tag_DayHoc']),int(r['Tag_KiemTra']),int(r['Tag_Khac']))
                   for _,r in de.iterrows()]
-            cur.executemany("""
-                INSERT INTO FACT_GOP_Y_TU_LUAN 
-                (SubmissionID, MaSV, MaLopHP, NoiDungGopY, Sentiment, Is_Valid,
-                 Tag_HocPhan, Tag_DayHoc, Tag_KiemTra, Tag_Khac)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, data)
-        print(f"  FACT_GOP_Y: {len(data):,} (direct)")
+            cur.executemany("INSERT INTO FACT_GOP_Y_TU_LUAN(SubmissionID,MaSV,MaLopHP,NoiDungGopY,Sentiment,Is_Valid,Tag_HocPhan,Tag_DayHoc,Tag_KiemTra,Tag_Khac) VALUES(?,?,?,?,?,?,?,?,?,?)",data)
+        print(f"  FACT_GY: {len(data):,} ({time.time()-t1:.1f}s)")
         
-        # 7. FACT_KET_QUA_DANH_GIA - INSERT thẳng
+        t1=time.time()
         if kq:
-            cur.executemany("""
-                INSERT INTO FACT_KET_QUA_DANH_GIA (SubmissionID, MaCauHoi, Diem)
-                VALUES (?, ?, ?)
-            """, kq)
-        print(f"  FACT_KET_QUA: {len(kq):,} (direct)")
+            cur.executemany("INSERT INTO FACT_KET_QUA_DANH_GIA(SubmissionID,MaCauHoi,Diem) VALUES(?,?,?)",kq)
+        print(f"  FACT_KQ: {len(kq):,} ({time.time()-t1:.1f}s)")
         
-        # ✅ COMMIT 1 LẦN
+        # COMMIT
         conn.commit()
         print(f"  ✅ COMMIT OK!")
         
     except Exception as e:
         conn.rollback()
-        print(f"  ❌ Error: {e}")
+        print(f"  ❌ {e}")
     finally:
         for t in ['DIM_LOP_SINH_VIEN','DIM_SINH_VIEN','DIM_GIANG_VIEN',
                    'DIM_LOP_HOC_PHAN','FACT_GOP_Y_TU_LUAN','FACT_KET_QUA_DANH_GIA']:
@@ -237,7 +247,7 @@ def load_all(df):
             except: pass
         conn.close()
     
-    print(f"  ⏱️ Load: {time.time()-t0:.1f}s")
+    print(f"  ⏱️ Total load: {time.time()-t0:.1f}s")
 
 # ================= MAIN =================
 def main():

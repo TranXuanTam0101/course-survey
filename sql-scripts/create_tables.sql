@@ -1,94 +1,143 @@
--- ======================================================
--- TẠO CƠ SỞ DỮ LIỆU KHẢO SÁT HỌC PHẦN
--- 11 BẢNG DIMENSION + 2 BẢNG FACT (ĐÃ GỘP TAG)
--- ======================================================
+-- ==================== SURVEY DATABASE SCHEMA ====================
+-- Database: course-survey-db
+-- Description: Hệ thống khảo sát đánh giá giảng viên và học phần
 
--- ======================================================
--- NHÓM 1: CÁC BẢNG DIMENSION (DANH MỤC) - 11 BẢNG
--- ======================================================
+-- ==================== DIMENSION TABLES ====================
 
--- 1. DIM_KHOA: Quản lý cấp cao nhất
+-- 1. DIM_KHOA: Danh sách các Khoa/Trường
 CREATE TABLE DIM_KHOA (
-    MaKhoa NVARCHAR(50) PRIMARY KEY,
-    TenKhoa NVARCHAR(255)
+    MaKhoa NVARCHAR(20) PRIMARY KEY,
+    TenKhoa NVARCHAR(200) NOT NULL
 );
 
--- 2. DIM_NGANH: Các ngành thuộc khoa
+-- 2. DIM_NGANH: Danh sách các Ngành đào tạo
 CREATE TABLE DIM_NGANH (
-    MaNganh NVARCHAR(50) PRIMARY KEY,
-    TenNganh NVARCHAR(255),
-    MaKhoa NVARCHAR(50) REFERENCES DIM_KHOA(MaKhoa)
+    MaNganh NVARCHAR(20) PRIMARY KEY,
+    TenNganh NVARCHAR(200) NOT NULL,
+    MaKhoa NVARCHAR(20) NOT NULL,
+    CONSTRAINT FK_DIM_NGANH_KHOA FOREIGN KEY (MaKhoa) REFERENCES DIM_KHOA(MaKhoa)
 );
 
--- 3. DIM_CHUONG_TRINH_DAO_TAO: Hệ đào tạo
-CREATE TABLE DIM_CHUONG_TRINH_DAO_TAO (
-    MaCTDT NVARCHAR(50) PRIMARY KEY,
-    TenCTDT NVARCHAR(255)
-);
-
--- 4. DIM_CHUYEN_NGANH: Cấp nhỏ nhất của ngành
+-- 3. DIM_CHUYEN_NGANH: Danh sách các Chuyên ngành
 CREATE TABLE DIM_CHUYEN_NGANH (
-    MaChuyenNganh NVARCHAR(50) PRIMARY KEY,
-    TenChuyenNganh NVARCHAR(255),
-    MaNganh NVARCHAR(50) REFERENCES DIM_NGANH(MaNganh),
-    MaCTDT NVARCHAR(50) REFERENCES DIM_CHUONG_TRINH_DAO_TAO(MaCTDT)
+    MaChuyenNganh NVARCHAR(20) PRIMARY KEY,
+    TenChuyenNganh NVARCHAR(200) NOT NULL,
+    MaNganh NVARCHAR(20) NOT NULL,
+    CONSTRAINT FK_DIM_CHUYEN_NGANH_NGANH FOREIGN KEY (MaNganh) REFERENCES DIM_NGANH(MaNganh)
 );
 
--- 5. DIM_LOP_SINH_VIEN: Lớp hành chính của sinh viên
+-- 4. DIM_LOP_SINH_VIEN: Danh sách các Lớp
 CREATE TABLE DIM_LOP_SINH_VIEN (
-    MaLop NVARCHAR(50) PRIMARY KEY,
-    Lop NVARCHAR(100),
-    MaChuyenNganh NVARCHAR(50) REFERENCES DIM_CHUYEN_NGANH(MaChuyenNganh)
+    MaLop NVARCHAR(20) PRIMARY KEY,
+    Lop NVARCHAR(50) NOT NULL,
+    MaChuyenNganh NVARCHAR(20) NOT NULL,
+    CONSTRAINT FK_DIM_LOP_SV_CHUYEN_NGANH FOREIGN KEY (MaChuyenNganh) REFERENCES DIM_CHUYEN_NGANH(MaChuyenNganh)
 );
 
--- 6. DIM_SINH_VIEN: Thông tin định danh người làm khảo sát
+-- 5. DIM_SINH_VIEN: Danh sách Sinh viên
 CREATE TABLE DIM_SINH_VIEN (
-    MaSV NVARCHAR(50) PRIMARY KEY,
+    MaSV NVARCHAR(20) PRIMARY KEY,
     HoDem NVARCHAR(100),
-    Ten NVARCHAR(50),
+    Ten NVARCHAR(50) NOT NULL,
     NgaySinh DATE,
-    MaLop NVARCHAR(50) REFERENCES DIM_LOP_SINH_VIEN(MaLop)
+    MaLop NVARCHAR(20) NOT NULL,
+    CONSTRAINT FK_DIM_SINH_VIEN_LOP FOREIGN KEY (MaLop) REFERENCES DIM_LOP_SINH_VIEN(MaLop)
 );
 
--- 7. DIM_GIANG_VIEN: Thông tin người dạy
+-- 6. DIM_GIANG_VIEN: Danh sách Giảng viên
 CREATE TABLE DIM_GIANG_VIEN (
-    MaGV NVARCHAR(50) PRIMARY KEY,
+    MaGV NVARCHAR(20) PRIMARY KEY,
     HoDemGV NVARCHAR(100),
-    TenGV NVARCHAR(50)
+    TenGV NVARCHAR(50) NOT NULL
 );
 
--- 8. DIM_HOC_PHAN: Danh mục môn học
+-- 7. DIM_HOC_PHAN: Danh sách Học phần
 CREATE TABLE DIM_HOC_PHAN (
-    MaHP NVARCHAR(50) PRIMARY KEY,
-    TenHP NVARCHAR(255),
-    MaKhoa NVARCHAR(50) REFERENCES DIM_KHOA(MaKhoa)
+    MaHP NVARCHAR(20) PRIMARY KEY,
+    TenHP NVARCHAR(200) NOT NULL,
+    MaKhoa NVARCHAR(20) NOT NULL,
+    CONSTRAINT FK_DIM_HOC_PHAN_KHOA FOREIGN KEY (MaKhoa) REFERENCES DIM_KHOA(MaKhoa)
 );
 
--- 9. DIM_HOC_KY: Trục thời gian
+-- 8. DIM_HOC_KY: Danh sách Học kỳ
 CREATE TABLE DIM_HOC_KY (
-    MaHocKy NVARCHAR(50) PRIMARY KEY,
-    NamHoc NVARCHAR(20),
-    HocKy INT
+    MaHocKy NVARCHAR(20) PRIMARY KEY,
+    NamHoc NVARCHAR(20) NOT NULL,
+    HocKy INT NOT NULL CHECK (HocKy IN (1, 2, 3))
 );
 
--- 10. DIM_LOP_HOC_PHAN: Thực thể nối SV và GV
+-- 9. DIM_LOP_HOC_PHAN: Danh sách Lớp học phần
 CREATE TABLE DIM_LOP_HOC_PHAN (
     MaLopHP NVARCHAR(50) PRIMARY KEY,
     LopHP NVARCHAR(100),
-    MaHP NVARCHAR(50) REFERENCES DIM_HOC_PHAN(MaHP),
-    MaGV NVARCHAR(50) REFERENCES DIM_GIANG_VIEN(MaGV),
-    MaHocKy NVARCHAR(50) REFERENCES DIM_HOC_KY(MaHocKy)
+    MaHP NVARCHAR(20) NOT NULL,
+    MaGV NVARCHAR(20) NOT NULL,
+    MaHocKy NVARCHAR(20) NOT NULL,
+    CONSTRAINT FK_DIM_LOP_HP_HOC_PHAN FOREIGN KEY (MaHP) REFERENCES DIM_HOC_PHAN(MaHP),
+    CONSTRAINT FK_DIM_LOP_HP_GIANG_VIEN FOREIGN KEY (MaGV) REFERENCES DIM_GIANG_VIEN(MaGV),
+    CONSTRAINT FK_DIM_LOP_HP_HOC_KY FOREIGN KEY (MaHocKy) REFERENCES DIM_HOC_KY(MaHocKy)
 );
 
--- 11. DIM_CAU_HOI: Danh sách 12 câu hỏi trắc nghiệm
+-- 10. DIM_CAU_HOI: Danh sách câu hỏi khảo sát
 CREATE TABLE DIM_CAU_HOI (
     MaCauHoi INT PRIMARY KEY,
-    ThuTuCauHoi INT,
-    NoiDungCauHoi NVARCHAR(MAX),
-    NhomTieuChi NVARCHAR(255)  -- Phân nhóm: Tổ chức học phần, Nội dung đào tạo, Phương pháp giảng dạy, Trách nhiệm giảng dạy, Thái độ & Hỗ trợ, Kiểm tra - Đánh giá, Đánh giá tổng thể
+    ThuTuCauHoi INT NOT NULL,
+    NoiDungCauHoi NVARCHAR(MAX) NOT NULL,
+    NhomTieuChi NVARCHAR(255)
 );
 
--- Insert 12 câu hỏi trắc nghiệm
+-- ==================== FACT TABLES ====================
+
+-- 11. FACT_GOP_Y_TU_LUAN: Góp ý tự luận từ sinh viên
+CREATE TABLE FACT_GOP_Y_TU_LUAN (
+    SubmissionID NVARCHAR(150) PRIMARY KEY,
+    MaSV NVARCHAR(20) NOT NULL,
+    MaLopHP NVARCHAR(50) NOT NULL,
+    NoiDungGopY NVARCHAR(MAX),
+    Sentiment NVARCHAR(20),
+    Is_Valid BIT DEFAULT 1,
+    Tag_HocPhan BIT DEFAULT 0,
+    Tag_DayHoc BIT DEFAULT 0,
+    Tag_KiemTra BIT DEFAULT 0,
+    Tag_Khac BIT DEFAULT 0,
+    CONSTRAINT FK_FACT_GOP_Y_SINH_VIEN FOREIGN KEY (MaSV) REFERENCES DIM_SINH_VIEN(MaSV),
+    CONSTRAINT FK_FACT_GOP_Y_LOP_HP FOREIGN KEY (MaLopHP) REFERENCES DIM_LOP_HOC_PHAN(MaLopHP)
+);
+
+-- 12. FACT_KET_QUA_DANH_GIA: Kết quả đánh giá chi tiết
+CREATE TABLE FACT_KET_QUA_DANH_GIA (
+    ID_KetQua INT IDENTITY(1,1) PRIMARY KEY,
+    SubmissionID NVARCHAR(150) NOT NULL,
+    MaCauHoi INT NOT NULL,
+    Diem INT NOT NULL CHECK (Diem BETWEEN 1 AND 5),
+    CONSTRAINT FK_FACT_KET_QUA_CAU_HOI FOREIGN KEY (MaCauHoi) REFERENCES DIM_CAU_HOI(MaCauHoi),
+    CONSTRAINT UQ_FACT_KET_QUA UNIQUE (SubmissionID, MaCauHoi)
+);
+
+-- ==================== INDEXES ====================
+
+-- DIM indexes
+CREATE INDEX IX_DIM_NGANH_MaKhoa ON DIM_NGANH(MaKhoa);
+CREATE INDEX IX_DIM_CHUYEN_NGANH_MaNganh ON DIM_CHUYEN_NGANH(MaNganh);
+CREATE INDEX IX_DIM_LOP_SV_MaChuyenNganh ON DIM_LOP_SINH_VIEN(MaChuyenNganh);
+CREATE INDEX IX_DIM_SINH_VIEN_MaLop ON DIM_SINH_VIEN(MaLop);
+CREATE INDEX IX_DIM_HOC_PHAN_MaKhoa ON DIM_HOC_PHAN(MaKhoa);
+CREATE INDEX IX_DIM_LOP_HP_MaHP ON DIM_LOP_HOC_PHAN(MaHP);
+CREATE INDEX IX_DIM_LOP_HP_MaGV ON DIM_LOP_HOC_PHAN(MaGV);
+CREATE INDEX IX_DIM_LOP_HP_MaHocKy ON DIM_LOP_HOC_PHAN(MaHocKy);
+
+-- FACT indexes
+CREATE INDEX IX_FACT_GOP_Y_MaSV ON FACT_GOP_Y_TU_LUAN(MaSV);
+CREATE INDEX IX_FACT_GOP_Y_MaLopHP ON FACT_GOP_Y_TU_LUAN(MaLopHP);
+CREATE INDEX IX_FACT_GOP_Y_Sentiment ON FACT_GOP_Y_TU_LUAN(Sentiment);
+CREATE INDEX IX_FACT_GOP_Y_Is_Valid ON FACT_GOP_Y_TU_LUAN(Is_Valid);
+CREATE INDEX IX_FACT_GOP_Y_Tags ON FACT_GOP_Y_TU_LUAN(Tag_HocPhan, Tag_DayHoc, Tag_KiemTra, Tag_Khac);
+
+CREATE INDEX IX_FACT_KET_QUA_SubmissionID ON FACT_KET_QUA_DANH_GIA(SubmissionID);
+CREATE INDEX IX_FACT_KET_QUA_MaCauHoi ON FACT_KET_QUA_DANH_GIA(MaCauHoi);
+
+-- ==================== DIM_CAU_HOI DATA ====================
+
 INSERT INTO DIM_CAU_HOI (MaCauHoi, ThuTuCauHoi, NoiDungCauHoi, NhomTieuChi) VALUES
 (1, 1, N'Giảng viên giới thiệu rõ ràng, đầy đủ về đề cương chi tiết học phần (chuẩn đầu ra, nội dung, phương pháp dạy - học, phương pháp kiểm tra - đánh giá, tài liệu học tập)', N'Tổ chức học phần'),
 (2, 2, N'Nội dung của học phần phù hợp với năng lực của người học', N'Nội dung đào tạo'),
@@ -102,37 +151,3 @@ INSERT INTO DIM_CAU_HOI (MaCauHoi, ThuTuCauHoi, NoiDungCauHoi, NhomTieuChi) VALU
 (10, 10, N'Phương pháp kiểm tra, đánh giá phù hợp với chuẩn đầu ra và nội dung của học phần', N'Kiểm tra - Đánh giá'),
 (11, 11, N'Việc đánh giá được thực hiện công bằng, khách quan và đảm bảo độ tin cậy', N'Kiểm tra - Đánh giá'),
 (12, 12, N'Anh/Chị hài lòng về chất lượng và hiệu quả giảng dạy của giảng viên đối với sự tiến bộ trong học tập của bản thân', N'Đánh giá tổng thể');
-
-
--- ======================================================
--- NHÓM 2: CÁC BẢNG FACT (DỮ LIỆU GIAO DỊCH) - 2 BẢNG
--- ======================================================
-
--- FACT 1: Góp ý tự luận (Bảng trung tâm - ĐÃ GỘP TAG)
--- Lưu kết quả NLP từ toàn bộ câu hỏi tự luận (EssayText)
--- 4 cột tag tương ứng với các nhóm góp ý
-CREATE TABLE FACT_GOP_Y_TU_LUAN (
-    SubmissionID NVARCHAR(100) PRIMARY KEY,
-    MaSV NVARCHAR(50) REFERENCES DIM_SINH_VIEN(MaSV),
-    MaLopHP NVARCHAR(50) REFERENCES DIM_LOP_HOC_PHAN(MaLopHP),
-    NoiDungGopY NVARCHAR(MAX),   -- Toàn bộ nội dung góp ý tự luận (1 cột duy nhất)
-    Sentiment NVARCHAR(50),       -- 'positive', 'negative', 'neutral'
-    Is_Valid BIT,                 -- 1: Hợp lệ, 0: Dữ liệu rác/Spam
-    
-    -- 4 cột tag (bit) - gộp từ bảng DIM_TAG cũ
-    Tag_HocPhan BIT DEFAULT 0,    -- Góp ý về nội dung học phần, chuẩn đầu ra
-    Tag_DayHoc BIT DEFAULT 0,     -- Góp ý về hoạt động dạy - học
-    Tag_KiemTra BIT DEFAULT 0,    -- Góp ý về kiểm tra - đánh giá
-    Tag_Khac BIT DEFAULT 0        -- Góp ý khác hoặc không có góp ý cụ thể
-);
-
-
--- FACT 2: Kết quả đánh giá trắc nghiệm (Dạng dọc)
--- Mỗi dòng là 1 câu trả lời (Câu 1-12), 1 phiếu có 12 dòng
-CREATE TABLE FACT_KET_QUA_DANH_GIA (
-    ID_KetQua INT IDENTITY(1,1) PRIMARY KEY,
-    SubmissionID NVARCHAR(100) REFERENCES FACT_GOP_Y_TU_LUAN(SubmissionID),
-    MaCauHoi INT REFERENCES DIM_CAU_HOI(MaCauHoi),  -- 1-12
-    Diem INT  -- Giá trị từ 1 đến 5
-);
-

@@ -49,7 +49,7 @@ TAILIEU_CONTAINER = "tailieu"
 
 NUM_WORKERS = cpu_count()
 CHUNK_SIZE = 50000
-BATCH_SIZE = 100000
+BATCH_SIZE = 50000
 
 print("=" * 70)
 print("📊 PIPELINE 2: SURVEY DATA")
@@ -76,20 +76,27 @@ SENT_KW = {
     'NEUTRAL': ['không có góp ý', 'không ý kiến', 'không có', 'bình thường']
 }
 
-# ================= MASTER LOOKUP (loaded từ DB) =================
-_g_cn = {}  # Dict lookup Chuyên ngành
-_g_hp = {}  # Dict lookup Học phần
-_g_khoa_hp = {}  # Dict Khoa quản lý HP
+# ================= MASTER LOOKUP (từ DB) =================
+_g_cn = {}      # Dict: MaChuyenNganh -> {MaChuyenNganh, TenChuyenNganh, MaNganh, TenNganh, MaKhoa, TenKhoa}
+_g_hp = {}      # Dict: MaHP -> TenHP
+_g_khoa_hp = {} # Dict: MaHP -> {MaKhoa, TenKhoa}
+_g_valid_cn = set()  # Set MaChuyenNganh hợp lệ
+_g_valid_hp = set()  # Set MaHP hợp lệ
+_g_valid_gv = set()  # Set MaGV hợp lệ
+_g_valid_sv = set()  # Set MaSV hợp lệ
+_g_valid_lop = set() # Set MaLop hợp lệ
+_g_valid_lhp = set() # Set MaLopHP hợp lệ
 
 def load_master_from_db():
-    """Load master data từ DIM tables đã có"""
+    """Load master data + existing IDs từ Database"""
     global _g_cn, _g_hp, _g_khoa_hp
+    global _g_valid_cn, _g_valid_hp, _g_valid_gv, _g_valid_sv, _g_valid_lop, _g_valid_lhp
     
     print("\n📚 Load master từ Database...")
     conn = pyodbc.connect(CONN_STR)
     cursor = conn.cursor()
     
-    # Load Chuyên ngành
+    # Chuyên ngành
     cursor.execute("""
         SELECT cn.MaChuyenNganh, cn.TenChuyenNganh, cn.MaNganh, 
                n.TenNganh, n.MaKhoa, k.TenKhoa
@@ -98,17 +105,19 @@ def load_master_from_db():
         JOIN DIM_KHOA k ON n.MaKhoa = k.MaKhoa
     """)
     for row in cursor.fetchall():
-        _g_cn[str(row[0]).strip()] = {
-            'MaChuyenNganh': str(row[0]).strip(),
+        key = str(row[0]).strip()
+        _g_cn[key] = {
+            'MaChuyenNganh': key,
             'TenChuyenNganh': str(row[1]).strip(),
             'MaNganh': str(row[2]).strip(),
             'TenNganh': str(row[3]).strip(),
             'MaKhoa': str(row[4]).strip(),
             'TenKhoa': str(row[5]).strip()
         }
+        _g_valid_cn.add(key)
     print(f"  -> Chuyên ngành: {len(_g_cn)} records")
     
-    # Load Học phần + Khoa quản lý
+    # Học phần
     cursor.execute("""
         SELECT hp.MaHP, hp.TenHP, hp.MaKhoa, k.TenKhoa
         FROM DIM_HOC_PHAN hp
@@ -118,7 +127,23 @@ def load_master_from_db():
         key = str(row[0]).strip()
         _g_hp[key] = str(row[1]).strip()
         _g_khoa_hp[key] = {'MaKhoa': str(row[2]).strip(), 'TenKhoa': str(row[3]).strip()}
+        _g_valid_hp.add(key)
     print(f"  -> Học phần: {len(_g_hp)} records")
+    
+    # Existing IDs
+    cursor.execute("SELECT MaGV FROM DIM_GIANG_VIEN")
+    _g_valid_gv.update(str(r[0]).strip() for r in cursor.fetchall())
+    
+    cursor.execute("SELECT MaSV FROM DIM_SINH_VIEN")
+    _g_valid_sv.update(str(r[0]).strip() for r in cursor.fetchall())
+    
+    cursor.execute("SELECT MaLop FROM DIM_LOP_SINH_VIEN")
+    _g_valid_lop.update(str(r[0]).strip() for r in cursor.fetchall())
+    
+    cursor.execute("SELECT MaLopHP FROM DIM_LOP_HOC_PHAN")
+    _g_valid_lhp.update(str(r[0]).strip() for r in cursor.fetchall())
+    
+    print(f"  -> Existing: GV={len(_g_valid_gv)}, SV={len(_g_valid_sv)}, Lop={len(_g_valid_lop)}, LopHP={len(_g_valid_lhp)}")
     
     conn.close()
 
@@ -148,27 +173,41 @@ def normalize_lop(lop):
     return lop.strip()
 
 def lookup_cn(lop):
+    """Lookup Chuyên ngành - đảm bảo trả về MaChuyenNganh hợp lệ"""
     lop_norm = normalize_lop(lop)
     
     if _LOP_RE.match(lop_norm):
         ma_cn = f"K{lop_norm[3:5]}"
-        return _g_cn.get(ma_cn, {
-            'MaChuyenNganh': ma_cn, 'TenChuyenNganh': f'CN {ma_cn}',
-            'MaNganh': f'N{ma_cn}', 'TenNganh': f'Ngành {ma_cn}',
-            'MaKhoa': 'TĐHKT', 'TenKhoa': 'Trường ĐHKT'
-        })
+        if ma_cn in _g_cn:
+            return _g_cn[ma_cn]
+        else:
+            # Nếu chưa có trong DB, thêm vào DIM_CHUYEN_NGANH sau
+            return {
+                'MaChuyenNganh': ma_cn,
+                'TenChuyenNganh': f'Chuyên ngành {ma_cn}',
+                'MaNganh': 'KHOA01NG01',  # Fallback
+                'TenNganh': 'Ngành mặc định',
+                'MaKhoa': 'KHOA01',       # Fallback
+                'TenKhoa': 'Trường Đại học Kinh tế'
+            }
     else:
+        # Lớp đặc biệt
         return {
-            'MaChuyenNganh': lop_norm or lop, 'TenChuyenNganh': lop,
-            'MaNganh': lop_norm or lop, 'TenNganh': lop,
-            'MaKhoa': 'TĐHKT', 'TenKhoa': 'Trường ĐHKT'
+            'MaChuyenNganh': lop_norm or lop,
+            'TenChuyenNganh': lop,
+            'MaNganh': 'KHOA01NG01',
+            'TenNganh': 'Ngành mặc định',
+            'MaKhoa': 'KHOA01',
+            'TenKhoa': 'Trường Đại học Kinh tế'
         }
 
 def lookup_hp(ma_hp):
-    if not ma_hp: return '', 'TĐHKT', 'Trường ĐHKT'
+    """Lookup Học phần"""
+    if not ma_hp:
+        return '', 'KHOA01', 'Trường Đại học Kinh tế'
     key = str(ma_hp).strip()
     ten_hp = _g_hp.get(key, '')
-    khoa = _g_khoa_hp.get(key, {'MaKhoa': 'TĐHKT', 'TenKhoa': 'Trường ĐHKT'})
+    khoa = _g_khoa_hp.get(key, {'MaKhoa': 'KHOA01', 'TenKhoa': 'Trường Đại học Kinh tế'})
     return ten_hp, khoa['MaKhoa'], khoa['TenKhoa']
 
 def nlp_fast(text):
@@ -212,7 +251,6 @@ def parse_batch(lines):
     for line in lines:
         if not line: continue
         
-        # Tìm NULL
         ni = line.upper().find('NULL')
         left = line[:ni].rstrip(', \t') if ni >= 0 else line
         right = line[ni+4:].lstrip(', \t') if ni >= 0 else ''
@@ -221,19 +259,16 @@ def parse_batch(lines):
         rl = len(row)
         if rl < 10: continue
         
-        # Tìm ngày sinh
         nsi = -1
         for i in range(2, min(12, rl)):
             if _DATE_RE.match(row[i]): nsi = i; break
         if nsi == -1: continue
         
-        # Tìm MaGV
         mgi = -1
         for i in range(nsi+1, min(nsi+25, rl)):
             if _MA_GV_RE.match(row[i]): mgi = i; break
         if mgi == -1: mgi = min(rl-1, nsi+8)
         
-        # Extract
         lop = row[0]; ma_sv = row[1]; ns = row[nsi]
         np = row[2:nsi]
         ten = np[-1] if np else ''
@@ -251,10 +286,8 @@ def parse_batch(lines):
         
         essay = right.replace(' , ', ', ').strip()
         
-        # NLP
         t1, t2, t3, t4, sent, valid = nlp_fast(essay) if essay else (0,0,0,0,'NEUTRAL',0)
         
-        # Lookup
         cn = lookup_cn(lop)
         thp, mkhp, tkhp = lookup_hp(ma_hp)
         thp = thp or thp_raw
@@ -286,24 +319,84 @@ def parse_survey(content):
     with Pool(NUM_WORKERS) as pool:
         for i, res in enumerate(pool.imap_unordered(parse_batch, batches)):
             all_results.extend(res)
-            print(f"    Batch {i+1}/{len(batches)}: {len(res):,} rows")
+            if (i+1) % 5 == 0 or i == len(batches)-1:
+                print(f"    Batch {i+1}/{len(batches)}: {len(res):,} rows")
     
     df = pd.DataFrame(all_results, columns=COLUMNS)
     print(f"  ✅ {len(df):,} rows ({time.time()-t0:.1f}s)")
     return df
 
-# ================= LOAD DB =================
-def load_dim(cursor, table, df, cols, id_col):
+# ================= LOAD DB - ĐẢM BẢO FK =================
+def ensure_chuyen_nganh_exists(cursor, df):
+    """Đảm bảo tất cả MaChuyenNganh trong df tồn tại trong DIM_CHUYEN_NGANH"""
+    cn_new = df[['MaChuyenNganh', 'TenChuyenNganh', 'MaNganh']].drop_duplicates('MaChuyenNganh')
+    
+    cursor.execute("SELECT MaChuyenNganh FROM DIM_CHUYEN_NGANH")
+    existing = {str(r[0]).strip() for r in cursor.fetchall()}
+    
+    to_insert = cn_new[~cn_new['MaChuyenNganh'].isin(existing)]
+    
+    if not to_insert.empty:
+        print(f"  -> Thêm {len(to_insert)} Chuyên ngành mới...")
+        data = []
+        for _, r in to_insert.iterrows():
+            data.append((
+                str(r['MaChuyenNganh'])[:20],
+                str(r['TenChuyenNganh'])[:200],
+                str(r['MaNganh'])[:20] if pd.notna(r['MaNganh']) else 'KHOA01NG01'
+            ))
+        
+        cursor.executemany(
+            "INSERT INTO DIM_CHUYEN_NGANH (MaChuyenNganh, TenChuyenNganh, MaNganh) VALUES (?, ?, ?)",
+            data
+        )
+        cursor.connection.commit()
+        
+        # Update cache
+        global _g_valid_cn, _g_cn
+        for _, r in to_insert.iterrows():
+            key = str(r['MaChuyenNganh']).strip()
+            _g_valid_cn.add(key)
+
+def ensure_nganh_exists(cursor, df):
+    """Đảm bảo tất cả MaNganh tồn tại"""
+    nganh_new = df[['MaNganh', 'TenNganh', 'MaKhoa_CN']].drop_duplicates('MaNganh')
+    nganh_new.columns = ['MaNganh', 'TenNganh', 'MaKhoa']
+    
+    cursor.execute("SELECT MaNganh FROM DIM_NGANH")
+    existing = {str(r[0]).strip() for r in cursor.fetchall()}
+    
+    to_insert = nganh_new[~nganh_new['MaNganh'].isin(existing)]
+    
+    if not to_insert.empty:
+        print(f"  -> Thêm {len(to_insert)} Ngành mới...")
+        data = []
+        for _, r in to_insert.iterrows():
+            data.append((
+                str(r['MaNganh'])[:20],
+                str(r['TenNganh'])[:200],
+                str(r['MaKhoa'])[:20]
+            ))
+        
+        cursor.executemany(
+            "INSERT INTO DIM_NGANH (MaNganh, TenNganh, MaKhoa) VALUES (?, ?, ?)",
+            data
+        )
+        cursor.connection.commit()
+
+def load_dim_safe(cursor, table, df, cols, id_col):
+    """Load dimension an toàn - skip FK errors"""
     if df.empty: return 0
+    
     df = df.drop_duplicates(id_col).fillna('')
     
     cursor.execute(f"SELECT {id_col} FROM {table}")
-    existing = {row[0] for row in cursor.fetchall()}
-    new = df[~df[id_col].isin(existing)]
+    existing = {str(r[0]).strip() for r in cursor.fetchall()}
+    
+    new = df[~df[id_col].astype(str).str.strip().isin(existing)]
     if new.empty: return 0
     
-    ph = ', '.join(['?']*len(cols))
-    q = f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({ph})"
+    print(f"    -> {table}: {len(new)} new records")
     
     data = []
     for _, r in new.iterrows():
@@ -319,48 +412,67 @@ def load_dim(cursor, table, df, cols, id_col):
                 td.append(str(v)[:500] if v and pd.notna(v) else '')
         data.append(tuple(td))
     
+    ph = ', '.join(['?']*len(cols))
+    q = f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({ph})"
+    
     cursor.fast_executemany = True
-    cursor.executemany(q, data)
-    cursor.connection.commit()
-    return len(new)
+    inserted = 0
+    for i in range(0, len(data), BATCH_SIZE):
+        batch = data[i:i+BATCH_SIZE]
+        try:
+            cursor.executemany(q, batch)
+            cursor.connection.commit()
+            inserted += len(batch)
+        except pyodbc.IntegrityError as e:
+            # Thử insert từng dòng
+            for d in batch:
+                try:
+                    cursor.execute(q, d)
+                    cursor.connection.commit()
+                    inserted += 1
+                except:
+                    pass
+    
+    return inserted
 
 def load_all(cursor, df):
     print("\n--- DIMENSIONS ---")
     t = 0
     
+    # Đảm bảo FK tồn tại trước
+    ensure_nganh_exists(cursor, df)
+    ensure_chuyen_nganh_exists(cursor, df)
+    
     # DIM_LOP_SINH_VIEN
-    t += load_dim(cursor, 'DIM_LOP_SINH_VIEN', df[['MaLop','Lop','MaChuyenNganh']],
-                  ['MaLop','Lop','MaChuyenNganh'], 'MaLop')
-    print(f"  DIM_LOP_SINH_VIEN: new records")
+    t += load_dim_safe(cursor, 'DIM_LOP_SINH_VIEN', df[['MaLop','Lop','MaChuyenNganh']],
+                       ['MaLop','Lop','MaChuyenNganh'], 'MaLop')
     
     # DIM_SINH_VIEN
-    t += load_dim(cursor, 'DIM_SINH_VIEN', df[['MaSV','HoDem','Ten','NgaySinh','MaLop']],
-                  ['MaSV','HoDem','Ten','NgaySinh','MaLop'], 'MaSV')
-    print(f"  DIM_SINH_VIEN: new records")
+    t += load_dim_safe(cursor, 'DIM_SINH_VIEN', df[['MaSV','HoDem','Ten','NgaySinh','MaLop']],
+                       ['MaSV','HoDem','Ten','NgaySinh','MaLop'], 'MaSV')
     
     # DIM_GIANG_VIEN
-    t += load_dim(cursor, 'DIM_GIANG_VIEN', df[['MaGV','HoDemGV','TenGV']],
-                  ['MaGV','HoDemGV','TenGV'], 'MaGV')
-    print(f"  DIM_GIANG_VIEN: new records")
+    t += load_dim_safe(cursor, 'DIM_GIANG_VIEN', df[['MaGV','HoDemGV','TenGV']].drop_duplicates('MaGV'),
+                       ['MaGV','HoDemGV','TenGV'], 'MaGV')
     
     # DIM_HOC_PHAN
-    t += load_dim(cursor, 'DIM_HOC_PHAN', df[['MaHP','TenHP','MaKhoa_HP']].rename(columns={'MaKhoa_HP':'MaKhoa'}),
-                  ['MaHP','TenHP','MaKhoa'], 'MaHP')
-    print(f"  DIM_HOC_PHAN: new records")
+    t += load_dim_safe(cursor, 'DIM_HOC_PHAN', 
+                       df[['MaHP','TenHP','MaKhoa_HP']].rename(columns={'MaKhoa_HP':'MaKhoa'}).drop_duplicates('MaHP'),
+                       ['MaHP','TenHP','MaKhoa'], 'MaHP')
     
     # DIM_HOC_KY
     mhk, nh, hk = derive_ma_hoc_ky()
-    t += load_dim(cursor, 'DIM_HOC_KY', pd.DataFrame([{'MaHocKy':mhk,'NamHoc':nh,'HocKy':hk}]),
-                  ['MaHocKy','NamHoc','HocKy'], 'MaHocKy')
-    print(f"  DIM_HOC_KY: new records")
+    t += load_dim_safe(cursor, 'DIM_HOC_KY',
+                       pd.DataFrame([{'MaHocKy':mhk,'NamHoc':nh,'HocKy':hk}]),
+                       ['MaHocKy','NamHoc','HocKy'], 'MaHocKy')
     
     # DIM_LOP_HOC_PHAN
     dlhp = df[['MaLopHP','LopHP','MaHP','MaGV']].drop_duplicates('MaLopHP')
     dlhp['MaHocKy'] = mhk
-    t += load_dim(cursor, 'DIM_LOP_HOC_PHAN', dlhp,
-                  ['MaLopHP','LopHP','MaHP','MaGV','MaHocKy'], 'MaLopHP')
-    print(f"  DIM_LOP_HOC_PHAN: new records")
+    t += load_dim_safe(cursor, 'DIM_LOP_HOC_PHAN', dlhp,
+                       ['MaLopHP','LopHP','MaHP','MaGV','MaHocKy'], 'MaLopHP')
     
+    print(f"  📊 Total new: {t}")
     return t
 
 def load_facts(cursor, df):
@@ -370,19 +482,31 @@ def load_facts(cursor, df):
     de = df[(df['EssayText'].notna()) & (df['EssayText']!='')].drop_duplicates('SubmissionID')
     if not de.empty:
         cursor.execute("SELECT SubmissionID FROM FACT_GOP_Y_TU_LUAN")
-        ex = {r[0] for r in cursor.fetchall()}
-        dn = de[~de['SubmissionID'].isin(ex)]
+        ex = {str(r[0]).strip() for r in cursor.fetchall()}
+        dn = de[~de['SubmissionID'].astype(str).str.strip().isin(ex)]
         if not dn.empty:
+            print(f"  -> FACT_GOP_Y: {len(dn):,} new")
             data = [(str(r['SubmissionID'])[:150], str(r['MaSV'])[:20], str(r['MaLopHP'])[:50],
                      str(r['EssayText']), str(r['Sentiment'])[:20], int(r['Is_Valid']),
                      int(r['Tag_HocPhan']), int(r['Tag_DayHoc']), int(r['Tag_KiemTra']), int(r['Tag_Khac']))
                     for _, r in dn.iterrows()]
             for i in range(0, len(data), BATCH_SIZE):
-                cursor.executemany("INSERT INTO FACT_GOP_Y_TU_LUAN (SubmissionID,MaSV,MaLopHP,NoiDungGopY,Sentiment,Is_Valid,Tag_HocPhan,Tag_DayHoc,Tag_KiemTra,Tag_Khac) VALUES (?,?,?,?,?,?,?,?,?,?)", data[i:i+BATCH_SIZE])
-                cursor.connection.commit()
-            print(f"  FACT_GOP_Y: {len(data):,}")
-        else:
-            print(f"  FACT_GOP_Y: 0 new")
+                try:
+                    cursor.executemany(
+                        "INSERT INTO FACT_GOP_Y_TU_LUAN (SubmissionID,MaSV,MaLopHP,NoiDungGopY,Sentiment,Is_Valid,Tag_HocPhan,Tag_DayHoc,Tag_KiemTra,Tag_Khac) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        data[i:i+BATCH_SIZE]
+                    )
+                    cursor.connection.commit()
+                except:
+                    # Insert từng dòng
+                    for d in data[i:i+BATCH_SIZE]:
+                        try:
+                            cursor.execute(
+                                "INSERT INTO FACT_GOP_Y_TU_LUAN (SubmissionID,MaSV,MaLopHP,NoiDungGopY,Sentiment,Is_Valid,Tag_HocPhan,Tag_DayHoc,Tag_KiemTra,Tag_Khac) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                                d
+                            )
+                            cursor.connection.commit()
+                        except: pass
     
     # FACT_KET_QUA
     rows = []
@@ -397,10 +521,23 @@ def load_facts(cursor, df):
         for mc in [13,14,15,16]: rows.append((str(r['SubmissionID'])[:150], mc, d))
     
     if rows:
+        print(f"  -> FACT_KET_QUA: {len(rows):,} rows")
         for i in range(0, len(rows), BATCH_SIZE):
-            cursor.executemany("INSERT INTO FACT_KET_QUA_DANH_GIA (SubmissionID,MaCauHoi,Diem) VALUES (?,?,?)", rows[i:i+BATCH_SIZE])
-            cursor.connection.commit()
-        print(f"  FACT_KET_QUA: {len(rows):,}")
+            try:
+                cursor.executemany(
+                    "INSERT INTO FACT_KET_QUA_DANH_GIA (SubmissionID,MaCauHoi,Diem) VALUES (?,?,?)",
+                    rows[i:i+BATCH_SIZE]
+                )
+                cursor.connection.commit()
+            except:
+                for d in rows[i:i+BATCH_SIZE]:
+                    try:
+                        cursor.execute(
+                            "INSERT INTO FACT_KET_QUA_DANH_GIA (SubmissionID,MaCauHoi,Diem) VALUES (?,?,?)",
+                            d
+                        )
+                        cursor.connection.commit()
+                    except: pass
 
 # ================= MAIN =================
 def main():
@@ -425,7 +562,9 @@ def main():
     if df.empty: print("❌ No data!"); sys.exit(1)
     
     # Backup
-    df.to_parquet(f"/tmp/{FILE_NAME}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.parquet", index=False)
+    backup_path = f"/tmp/{FILE_NAME}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.parquet"
+    df.to_parquet(backup_path, index=False)
+    print(f"  📁 Backup: {backup_path}")
     
     # Load DB
     print(f"\n💾 LOAD DATABASE")

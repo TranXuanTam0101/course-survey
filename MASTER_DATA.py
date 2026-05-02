@@ -1,12 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-PIPELINE 1: MASTER DATA
-- Load DIM_KHOA, DIM_NGANH, DIM_CHUYEN_NGANH, DIM_HOC_PHAN
-- Dùng MERGE để không bị lỗi FK constraint
-- Chạy khi có thay đổi về khoa, ngành, chuyên ngành, học phần
-"""
-
 import os
 import sys
 import re
@@ -35,7 +26,8 @@ TAILIEU_CONTAINER = "tailieu"
 
 print("=" * 70)
 print("📚 PIPELINE 1: MASTER DATA")
-print("   DIM_KHOA | DIM_NGANH | DIM_CHUYEN_NGANH | DIM_HOC_PHAN")
+print("   BƯỚC 1: HP-Khoa.csv -> DIM_KHOA (GỐC) + DIM_HOC_PHAN")
+print("   BƯỚC 2: TenChuyenNganh-Khoa.csv -> DIM_NGANH + DIM_CHUYEN_NGANH")
 print("=" * 70)
 
 # ================= UTILS =================
@@ -79,8 +71,6 @@ def load_table_merge(cursor, table, df, columns, id_col, update_cols=None):
     if update_cols is None:
         update_cols = [c for c in columns if c != id_col]
     
-    print(f"  -> Loading {table}: {len(df)} records (MERGE)...")
-    
     # Lấy danh sách ID hiện có
     cursor.execute(f"SELECT {id_col} FROM {table}")
     existing_ids = {str(row[0]).strip() for row in cursor.fetchall()}
@@ -95,7 +85,6 @@ def load_table_merge(cursor, table, df, columns, id_col, update_cols=None):
     
     # UPDATE
     if not df_update.empty:
-        print(f"    -> Updating {len(df_update)} records...")
         set_clause = ', '.join([f"{c} = ?" for c in update_cols])
         query = f"UPDATE {table} SET {set_clause} WHERE {id_col} = ?"
         
@@ -112,7 +101,6 @@ def load_table_merge(cursor, table, df, columns, id_col, update_cols=None):
     
     # INSERT
     if not df_insert.empty:
-        print(f"    -> Inserting {len(df_insert)} records...")
         placeholders = ', '.join(['?'] * len(columns))
         query = f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders})"
         
@@ -129,7 +117,9 @@ def load_table_merge(cursor, table, df, columns, id_col, update_cols=None):
         cursor.connection.commit()
         inserted = len(df_insert)
     
-    print(f"    -> Updated: {updated}, Inserted: {inserted}")
+    if updated > 0 or inserted > 0:
+        print(f"    -> Updated: {updated}, Inserted: {inserted}")
+    
     return updated + inserted
 
 
@@ -143,7 +133,7 @@ def main():
     conn = pyodbc.connect(CONN_STR)
     cursor = conn.cursor()
     
-    # ===== LOAD TOÀN BỘ KHOA HIỆN CÓ =====
+    # ===== LOAD TOÀN BỘ KHOA HIỆN CÓ TỪ DB =====
     cursor.execute("SELECT MaKhoa, TenKhoa FROM DIM_KHOA")
     khoa_db = {}  # TenKhoa -> MaKhoa
     existing_khoa_ids = set()
@@ -152,6 +142,8 @@ def main():
         ma = str(row[0]).strip()
         khoa_db[ten] = ma
         existing_khoa_ids.add(ma)
+    
+    print(f"  -> Khoa hiện có: {len(khoa_db)}")
     
     # ===== LOAD TOÀN BỘ NGÀNH HIỆN CÓ =====
     cursor.execute("SELECT MaNganh FROM DIM_NGANH")
@@ -165,7 +157,7 @@ def main():
     cursor.execute("SELECT MaHP FROM DIM_HOC_PHAN")
     existing_hp_ids = {str(row[0]).strip() for row in cursor.fetchall()}
     
-    print(f"  -> Existing: Khoa={len(khoa_db)}, Nganh={len(existing_nganh_ids)}, CN={len(existing_cn_ids)}, HP={len(existing_hp_ids)}")
+    print(f"  -> Existing: Nganh={len(existing_nganh_ids)}, CN={len(existing_cn_ids)}, HP={len(existing_hp_ids)}")
     
     # Hàm helper lấy hoặc tạo MaKhoa
     def get_or_create_ma_khoa(ten_khoa):
@@ -182,6 +174,7 @@ def main():
         new_id = generate_id('KHOA', existing_khoa_ids)
         existing_khoa_ids.add(new_id)
         khoa_db[ten_khoa_str] = new_id
+        print(f"    -> Tạo Khoa mới: {new_id} - {ten_khoa_str}")
         
         # Insert vào DB ngay
         try:
@@ -198,15 +191,124 @@ def main():
                 new_id = str(row[0]).strip()
                 khoa_db[ten_khoa_str] = new_id
                 existing_khoa_ids.add(new_id)
+                print(f"    -> Khoa đã tồn tại: {new_id}")
         
         return new_id
     
     # ==========================================
-    # PHẦN 1: TenChuyenNganh-Khoa.csv
+    # BƯỚC 1: HP-Khoa.csv (GỐC)
+    #   -> DIM_KHOA (gốc)
+    #   -> DIM_HOC_PHAN
     # ==========================================
-    print("\n" + "=" * 50)
-    print("📄 PHẦN 1: TenChuyenNganh-Khoa.csv")
-    print("=" * 50)
+    print("\n" + "=" * 60)
+    print("📄 BƯỚC 1: HP-Khoa.csv (Khoa GỐC)")
+    print("   -> DIM_KHOA + DIM_HOC_PHAN")
+    print("=" * 60)
+    
+    content_hp = download_blob(blob_service, TAILIEU_CONTAINER, "HP-Khoa.csv")
+    
+    if not content_hp:
+        print("❌ Không tìm thấy file HP-Khoa.csv!")
+    else:
+        df_hp = pd.read_csv(io.StringIO(content_hp))
+        df_hp.columns = [c.strip() for c in df_hp.columns]
+        print(f"  -> {len(df_hp)} dòng, columns: {list(df_hp.columns)[:5]}...")
+        
+        # Tìm cột
+        col_ma_hp = None
+        col_ten_hp = None
+        col_khoa_hp = None
+        
+        for col in df_hp.columns:
+            col_lower = col.lower().strip()
+            if 'mã học phần' in col_lower or 'mã hp' in col_lower:
+                col_ma_hp = col
+            elif 'tên học phần' in col_lower or 'tên hp' in col_lower:
+                col_ten_hp = col
+            elif 'khoa' in col_lower and 'mã' not in col_lower:
+                col_khoa_hp = col
+        
+        # Fallback dùng vị trí
+        if not col_ma_hp:
+            cols = [c for c in df_hp.columns if 'unnamed' not in c.lower() and 'stt' not in c.lower()]
+            if len(cols) >= 3:
+                col_ma_hp = cols[0]
+                col_khoa_hp = cols[1]
+                col_ten_hp = cols[2]
+        
+        print(f"  -> Cột: MaHP={col_ma_hp}, Khoa={col_khoa_hp}, TenHP={col_ten_hp}")
+        
+        if col_ma_hp:
+            # Tạo DataFrame
+            df_hp_data = pd.DataFrame()
+            df_hp_data['MaHP'] = df_hp[col_ma_hp].astype(str).str.strip()
+            df_hp_data['TenHP'] = df_hp[col_ten_hp].astype(str).str.strip() if col_ten_hp else ''
+            df_hp_data['Khoa_Original'] = df_hp[col_khoa_hp].astype(str).str.strip() if col_khoa_hp else ''
+            
+            # ===== XỬ LÝ ĐẶC BIỆT: Ngữ Văn, Toán -> Trường ĐHSP =====
+            df_hp_data['TenKhoa'] = df_hp_data['Khoa_Original'].apply(
+                lambda x: 'Trường Đại học Sư phạm'
+                if isinstance(x, str) and ('Ngữ Văn' in x or 'Toán' in x)
+                else x
+            )
+            
+            special_mask = df_hp_data['TenKhoa'] != df_hp_data['Khoa_Original']
+            if special_mask.sum() > 0:
+                print(f"  -> Đặc biệt: {special_mask.sum()} HP đổi Khoa -> Trường ĐHSP")
+                special_khoas = df_hp_data[special_mask]['Khoa_Original'].unique()
+                for sk in special_khoas:
+                    print(f"     {sk} -> Trường Đại học Sư phạm")
+            
+            # ===== 1.1: TẠO DIM_KHOA TỪ HP-Khoa.csv (GỐC) =====
+            print("\n  📌 1.1: Tạo DIM_KHOA từ HP-Khoa.csv (GỐC)...")
+            
+            # Lấy danh sách khoa unique từ HP
+            khoa_from_hp = df_hp_data['TenKhoa'].dropna().unique()
+            print(f"  -> {len(khoa_from_hp)} Khoa từ HP-Khoa.csv")
+            
+            for tk in khoa_from_hp:
+                tk_str = str(tk).strip()
+                if tk_str:
+                    get_or_create_ma_khoa(tk_str)
+            
+            # ===== 1.2: LOAD DIM_HOC_PHAN =====
+            print("\n  📌 1.2: Load DIM_HOC_PHAN...")
+            
+            df_hp_data['MaKhoa'] = df_hp_data['TenKhoa'].apply(get_or_create_ma_khoa)
+            
+            # Clean
+            df_hp_data = df_hp_data[df_hp_data['MaHP'] != '']
+            df_hp_data = df_hp_data[df_hp_data['MaHP'] != 'nan']
+            df_hp_data = df_hp_data.drop_duplicates('MaHP')
+            
+            print(f"  -> {len(df_hp_data)} HP sau xử lý")
+            
+            # In mẫu
+            print("  -> Mẫu:")
+            for _, r in df_hp_data.head(5).iterrows():
+                print(f"     {r['MaHP']} | {r['TenHP'][:40]} | {r['MaKhoa']} | {r['TenKhoa'][:30]}")
+            
+            df_hp_out = df_hp_data[['MaHP', 'TenHP', 'MaKhoa']]
+            count = load_table_merge(cursor, 'DIM_HOC_PHAN', df_hp_out,
+                                     ['MaHP', 'TenHP', 'MaKhoa'], 'MaHP',
+                                     ['TenHP', 'MaKhoa'])
+            print(f"  ✅ DIM_HOC_PHAN: {count} processed")
+            
+            # In danh sách Khoa sau bước 1
+            print(f"\n  📊 Khoa sau BƯỚC 1: {len(khoa_db)}")
+            for ten, ma in sorted(khoa_db.items()):
+                print(f"     {ma} | {ten[:50]}")
+    
+    # ==========================================
+    # BƯỚC 2: TenChuyenNganh-Khoa.csv (BỔ SUNG)
+    #   -> DIM_KHOA (bổ sung nếu có khoa mới)
+    #   -> DIM_NGANH
+    #   -> DIM_CHUYEN_NGANH
+    # ==========================================
+    print("\n" + "=" * 60)
+    print("📄 BƯỚC 2: TenChuyenNganh-Khoa.csv (BỔ SUNG)")
+    print("   -> DIM_KHOA (bổ sung) + DIM_NGANH + DIM_CHUYEN_NGANH")
+    print("=" * 60)
     
     content_cn = download_blob(blob_service, TAILIEU_CONTAINER, "TenChuyenNganh-Khoa.csv")
     
@@ -215,7 +317,7 @@ def main():
     else:
         df_cn = pd.read_csv(io.StringIO(content_cn))
         df_cn.columns = [c.strip() for c in df_cn.columns]
-        print(f"  -> {len(df_cn)} dòng")
+        print(f"  -> {len(df_cn)} dòng, columns: {list(df_cn.columns)}")
         
         # Tìm cột
         col_ma_cn = None
@@ -234,6 +336,7 @@ def main():
             elif 'khoa' in col_lower and 'mã' not in col_lower:
                 col_ten_khoa = col
         
+        # Fallback dùng vị trí
         if not col_ma_cn:
             cols = df_cn.columns.tolist()
             if len(cols) >= 5:
@@ -245,17 +348,40 @@ def main():
         print(f"  -> Cột: Khoa={col_ten_khoa}, Ngành={col_ten_nganh}, CN={col_ten_cn}, Mã CN={col_ma_cn}")
         
         if col_ma_cn:
-            # Tạo Khoa từ file CN
+            # ===== 2.1: BỔ SUNG KHOA TỪ FILE CN (NẾU CÓ MỚI) =====
+            print("\n  📌 2.1: Bổ sung Khoa từ TenChuyenNganh-Khoa.csv...")
+            
+            khoa_from_cn = set()
             if col_ten_khoa:
                 for tk in df_cn[col_ten_khoa].dropna():
-                    get_or_create_ma_khoa(str(tk).strip())
+                    tk_str = str(tk).strip()
+                    if tk_str:
+                        khoa_from_cn.add(tk_str)
             
             # Thêm khoa mặc định
-            for dk in ['Trường Đại học Kinh tế', 'Trường Đại học Sư phạm',
-                        'Trường Đại học Ngoại ngữ', 'Phòng Đào tạo']:
-                get_or_create_ma_khoa(dk)
+            default_khoas = [
+                'Trường Đại học Kinh tế',
+                'Trường Đại học Sư phạm',
+                'Trường Đại học Ngoại ngữ',
+                'Phòng Đào tạo'
+            ]
+            for dk in default_khoas:
+                khoa_from_cn.add(dk)
             
-            # Tạo Ngành
+            khoa_moi = 0
+            for tk in khoa_from_cn:
+                if tk not in khoa_db:
+                    get_or_create_ma_khoa(tk)
+                    khoa_moi += 1
+            
+            if khoa_moi > 0:
+                print(f"  -> Bổ sung {khoa_moi} Khoa mới từ file CN")
+            else:
+                print(f"  -> Không có Khoa mới (tất cả đã có từ HP-Khoa.csv)")
+            
+            # ===== 2.2: TẠO NGÀNH =====
+            print("\n  📌 2.2: Tạo DIM_NGANH...")
+            
             nganh_list = []
             if col_ten_nganh and col_ten_khoa:
                 for _, row in df_cn.iterrows():
@@ -276,7 +402,18 @@ def main():
                                 'MaKhoa': ma_khoa
                             })
             
-            # Tạo Chuyên ngành
+            print(f"  -> {len(nganh_list)} Ngành")
+            
+            # Load DIM_NGANH
+            df_nganh = pd.DataFrame(nganh_list)[['MaNganh', 'TenNganh', 'MaKhoa']]
+            count = load_table_merge(cursor, 'DIM_NGANH', df_nganh,
+                                     ['MaNganh', 'TenNganh', 'MaKhoa'], 'MaNganh',
+                                     ['TenNganh', 'MaKhoa'])
+            print(f"  ✅ DIM_NGANH: {count} processed")
+            
+            # ===== 2.3: TẠO CHUYÊN NGÀNH =====
+            print("\n  📌 2.3: Tạo DIM_CHUYEN_NGANH...")
+            
             cn_list = []
             if col_ma_cn and col_ten_cn:
                 for _, row in df_cn.iterrows():
@@ -288,6 +425,7 @@ def main():
                     if ma_cn:
                         ma_khoa = get_or_create_ma_khoa(ten_khoa) if ten_khoa else 'KHOA01'
                         
+                        # Tìm MaNganh
                         ma_nganh = ''
                         for n in nganh_list:
                             if n['TenNganh'] == ten_nganh and n['MaKhoa'] == ma_khoa:
@@ -302,6 +440,15 @@ def main():
                                 'TenNganh': ten_nganh if ten_nganh else 'Ngành mặc định',
                                 'MaKhoa': ma_khoa
                             })
+                            # Load ngành mới vào DB
+                            df_nganh_new = pd.DataFrame([{
+                                'MaNganh': ma_nganh,
+                                'TenNganh': ten_nganh if ten_nganh else 'Ngành mặc định',
+                                'MaKhoa': ma_khoa
+                            }])
+                            load_table_merge(cursor, 'DIM_NGANH', df_nganh_new,
+                                           ['MaNganh', 'TenNganh', 'MaKhoa'], 'MaNganh',
+                                           ['TenNganh', 'MaKhoa'])
                         
                         if ma_cn not in [c['MaChuyenNganh'] for c in cn_list]:
                             cn_list.append({
@@ -310,18 +457,9 @@ def main():
                                 'MaNganh': ma_nganh
                             })
             
-            print(f"  -> Ngành: {len(nganh_list)}, CN: {len(cn_list)}")
+            print(f"  -> {len(cn_list)} Chuyên ngành")
             
-            # Load DIM_NGANH (MERGE)
-            print("\n💾 LOAD DIM_NGANH...")
-            df_nganh = pd.DataFrame(nganh_list)[['MaNganh', 'TenNganh', 'MaKhoa']]
-            count = load_table_merge(cursor, 'DIM_NGANH', df_nganh,
-                                     ['MaNganh', 'TenNganh', 'MaKhoa'], 'MaNganh',
-                                     ['TenNganh', 'MaKhoa'])
-            print(f"  ✅ DIM_NGANH: {count} processed")
-            
-            # Load DIM_CHUYEN_NGANH (MERGE)
-            print("\n💾 LOAD DIM_CHUYEN_NGANH...")
+            # Load DIM_CHUYEN_NGANH
             df_cn_out = pd.DataFrame(cn_list)[['MaChuyenNganh', 'TenChuyenNganh', 'MaNganh']]
             count = load_table_merge(cursor, 'DIM_CHUYEN_NGANH', df_cn_out,
                                      ['MaChuyenNganh', 'TenChuyenNganh', 'MaNganh'], 'MaChuyenNganh',
@@ -329,103 +467,34 @@ def main():
             print(f"  ✅ DIM_CHUYEN_NGANH: {count} processed")
     
     # ==========================================
-    # PHẦN 2: HP-Khoa.csv -> DIM_HOC_PHAN
+    # TỔNG KẾT
     # ==========================================
-    print("\n" + "=" * 50)
-    print("📄 PHẦN 2: HP-Khoa.csv -> DIM_HOC_PHAN")
-    print("=" * 50)
+    print("\n" + "=" * 70)
+    print("📊 TỔNG KẾT")
+    print("=" * 70)
     
-    content_hp = download_blob(blob_service, TAILIEU_CONTAINER, "HP-Khoa.csv")
+    cursor.execute("SELECT COUNT(*) FROM DIM_KHOA")
+    count_khoa = cursor.fetchone()[0]
     
-    if not content_hp:
-        print("❌ Không tìm thấy file HP-Khoa.csv!")
-    else:
-        df_hp = pd.read_csv(io.StringIO(content_hp))
-        df_hp.columns = [c.strip() for c in df_hp.columns]
-        print(f"  -> {len(df_hp)} dòng")
-        
-        # Tìm cột
-        col_ma_hp = None
-        col_ten_hp = None
-        col_khoa_hp = None
-        
-        for col in df_hp.columns:
-            col_lower = col.lower().strip()
-            if 'mã học phần' in col_lower or 'mã hp' in col_lower:
-                col_ma_hp = col
-            elif 'tên học phần' in col_lower or 'tên hp' in col_lower:
-                col_ten_hp = col
-            elif 'khoa' in col_lower and 'mã' not in col_lower:
-                col_khoa_hp = col
-        
-        if not col_ma_hp:
-            cols = [c for c in df_hp.columns if 'unnamed' not in c.lower() and 'stt' not in c.lower()]
-            if len(cols) >= 3:
-                col_ma_hp = cols[0]
-                col_khoa_hp = cols[1]
-                col_ten_hp = cols[2]
-        
-        print(f"  -> Cột: MaHP={col_ma_hp}, Khoa={col_khoa_hp}, TenHP={col_ten_hp}")
-        
-        if col_ma_hp:
-            df_hp_data = pd.DataFrame()
-            df_hp_data['MaHP'] = df_hp[col_ma_hp].astype(str).str.strip()
-            df_hp_data['TenHP'] = df_hp[col_ten_hp].astype(str).str.strip() if col_ten_hp else ''
-            df_hp_data['Khoa_Original'] = df_hp[col_khoa_hp].astype(str).str.strip() if col_khoa_hp else ''
-            
-            # Xử lý đặc biệt: Ngữ Văn, Toán -> Trường ĐHSP
-            df_hp_data['TenKhoa'] = df_hp_data['Khoa_Original'].apply(
-                lambda x: 'Trường Đại học Sư phạm'
-                if isinstance(x, str) and ('Ngữ Văn' in x or 'Toán' in x)
-                else x
-            )
-            
-            special_mask = df_hp_data['TenKhoa'] != df_hp_data['Khoa_Original']
-            if special_mask.sum() > 0:
-                print(f"  -> Đặc biệt: {special_mask.sum()} HP -> Trường ĐHSP")
-            
-            # Tạo MaKhoa
-            df_hp_data['MaKhoa'] = df_hp_data['TenKhoa'].apply(
-                lambda x: get_or_create_ma_khoa(x) if x else get_or_create_ma_khoa('Trường Đại học Kinh tế')
-            )
-            
-            # Clean
-            df_hp_data = df_hp_data[df_hp_data['MaHP'] != '']
-            df_hp_data = df_hp_data[df_hp_data['MaHP'] != 'nan']
-            df_hp_data = df_hp_data.drop_duplicates('MaHP')
-            
-            print(f"  -> Sau xử lý: {len(df_hp_data)} HP")
-            
-            # Load DIM_HOC_PHAN (MERGE)
-            print("\n💾 LOAD DIM_HOC_PHAN...")
-            df_hp_out = df_hp_data[['MaHP', 'TenHP', 'MaKhoa']]
-            count = load_table_merge(cursor, 'DIM_HOC_PHAN', df_hp_out,
-                                     ['MaHP', 'TenHP', 'MaKhoa'], 'MaHP',
-                                     ['TenHP', 'MaKhoa'])
-            print(f"  ✅ DIM_HOC_PHAN: {count} processed")
+    cursor.execute("SELECT COUNT(*) FROM DIM_NGANH")
+    count_nganh = cursor.fetchone()[0]
     
-    # ==========================================
-    # PHẦN 3: DIM_KHOA (Tổng hợp - MERGE)
-    # ==========================================
-    print("\n" + "=" * 50)
-    print("📄 PHẦN 3: DIM_KHOA (Tổng hợp)")
-    print("=" * 50)
+    cursor.execute("SELECT COUNT(*) FROM DIM_CHUYEN_NGANH")
+    count_cn = cursor.fetchone()[0]
     
-    cursor.execute("SELECT MaKhoa, TenKhoa FROM DIM_KHOA")
-    all_khoa = [{'MaKhoa': str(row[0]).strip(), 'TenKhoa': str(row[1]).strip()} 
-                for row in cursor.fetchall()]
+    cursor.execute("SELECT COUNT(*) FROM DIM_HOC_PHAN")
+    count_hp = cursor.fetchone()[0]
     
-    df_khoa_final = pd.DataFrame(all_khoa)
-    print(f"  -> Tổng Khoa: {len(df_khoa_final)}")
+    print(f"  DIM_KHOA: {count_khoa}")
+    print(f"  DIM_NGANH: {count_nganh}")
+    print(f"  DIM_CHUYEN_NGANH: {count_cn}")
+    print(f"  DIM_HOC_PHAN: {count_hp}")
     
-    # In danh sách
-    for _, r in df_khoa_final.iterrows():
-        print(f"     {r['MaKhoa']} | {r['TenKhoa'][:50]}")
-    
-    count = load_table_merge(cursor, 'DIM_KHOA', df_khoa_final,
-                             ['MaKhoa', 'TenKhoa'], 'MaKhoa',
-                             ['TenKhoa'])
-    print(f"  ✅ DIM_KHOA: {count} processed")
+    # In danh sách Khoa cuối cùng
+    print(f"\n  📋 Danh sách Khoa ({count_khoa}):")
+    cursor.execute("SELECT MaKhoa, TenKhoa FROM DIM_KHOA ORDER BY MaKhoa")
+    for row in cursor.fetchall():
+        print(f"     {row[0]} | {row[1][:60]}")
     
     conn.close()
     

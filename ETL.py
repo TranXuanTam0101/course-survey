@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PIPELINE 2: SURVEY DATA - VECTORIZED (FIXED)
+PIPELINE 2: SURVEY DATA
+- Parse CSV khảo sát với NULL làm mốc
+- NLP: Tag classification + Sentiment analysis
+- Load DIM_SINH_VIEN, DIM_LOP_SINH_VIEN, DIM_GIANG_VIEN, DIM_HOC_PHAN, DIM_LOP_HOC_PHAN
+- Load FACT_GOP_Y_TU_LUAN, FACT_KET_QUA_DANH_GIA
+- Tương thích với Pipeline 1 (Master Data)
 """
 
 import os
@@ -14,6 +19,7 @@ import numpy as np
 import pyodbc
 from datetime import datetime
 from azure.storage.blob import BlobServiceClient
+from multiprocessing import Pool, cpu_count
 
 # ================= CONFIG =================
 CONNECTION_STRING = os.environ.get("CONNECTION_STRING")
@@ -40,11 +46,15 @@ CONN_STR = (
 
 CONTAINER_NAME = SEMESTER
 RAWDATA_PATH = "rawdata"
-BATCH_SIZE = 100000
+
+NUM_WORKERS = cpu_count()
+CHUNK_SIZE = 50000
+BATCH_SIZE = 50000
 
 print("=" * 70)
-print("📊 PIPELINE 2: SURVEY DATA (VECTORIZED)")
-print(f"   File: {SURVEY_FILE}")
+print("📊 PIPELINE 2: SURVEY DATA")
+print(f"   Semester: {SEMESTER} | File: {SURVEY_FILE}")
+print(f"   Workers: {NUM_WORKERS} | Chunk: {CHUNK_SIZE:,} | Batch: {BATCH_SIZE:,}")
 print("=" * 70)
 
 # ================= PATTERNS =================
@@ -52,495 +62,697 @@ _DATE_RE = re.compile(r'^\d{2}/\d{2}/\d{4}$')
 _MA_GV_RE = re.compile(r'^(\d{7}|TG\d{5}|gvDacThu_TKTH)$')
 _LOP_RE = re.compile(r'^\d{2}K\d{2}$')
 
-# ================= NLP KEYWORDS =================
-_TAG_KW = {
-    'Tag_HocPhan': ['nội dung', 'chương trình', 'môn học', 'học phần', 'kiến thức', 'chuẩn đầu ra', 'tài liệu', 'giáo trình', 'thực hành', 'lý thuyết'],
-    'Tag_DayHoc': ['giảng viên', 'thầy', 'cô', 'dạy', 'giảng', 'truyền đạt', 'hướng dẫn', 'nhiệt tình', 'tận tâm', 'dễ hiểu'],
-    'Tag_KiemTra': ['kiểm tra', 'đánh giá', 'thi', 'đề thi', 'chấm điểm', 'công bằng', 'minh bạch', 'khách quan'],
-    'Tag_Khac': ['cơ sở vật chất', 'phòng học', 'máy chiếu', 'wifi', 'hỗ trợ', 'góp ý']
+# ================= NLP FAST =================
+TAG_KW = {
+    'Tag_HocPhan': [
+        'nội dung', 'chương trình', 'môn học', 'học phần', 'kiến thức',
+        'chuẩn đầu ra', 'tài liệu', 'giáo trình', 'thực hành', 'lý thuyết',
+        'phù hợp', 'bổ ích', 'cần thiết', 'cập nhật', 'thực tế'
+    ],
+    'Tag_DayHoc': [
+        'giảng viên', 'thầy', 'cô', 'dạy', 'giảng', 'truyền đạt',
+        'hướng dẫn', 'nhiệt tình', 'tận tâm', 'dễ hiểu', 'sinh động',
+        'thú vị', 'hấp dẫn', 'chuyên nghiệp'
+    ],
+    'Tag_KiemTra': [
+        'kiểm tra', 'đánh giá', 'thi', 'đề thi', 'chấm điểm',
+        'công bằng', 'minh bạch', 'khách quan', 'nghiêm túc', 'chính xác'
+    ],
+    'Tag_Khac': [
+        'cơ sở vật chất', 'phòng học', 'máy chiếu', 'wifi', 'hỗ trợ',
+        'góp ý', 'đề xuất', 'cải thiện'
+    ]
 }
 
-_SENT_POS = ['tốt', 'hay', 'hài lòng', 'thích', 'bổ ích', 'hiệu quả', 'chất lượng', 'tuyệt vời', 'nhiệt tình', 'dễ hiểu', 'công bằng']
-_SENT_NEG = ['tệ', 'kém', 'chán', 'dở', 'không tốt', 'khó hiểu', 'nhàm chán', 'thiếu', 'hạn chế', 'thất vọng', 'cần cải thiện']
-_SENT_NEU = ['không có góp ý', 'không ý kiến', 'không có', 'bình thường']
+SENT_KW = {
+    'POSITIVE': [
+        'tốt', 'hay', 'hài lòng', 'thích', 'bổ ích', 'hiệu quả',
+        'chất lượng', 'tuyệt vời', 'xuất sắc', 'nhiệt tình', 'dễ hiểu', 'công bằng'
+    ],
+    'NEGATIVE': [
+        'tệ', 'kém', 'chán', 'dở', 'không tốt', 'khó hiểu',
+        'nhàm chán', 'thiếu', 'hạn chế', 'thất vọng', 'cần cải thiện'
+    ],
+    'NEUTRAL': [
+        'không có góp ý', 'không ý kiến', 'không có', 'bình thường'
+    ]
+}
 
-# ================= GLOBAL CACHE =================
-_g_cn = {}
-_g_hp = {}
-_g_khoa_hp = {}
+# ================= MASTER DATA CACHE (từ DB) =================
+_g_cn = {}          # MaChuyenNganh -> {MaChuyenNganh, TenChuyenNganh, MaNganh, TenNganh, MaKhoa, TenKhoa}
+_g_hp = {}          # MaHP -> TenHP
+_g_khoa_hp = {}     # MaHP -> {MaKhoa, TenKhoa}
+_g_valid_cn = set() # MaChuyenNganh hợp lệ
+_g_valid_hp = set() # MaHP hợp lệ
+_g_valid_khoa = {}  # TenKhoa -> MaKhoa
 
-def load_master():
-    global _g_cn, _g_hp, _g_khoa_hp
-    print("📚 Load master...", end=" ", flush=True)
-    conn = pyodbc.connect(CONN_STR)
-    c = conn.cursor()
+def load_master_from_db():
+    """Load master data từ Database (đã được Pipeline 1 tạo)"""
+    global _g_cn, _g_hp, _g_khoa_hp, _g_valid_cn, _g_valid_hp, _g_valid_khoa
     
-    # Sửa: thêm alias rõ ràng, chỉ lấy từ DIM_CHUYEN_NGANH
-    c.execute("""
+    print("\n📚 Load master từ Database...")
+    conn = pyodbc.connect(CONN_STR)
+    cursor = conn.cursor()
+    
+    # Load Khoa
+    cursor.execute("SELECT MaKhoa, TenKhoa FROM DIM_KHOA")
+    for row in cursor.fetchall():
+        _g_valid_khoa[str(row[1]).strip()] = str(row[0]).strip()
+    print(f"  -> Khoa: {len(_g_valid_khoa)} records")
+    
+    # Load Chuyên ngành + Ngành + Khoa
+    cursor.execute("""
         SELECT cn.MaChuyenNganh, cn.TenChuyenNganh, cn.MaNganh, 
                n.TenNganh, n.MaKhoa, k.TenKhoa
         FROM DIM_CHUYEN_NGANH cn
         JOIN DIM_NGANH n ON cn.MaNganh = n.MaNganh
         JOIN DIM_KHOA k ON n.MaKhoa = k.MaKhoa
     """)
+    for row in cursor.fetchall():
+        key = str(row[0]).strip()
+        _g_cn[key] = {
+            'MaChuyenNganh': key,
+            'TenChuyenNganh': str(row[1]).strip(),
+            'MaNganh': str(row[2]).strip(),
+            'TenNganh': str(row[3]).strip(),
+            'MaKhoa': str(row[4]).strip(),
+            'TenKhoa': str(row[5]).strip()
+        }
+        _g_valid_cn.add(key)
+    print(f"  -> Chuyên ngành: {len(_g_cn)} records")
     
-    for row in c.fetchall():
-        key = str(row[0] or '').strip()
-        if key:
-            _g_cn[key] = {
-                'MaChuyenNganh': key,
-                'TenChuyenNganh': str(row[1] or '').strip(),
-                'MaNganh': str(row[2] or '').strip(),
-                'TenNganh': str(row[3] or '').strip(),
-                'MaKhoa': str(row[4] or '').strip(),
-                'TenKhoa': str(row[5] or '').strip()
-            }
-    
-    c.execute("SELECT MaHP, TenHP, MaKhoa FROM DIM_HOC_PHAN")
-    for row in c.fetchall():
-        key = str(row[0] or '').strip()
-        if key:
-            _g_hp[key] = str(row[1] or '').strip()
-            _g_khoa_hp[key] = str(row[2] or 'KHOA01').strip()
+    # Load Học phần + Khoa quản lý
+    cursor.execute("""
+        SELECT hp.MaHP, hp.TenHP, hp.MaKhoa, k.TenKhoa
+        FROM DIM_HOC_PHAN hp
+        JOIN DIM_KHOA k ON hp.MaKhoa = k.MaKhoa
+    """)
+    for row in cursor.fetchall():
+        key = str(row[0]).strip()
+        _g_hp[key] = str(row[1]).strip()
+        _g_khoa_hp[key] = {
+            'MaKhoa': str(row[2]).strip(),
+            'TenKhoa': str(row[3]).strip()
+        }
+        _g_valid_hp.add(key)
+    print(f"  -> Học phần: {len(_g_hp)} records")
     
     conn.close()
-    print(f"CN={len(_g_cn)}, HP={len(_g_hp)}")
+
 
 # ================= BLOB =================
-def download_blob(bs, container, path):
+def download_blob(blob_service, container, path):
     try:
-        cl = bs.get_container_client(container).get_blob_client(path)
-        return cl.download_blob().readall().decode('utf-8-sig') if cl.exists() else ""
+        client = blob_service.get_container_client(container).get_blob_client(path)
+        return client.download_blob().readall().decode('utf-8-sig') if client.exists() else ""
     except:
         return ""
 
 # ================= UTILS =================
 def derive_ma_hoc_ky():
-    fn = SURVEY_FILE.replace('.csv', '').split('_')[-1]
-    yc = int(fn[:-1])
-    hk = int(fn[-1])
-    nb = 2000 + yc - 1
-    nk = nb + 1
-    return f"HK{hk}_{nb%100}{nk%100}", f"{nb}-{nk}", hk
+    """Tạo MaHocKy từ SURVEY_FILE"""
+    file_number = SURVEY_FILE.replace('.csv', '').split('_')[-1]
+    year_code = int(file_number[:-1])
+    hoc_ky = int(file_number[-1])
+    nam_bat_dau = 2000 + (year_code - 1)
+    nam_ket_thuc = nam_bat_dau + 1
+    nam_hoc = f"{nam_bat_dau}-{nam_ket_thuc}"
+    year_part = f"{nam_bat_dau % 100}{nam_ket_thuc % 100}"
+    ma_hoc_ky = f"HK{hoc_ky}_{year_part}"
+    return ma_hoc_ky, nam_hoc, hoc_ky
 
-# ================= PARSE VECTORIZED =================
-def parse_vectorized(content):
-    """Parse toàn bộ dùng pandas vectorized"""
-    print("Parsing vectorized...")
+def normalize_lop(lop):
+    """Chuẩn hóa mã lớp"""
+    if not isinstance(lop, str):
+        return ""
+    lop = lop.strip()
+    if lop.upper().startswith('CTS-'):
+        lop = lop[4:]
+    for sep in ['.', '-', '_']:
+        if sep in lop:
+            lop = lop.split(sep)[0]
+    return lop.strip()
+
+def lookup_cn(lop):
+    """
+    Lookup Chuyên ngành từ mã lớp
+    - Nếu Lop khớp pattern XXKXX: lấy MaChuyenNganh = K + XX
+    - Nếu không khớp: lấy MaChuyenNganh = Lop
+    """
+    lop_norm = normalize_lop(lop)
+    
+    if _LOP_RE.match(lop_norm):
+        ma_cn = f"K{lop_norm[3:5]}"
+        if ma_cn in _g_cn:
+            return _g_cn[ma_cn]
+        else:
+            # Fallback: tạo thông tin từ mã
+            return {
+                'MaChuyenNganh': ma_cn,
+                'TenChuyenNganh': f'Chuyên ngành {ma_cn}',
+                'MaNganh': list(_g_cn.values())[0]['MaNganh'] if _g_cn else 'KHOA01NG01',
+                'TenNganh': 'Ngành mặc định',
+                'MaKhoa': list(_g_valid_khoa.values())[0] if _g_valid_khoa else 'KHOA01',
+                'TenKhoa': 'Trường Đại học Kinh tế'
+            }
+    else:
+        # Lớp đặc biệt (CTS-, ...)
+        return {
+            'MaChuyenNganh': lop_norm if lop_norm else lop,
+            'TenChuyenNganh': lop,
+            'MaNganh': list(_g_cn.values())[0]['MaNganh'] if _g_cn else 'KHOA01NG01',
+            'TenNganh': 'Ngành mặc định',
+            'MaKhoa': list(_g_valid_khoa.values())[0] if _g_valid_khoa else 'KHOA01',
+            'TenKhoa': 'Trường Đại học Kinh tế'
+        }
+
+def lookup_hp(ma_hp):
+    """
+    Lookup Học phần từ MaHP
+    - Lấy TenHP từ DIM_HOC_PHAN
+    - Lấy MaKhoa, TenKhoa quản lý học phần
+    """
+    if not ma_hp:
+        default_khoa = list(_g_valid_khoa.items())[0] if _g_valid_khoa else ('KHOA01', 'Trường Đại học Kinh tế')
+        return '', default_khoa[0], default_khoa[1]
+    
+    key = str(ma_hp).strip()
+    ten_hp = _g_hp.get(key, '')
+    khoa_info = _g_khoa_hp.get(key, None)
+    
+    if khoa_info:
+        return ten_hp, khoa_info['MaKhoa'], khoa_info['TenKhoa']
+    else:
+        default_khoa = list(_g_valid_khoa.items())[0] if _g_valid_khoa else ('KHOA01', 'Trường Đại học Kinh tế')
+        return ten_hp, default_khoa[0], default_khoa[1]
+
+def nlp_fast(text):
+    """NLP siêu nhanh cho EssayText"""
+    if not text or not isinstance(text, str) or len(text.strip()) < 5:
+        return 0, 0, 0, 0, 'NEUTRAL', 0
+    
+    tl = text.lower()
+    
+    # Tags (>= 2 từ khóa -> 1)
+    t1 = 1 if sum(tl.count(k) for k in TAG_KW['Tag_HocPhan']) >= 2 else 0
+    t2 = 1 if sum(tl.count(k) for k in TAG_KW['Tag_DayHoc']) >= 2 else 0
+    t3 = 1 if sum(tl.count(k) for k in TAG_KW['Tag_KiemTra']) >= 2 else 0
+    t4 = 1 if sum(tl.count(k) for k in TAG_KW['Tag_Khac']) >= 2 else 0
+    
+    # Sentiment
+    p = sum(tl.count(k) for k in SENT_KW['POSITIVE'])
+    n = sum(tl.count(k) for k in SENT_KW['NEGATIVE'])
+    e = sum(tl.count(k) for k in SENT_KW['NEUTRAL'])
+    
+    # Xử lý negation
+    if 'không' in tl:
+        p = max(0, p - 1)
+        n += 1
+    
+    # Xác định sentiment
+    if p > n and p > e:
+        s = 'POSITIVE'
+    elif n > p and n > e:
+        s = 'NEGATIVE'
+    else:
+        s = 'NEUTRAL'
+    
+    # Is_Valid: text > 10 ký tự
+    v = 1 if len(tl) > 10 else 0
+    
+    return t1, t2, t3, t4, s, v
+
+
+# ================= PARSE FUNCTIONS =================
+COLUMNS = [
+    'SubmissionID', 'MaSV', 'HoDem', 'Ten', 'NgaySinh',
+    'MaLop', 'Lop', 'MaChuyenNganh', 'TenChuyenNganh',
+    'MaNganh', 'TenNganh', 'MaKhoa_CN', 'TenKhoa_CN',
+    'MaHP', 'TenHP', 'MaKhoa_HP', 'TenKhoa_HP',
+    'MaGV', 'HoDemGV', 'TenGV', 'MaLopHP', 'LopHP',
+    'CauHoi', 'GiaTri', 'EssayText',
+    'Tag_HocPhan', 'Tag_DayHoc', 'Tag_KiemTra', 'Tag_Khac',
+    'Sentiment', 'Is_Valid'
+]
+
+def parse_batch(lines):
+    """Parse một batch lines"""
+    results = []
+    
+    for line in lines:
+        if not line:
+            continue
+        
+        # Tìm NULL làm mốc
+        ni = line.upper().find('NULL')
+        if ni >= 0:
+            left = line[:ni].rstrip(', \t')
+            right = line[ni + 4:].lstrip(', \t')
+        else:
+            left = line
+            right = ''
+        
+        # Split phần trái
+        row = [x.strip() for x in left.split(',')]
+        rl = len(row)
+        
+        if rl < 10:
+            continue
+        
+        # Tìm ngày sinh
+        nsi = -1
+        for i in range(2, min(12, rl)):
+            if _DATE_RE.match(row[i]):
+                nsi = i
+                break
+        if nsi == -1:
+            continue
+        
+        # Tìm MaGV
+        mgi = -1
+        for i in range(nsi + 1, min(nsi + 25, rl)):
+            if _MA_GV_RE.match(row[i]):
+                mgi = i
+                break
+        if mgi == -1:
+            mgi = min(rl - 1, nsi + 8)
+        
+        # Trích xuất các trường
+        lop = row[0]
+        ma_sv = row[1]
+        ns = row[nsi]
+        
+        # Họ tên SV
+        np = row[2:nsi]
+        ten = np[-1] if np else ''
+        hd = ' '.join(np[:-1]) if len(np) > 1 else ''
+        
+        # Các trường còn lại
+        ma_hp = row[nsi + 1] if nsi + 1 < rl else ''
+        thp_raw = ' '.join(row[nsi + 2:mgi])
+        
+        ma_gv = row[mgi] if mgi < rl else ''
+        hdgv = row[mgi + 1] if mgi + 1 < rl else ''
+        tgv = row[mgi + 2] if mgi + 2 < rl else ''
+        lhp = row[mgi + 3] if mgi + 3 < rl else ''
+        ch = row[mgi + 4] if mgi + 4 < rl else ''
+        gt = row[mgi + 5] if mgi + 5 < rl else ''
+        
+        # Essay text
+        essay = right.replace(' , ', ', ').strip()
+        
+        # NLP
+        t1, t2, t3, t4, sent, valid = nlp_fast(essay) if essay else (0, 0, 0, 0, 'NEUTRAL', 0)
+        
+        # Lookup Chuyên ngành (từ Lop)
+        cn = lookup_cn(lop)
+        
+        # Lookup Học phần (từ MaHP)
+        thp, mkhp, tkhp = lookup_hp(ma_hp)
+        thp = thp if thp else thp_raw
+        
+        # Tạo mã
+        ml = normalize_lop(lop)
+        mlhp = lhp if lhp else f"{ma_hp}_{ma_gv}"
+        sid = f"{ma_sv}_{mlhp}_{ma_gv}_{FILE_NAME}"
+        
+        results.append([
+            sid, ma_sv, hd, ten, ns,
+            ml, lop, cn['MaChuyenNganh'], cn['TenChuyenNganh'],
+            cn['MaNganh'], cn['TenNganh'], cn['MaKhoa'], cn['TenKhoa'],
+            ma_hp, thp, mkhp, tkhp,
+            ma_gv, hdgv, tgv, mlhp, lhp,
+            ch, gt, essay,
+            t1, t2, t3, t4, sent, valid
+        ])
+    
+    return results
+
+
+def parse_survey(content):
+    """Parse survey với multiprocessing"""
+    print(f"  -> Parsing với {NUM_WORKERS} workers...")
     t0 = time.time()
     
-    # B1: Tạo DataFrame
-    lines = [l for l in content.split('\n') if l.strip()]
-    print(f"  {len(lines):,} lines")
+    lines = [l.strip() for l in content.split('\n') if l.strip()]
+    print(f"  -> {len(lines):,} dòng")
     
-    df = pd.DataFrame({'raw': lines})
+    batches = [lines[i:i + CHUNK_SIZE] for i in range(0, len(lines), CHUNK_SIZE)]
+    print(f"  -> {len(batches)} batches")
     
-    # B2: Tìm NULL - VECTORIZED
-    df['null_pos'] = df['raw'].str.upper().str.find('NULL')
+    all_results = []
+    with Pool(NUM_WORKERS) as pool:
+        for i, res in enumerate(pool.imap_unordered(parse_batch, batches)):
+            all_results.extend(res)
+            if (i + 1) % 5 == 0 or i == len(batches) - 1:
+                print(f"    Batch {i + 1}/{len(batches)}: {len(res):,} rows (total: {len(all_results):,})")
     
-    # Tách left/right
-    mask_null = df['null_pos'] >= 0
+    df = pd.DataFrame(all_results, columns=COLUMNS)
+    print(f"  ✅ Parsed {len(df):,} rows ({time.time() - t0:.1f}s)")
     
-    # Left: từ đầu đến trước NULL
-    def get_left(row):
-        if row['null_pos'] < 0:
-            return row['raw']
-        # Tìm dấu phẩy cuối cùng trước NULL
-        pos = row['raw'].upper().rfind(',', 0, row['null_pos'])
-        if pos > 0:
-            return row['raw'][:pos].strip()
-        return row['raw'][:row['null_pos']].rstrip(', ')
+    # Thống kê nhanh
+    essay_count = (df['EssayText'] != '').sum()
+    print(f"  📊 Essay: {essay_count:,} | Trắc nghiệm: {len(df) - essay_count:,}")
     
-    df['left_raw'] = df.apply(get_left, axis=1)
-    
-    # Right: sau NULL
-    def get_right(row):
-        if row['null_pos'] < 0:
-            return ''
-        right = row['raw'][row['null_pos']+4:]
-        return right.lstrip(', ').strip()
-    
-    df['right_raw'] = df.apply(get_right, axis=1)
-    
-    # B3: Split thành columns
-    left_split = df['left_raw'].str.split(',', expand=True)
-    max_cols = left_split.shape[1]
-    
-    # B4: Tìm ngày sinh
-    date_cols = []
-    for i in range(2, min(15, max_cols)):
-        col = left_split[i].str.strip()
-        if col.str.match(_DATE_RE, na=False).any():
-            date_cols.append(i)
-    
-    # Lấy cột ngày sinh đầu tiên cho mỗi dòng
-    def find_nsi(row):
-        for i in range(2, min(15, max_cols)):
-            val = str(row[i]).strip() if pd.notna(row[i]) else ''
-            if _DATE_RE.match(val):
-                return i
-        return -1
-    
-    df['nsi'] = left_split.apply(find_nsi, axis=1)
-    df = df[df['nsi'] >= 2].copy()
-    
-    # Extract ngày sinh
-    def get_col(row, col_idx):
-        if col_idx < 0 or col_idx >= max_cols:
-            return ''
-        return str(row[col_idx]).strip() if pd.notna(row[col_idx]) else ''
-    
-    df['NgaySinh'] = df.apply(lambda r: get_col(left_split.iloc[r.name], int(r['nsi'])), axis=1)
-    
-    # B5: Tìm MaGV
-    def find_mgi(row):
-        nsi = int(row['nsi'])
-        for i in range(nsi+1, min(nsi+25, max_cols)):
-            val = get_col(row, i)
-            if _MA_GV_RE.match(val):
-                return i
-        return min(max_cols-1, nsi+8)
-    
-    df['mgi'] = left_split.iloc[df.index].apply(find_mgi, axis=1)
-    
-    # B6: Extract các trường
-    df['Lop'] = left_split[0].str.strip()
-    df['MaSV'] = left_split[1].str.strip()
-    df['MaLop'] = df['Lop'].apply(lambda x: x.split('.')[0].split('-')[0].split('_')[0] if isinstance(x, str) else '')
-    
-    df['Ten'] = df.apply(lambda r: get_col(left_split.iloc[r.name], int(r['nsi'])-1), axis=1)
-    df['HoDem'] = df.apply(lambda r: ' '.join([get_col(left_split.iloc[r.name], i) for i in range(2, int(r['nsi'])-1) if get_col(left_split.iloc[r.name], i)]), axis=1)
-    
-    df['MaHP'] = df.apply(lambda r: get_col(left_split.iloc[r.name], int(r['nsi'])+1), axis=1)
-    df['TenHP_raw'] = df.apply(lambda r: ' '.join([get_col(left_split.iloc[r.name], i) for i in range(int(r['nsi'])+2, int(r['mgi'])) if get_col(left_split.iloc[r.name], i)]), axis=1)
-    
-    df['MaGV'] = df.apply(lambda r: get_col(left_split.iloc[r.name], int(r['mgi'])), axis=1)
-    df['HoDemGV'] = df.apply(lambda r: get_col(left_split.iloc[r.name], int(r['mgi'])+1), axis=1)
-    df['TenGV'] = df.apply(lambda r: get_col(left_split.iloc[r.name], int(r['mgi'])+2), axis=1)
-    df['LopHP'] = df.apply(lambda r: get_col(left_split.iloc[r.name], int(r['mgi'])+3), axis=1)
-    df['CauHoi'] = df.apply(lambda r: get_col(left_split.iloc[r.name], int(r['mgi'])+4), axis=1)
-    df['GiaTri'] = df.apply(lambda r: get_col(left_split.iloc[r.name], int(r['mgi'])+5), axis=1)
-    
-    df['EssayText'] = df['right_raw'].str.strip()
-    
-    # B7: Lookup Chuyên ngành
-    def lookup_cn_vec(lop):
-        if not isinstance(lop, str):
-            return ('K01', 'CN K01', 'KHOA01NG01', 'Ngành', 'KHOA01', 'Trường ĐHKT')
-        lop = lop.strip()
-        for sep in ['.', '-', '_']:
-            if sep in lop:
-                lop = lop.split(sep)[0]
-        
-        if _LOP_RE.match(lop):
-            ma_cn = f"K{lop[3:5]}"
-            cn = _g_cn.get(ma_cn)
-            if cn:
-                return (cn['MaChuyenNganh'], cn['TenChuyenNganh'], cn['MaNganh'],
-                        cn['TenNganh'], cn['MaKhoa'], cn['TenKhoa'])
-            return (ma_cn, f'CN {ma_cn}', 'KHOA01NG01', 'Ngành', 'KHOA01', 'Trường ĐHKT')
-        return (lop, lop, 'KHOA01NG01', 'Ngành', 'KHOA01', 'Trường ĐHKT')
-    
-    cn_tuples = df['Lop'].apply(lookup_cn_vec)
-    df['MaChuyenNganh'] = [t[0] for t in cn_tuples]
-    df['TenChuyenNganh'] = [t[1] for t in cn_tuples]
-    df['MaNganh'] = [t[2] for t in cn_tuples]
-    df['TenNganh'] = [t[3] for t in cn_tuples]
-    df['MaKhoa_CN'] = [t[4] for t in cn_tuples]
-    df['TenKhoa_CN'] = [t[5] for t in cn_tuples]
-    
-    # B8: Lookup HP
-    df['TenHP'] = df['MaHP'].map(_g_hp).fillna(df['TenHP_raw'])
-    df['MaKhoa_HP'] = df['MaHP'].map(_g_khoa_hp).fillna('KHOA01')
-    df['TenKhoa_HP'] = ''
-    
-    # B9: IDs
-    df['MaLopHP'] = np.where(df['LopHP'] != '', df['LopHP'], df['MaHP'] + '_' + df['MaGV'])
-    df['SubmissionID'] = df['MaSV'] + '_' + df['MaLopHP'] + '_' + df['MaGV'] + '_' + FILE_NAME
-    
-    # B10: NLP
-    print("  NLP...")
-    
-    def nlp_batch(texts):
-        """Xử lý NLP cho list texts"""
-        res = {'Tag_HocPhan': [], 'Tag_DayHoc': [], 'Tag_KiemTra': [], 'Tag_Khac': [],
-               'Sentiment': [], 'Is_Valid': []}
-        
-        for text in texts:
-            if not isinstance(text, str) or len(text) < 5:
-                res['Tag_HocPhan'].append(0); res['Tag_DayHoc'].append(0)
-                res['Tag_KiemTra'].append(0); res['Tag_Khac'].append(0)
-                res['Sentiment'].append('NEUTRAL'); res['Is_Valid'].append(0)
-                continue
-            
-            tl = text.lower()
-            res['Tag_HocPhan'].append(1 if sum(1 for k in _TAG_KW['Tag_HocPhan'] if k in tl) >= 2 else 0)
-            res['Tag_DayHoc'].append(1 if sum(1 for k in _TAG_KW['Tag_DayHoc'] if k in tl) >= 2 else 0)
-            res['Tag_KiemTra'].append(1 if sum(1 for k in _TAG_KW['Tag_KiemTra'] if k in tl) >= 2 else 0)
-            res['Tag_Khac'].append(1 if sum(1 for k in _TAG_KW['Tag_Khac'] if k in tl) >= 2 else 0)
-            
-            p = sum(1 for k in _SENT_POS if k in tl)
-            n = sum(1 for k in _SENT_NEG if k in tl) + (1 if 'không' in tl else 0)
-            e = sum(1 for k in _SENT_NEU if k in tl)
-            
-            s = 'POSITIVE' if p > n and p > e else ('NEGATIVE' if n > p else 'NEUTRAL')
-            res['Sentiment'].append(s)
-            res['Is_Valid'].append(1 if len(tl) > 10 else 0)
-        
-        return res
-    
-    texts = df['EssayText'].tolist()
-    
-    # Xử lý theo batch để tránh memory
-    batch_nlp = 50000
-    all_nlp = {k: [] for k in ['Tag_HocPhan','Tag_DayHoc','Tag_KiemTra','Tag_Khac','Sentiment','Is_Valid']}
-    
-    for i in range(0, len(texts), batch_nlp):
-        batch_texts = texts[i:i+batch_nlp]
-        batch_res = nlp_batch(batch_texts)
-        for k in all_nlp:
-            all_nlp[k].extend(batch_res[k])
-    
-    for k in all_nlp:
-        df[k] = all_nlp[k]
-    
-    # B11: Output
-    output_cols = [
-        'SubmissionID', 'MaSV', 'HoDem', 'Ten', 'NgaySinh',
-        'MaLop', 'Lop', 'MaChuyenNganh', 'TenChuyenNganh',
-        'MaNganh', 'TenNganh', 'MaKhoa_CN', 'TenKhoa_CN',
-        'MaHP', 'TenHP', 'MaKhoa_HP', 'TenKhoa_HP',
-        'MaGV', 'HoDemGV', 'TenGV', 'MaLopHP', 'LopHP',
-        'CauHoi', 'GiaTri', 'EssayText',
-        'Tag_HocPhan', 'Tag_DayHoc', 'Tag_KiemTra', 'Tag_Khac',
-        'Sentiment', 'Is_Valid'
-    ]
-    
-    df_out = df[output_cols].fillna('')
-    print(f"  ✅ {len(df_out):,} rows ({time.time()-t0:.1f}s)")
-    
-    return df_out
+    return df
 
-# ================= LOAD DB =================
-def load_db(cursor, df):
-    mhk, nh, hk = derive_ma_hoc_ky()
+
+# ================= DATABASE LOAD FUNCTIONS =================
+def load_dim_safe(cursor, table, df, cols, id_col):
+    """
+    Load dimension - INSERT nếu chưa tồn tại, bỏ qua nếu đã có
+    """
+    if df.empty:
+        return 0
     
-    # DIM_HOC_KY
-    cursor.execute("IF NOT EXISTS (SELECT 1 FROM DIM_HOC_KY WHERE MaHocKy=?) INSERT INTO DIM_HOC_KY VALUES(?,?,?)",
-                   (mhk, mhk, nh, hk))
-    cursor.connection.commit()
+    df = df.drop_duplicates(id_col).fillna('')
     
-    # Lấy existing IDs
-    def get_ids(table, col):
-        cursor.execute(f"SELECT {col} FROM {table}")
-        return {str(r[0]).strip() for r in cursor.fetchall()}
+    # Lấy IDs hiện có
+    cursor.execute(f"SELECT {id_col} FROM {table}")
+    existing = {str(row[0]).strip() for row in cursor.fetchall()}
     
-    print("  Loading existing IDs...")
-    ex_hp = get_ids('DIM_HOC_PHAN', 'MaHP')
-    ex_gv = get_ids('DIM_GIANG_VIEN', 'MaGV')
-    ex_sv = get_ids('DIM_SINH_VIEN', 'MaSV')
-    ex_lop = get_ids('DIM_LOP_SINH_VIEN', 'MaLop')
-    ex_lhp = get_ids('DIM_LOP_HOC_PHAN', 'MaLopHP')
-    ex_sub = get_ids('FACT_GOP_Y_TU_LUAN', 'SubmissionID')
+    # Lọc dòng mới
+    df['_id_str'] = df[id_col].astype(str).str.strip()
+    new = df[~df['_id_str'].isin(existing)]
     
-    def bulk_ins(table, df_in, cols, id_col, existing):
-        if df_in is None or df_in.empty:
-            return
-        df_in = df_in.drop_duplicates(id_col).fillna('').astype(str)
-        new = df_in[~df_in[id_col].isin(existing)]
-        if new.empty:
-            return
-        
-        data = []
-        for _, r in new.iterrows():
-            row_data = []
-            for c in cols:
-                val = r.get(c, '')
-                row_data.append(str(val)[:500] if val else '')
-            data.append(tuple(row_data))
-        
-        q = f"INSERT INTO {table} ({','.join(cols)}) VALUES ({','.join(['?']*len(cols))})"
-        ins = 0
-        for i in range(0, len(data), BATCH_SIZE):
-            b = data[i:i+BATCH_SIZE]
-            try:
-                cursor.fast_executemany = True
-                cursor.executemany(q, b)
-                cursor.connection.commit()
-                ins += len(b)
-            except:
-                for d in b:
-                    try:
-                        cursor.execute(q, d)
-                        cursor.connection.commit()
-                        ins += 1
-                    except:
-                        pass
-        if ins > 0:
-            existing.update(new[id_col].tolist())
-            print(f"    {table}: {ins}")
+    if new.empty:
+        return 0
     
-    print("\n  Inserting dimensions...")
+    print(f"    -> {table}: {len(new)} new records")
     
-    bulk_ins('DIM_HOC_PHAN',
-             df[['MaHP', 'TenHP', 'MaKhoa_HP']].rename(columns={'MaKhoa_HP': 'MaKhoa'}),
-             ['MaHP', 'TenHP', 'MaKhoa'], 'MaHP', ex_hp)
+    # Chuẩn bị data
+    data = []
+    for _, r in new.iterrows():
+        td = []
+        for c in cols:
+            v = r[c]
+            if c == 'NgaySinh':
+                try:
+                    dt = pd.to_datetime(v, format='%d/%m/%Y')
+                    td.append(dt.strftime('%Y-%m-%d'))
+                except:
+                    td.append(None)
+            elif c in ['HocKy', 'Tag_HocPhan', 'Tag_DayHoc', 'Tag_KiemTra', 'Tag_Khac', 'Is_Valid']:
+                try:
+                    td.append(int(float(v)))
+                except:
+                    td.append(0)
+            else:
+                td.append(str(v)[:500] if v and pd.notna(v) else '')
+        data.append(tuple(td))
     
-    bulk_ins('DIM_GIANG_VIEN',
-             df[['MaGV', 'HoDemGV', 'TenGV']].drop_duplicates('MaGV'),
-             ['MaGV', 'HoDemGV', 'TenGV'], 'MaGV', ex_gv)
+    # INSERT
+    ph = ', '.join(['?'] * len(cols))
+    q = f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({ph})"
     
-    bulk_ins('DIM_LOP_SINH_VIEN',
-             df[['MaLop', 'Lop', 'MaChuyenNganh']].drop_duplicates('MaLop'),
-             ['MaLop', 'Lop', 'MaChuyenNganh'], 'MaLop', ex_lop)
+    inserted = 0
+    for i in range(0, len(data), BATCH_SIZE):
+        batch = data[i:i + BATCH_SIZE]
+        try:
+            cursor.executemany(q, batch)
+            cursor.connection.commit()
+            inserted += len(batch)
+        except Exception as e:
+            # Fallback: insert từng dòng
+            for d in batch:
+                try:
+                    cursor.execute(q, d)
+                    cursor.connection.commit()
+                    inserted += 1
+                except:
+                    pass
+    
+    print(f"    -> Inserted: {inserted}")
+    return inserted
+
+
+def load_all_dimensions(cursor, df):
+    """Load tất cả Dimension tables"""
+    print("\n--- DIMENSIONS ---")
+    total = 0
+    
+    # DIM_LOP_SINH_VIEN
+    total += load_dim_safe(
+        cursor, 'DIM_LOP_SINH_VIEN',
+        df[['MaLop', 'Lop', 'MaChuyenNganh']].drop_duplicates('MaLop'),
+        ['MaLop', 'Lop', 'MaChuyenNganh'], 'MaLop'
+    )
     
     # DIM_SINH_VIEN
-    sv = df[['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop']].drop_duplicates('MaSV').fillna('')
-    sv['_id'] = sv['MaSV'].astype(str).str.strip()
-    sv_new = sv[~sv['_id'].isin(ex_sv)]
-    if not sv_new.empty:
-        data = []
-        for _, r in sv_new.iterrows():
-            ns = None
-            try:
-                dt = pd.to_datetime(r['NgaySinh'], format='%d/%m/%Y')
-                ns = dt.strftime('%Y-%m-%d')
-            except:
-                pass
-            data.append((str(r['MaSV'])[:20], str(r['HoDem'])[:100], str(r['Ten'])[:50], ns, str(r['MaLop'])[:20]))
-        
-        q = "INSERT INTO DIM_SINH_VIEN (MaSV,HoDem,Ten,NgaySinh,MaLop) VALUES (?,?,?,?,?)"
-        ins = 0
-        for i in range(0, len(data), BATCH_SIZE):
-            b = data[i:i+BATCH_SIZE]
-            try:
-                cursor.executemany(q, b)
-                cursor.connection.commit()
-                ins += len(b)
-            except:
-                for d in b:
-                    try:
-                        cursor.execute(q, d)
-                        cursor.connection.commit()
-                        ins += 1
-                    except:
-                        pass
-        if ins > 0:
-            ex_sv.update(sv_new['_id'].tolist())
-            print(f"    DIM_SINH_VIEN: {ins}")
+    total += load_dim_safe(
+        cursor, 'DIM_SINH_VIEN',
+        df[['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop']].drop_duplicates('MaSV'),
+        ['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop'], 'MaSV'
+    )
+    
+    # DIM_GIANG_VIEN
+    total += load_dim_safe(
+        cursor, 'DIM_GIANG_VIEN',
+        df[['MaGV', 'HoDemGV', 'TenGV']].drop_duplicates('MaGV'),
+        ['MaGV', 'HoDemGV', 'TenGV'], 'MaGV'
+    )
+    
+    # DIM_HOC_PHAN (chỉ thêm HP mới chưa có trong Master)
+    total += load_dim_safe(
+        cursor, 'DIM_HOC_PHAN',
+        df[['MaHP', 'TenHP', 'MaKhoa_HP']].rename(columns={'MaKhoa_HP': 'MaKhoa'}).drop_duplicates('MaHP'),
+        ['MaHP', 'TenHP', 'MaKhoa'], 'MaHP'
+    )
+    
+    # DIM_HOC_KY
+    mhk, nh, hk = derive_ma_hoc_ky()
+    total += load_dim_safe(
+        cursor, 'DIM_HOC_KY',
+        pd.DataFrame([{'MaHocKy': mhk, 'NamHoc': nh, 'HocKy': hk}]),
+        ['MaHocKy', 'NamHoc', 'HocKy'], 'MaHocKy'
+    )
     
     # DIM_LOP_HOC_PHAN
-    lhp = df[['MaLopHP', 'LopHP', 'MaHP', 'MaGV']].drop_duplicates('MaLopHP').fillna('')
-    lhp['MaHocKy'] = mhk
-    bulk_ins('DIM_LOP_HOC_PHAN', lhp,
-             ['MaLopHP', 'LopHP', 'MaHP', 'MaGV', 'MaHocKy'], 'MaLopHP', ex_lhp)
+    dlhp = df[['MaLopHP', 'LopHP', 'MaHP', 'MaGV']].drop_duplicates('MaLopHP')
+    dlhp['MaHocKy'] = mhk
+    total += load_dim_safe(
+        cursor, 'DIM_LOP_HOC_PHAN',
+        dlhp,
+        ['MaLopHP', 'LopHP', 'MaHP', 'MaGV', 'MaHocKy'], 'MaLopHP'
+    )
     
-    # FACTS
-    print("\n  Inserting facts...")
+    print(f"  📊 Total new dimension records: {total}")
+    return total
+
+
+def load_fact_gop_y(cursor, df):
+    """Load FACT_GOP_Y_TU_LUAN"""
+    print("\n--- FACT_GOP_Y_TU_LUAN ---")
     
-    de = df[(df['EssayText'] != '')].drop_duplicates('SubmissionID')
+    # Lọc dòng có EssayText
+    de = df[(df['EssayText'].notna()) & (df['EssayText'] != '')].drop_duplicates('SubmissionID')
     
-    if not de.empty:
-        dn = de[~de['SubmissionID'].str.strip().isin(ex_sub)]
-        if not dn.empty:
-            print(f"    FACT_GOP_Y: {len(dn):,}")
-            data = [(str(r['SubmissionID'])[:150], str(r['MaSV'])[:20], str(r['MaLopHP'])[:50],
-                     str(r['EssayText']), str(r['Sentiment'])[:20], int(r['Is_Valid']),
-                     int(r['Tag_HocPhan']), int(r['Tag_DayHoc']), int(r['Tag_KiemTra']), int(r['Tag_Khac']))
-                    for _, r in dn.iterrows()]
-            
-            q = "INSERT INTO FACT_GOP_Y_TU_LUAN (SubmissionID,MaSV,MaLopHP,NoiDungGopY,Sentiment,Is_Valid,Tag_HocPhan,Tag_DayHoc,Tag_KiemTra,Tag_Khac) VALUES (?,?,?,?,?,?,?,?,?,?)"
-            for i in range(0, len(data), BATCH_SIZE):
+    if de.empty:
+        print("  ✅ No essay data")
+        return 0
+    
+    # Lấy SubmissionID hiện có
+    cursor.execute("SELECT SubmissionID FROM FACT_GOP_Y_TU_LUAN")
+    existing = {str(row[0]).strip() for row in cursor.fetchall()}
+    
+    # Lọc dòng mới
+    dn = de[~de['SubmissionID'].astype(str).str.strip().isin(existing)]
+    
+    if dn.empty:
+        print("  ✅ 0 new rows")
+        return 0
+    
+    print(f"  -> Inserting {len(dn):,} new rows...")
+    
+    data = []
+    for _, r in dn.iterrows():
+        data.append((
+            str(r['SubmissionID'])[:150],
+            str(r['MaSV'])[:20],
+            str(r['MaLopHP'])[:50],
+            str(r['EssayText']) if pd.notna(r['EssayText']) else '',
+            str(r['Sentiment'])[:20] if pd.notna(r['Sentiment']) else 'NEUTRAL',
+            int(r['Is_Valid']) if pd.notna(r['Is_Valid']) else 0,
+            int(r['Tag_HocPhan']) if pd.notna(r['Tag_HocPhan']) else 0,
+            int(r['Tag_DayHoc']) if pd.notna(r['Tag_DayHoc']) else 0,
+            int(r['Tag_KiemTra']) if pd.notna(r['Tag_KiemTra']) else 0,
+            int(r['Tag_Khac']) if pd.notna(r['Tag_Khac']) else 0
+        ))
+    
+    inserted = 0
+    for i in range(0, len(data), BATCH_SIZE):
+        batch = data[i:i + BATCH_SIZE]
+        try:
+            cursor.executemany("""
+                INSERT INTO FACT_GOP_Y_TU_LUAN 
+                (SubmissionID, MaSV, MaLopHP, NoiDungGopY, Sentiment, Is_Valid,
+                 Tag_HocPhan, Tag_DayHoc, Tag_KiemTra, Tag_Khac)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, batch)
+            cursor.connection.commit()
+            inserted += len(batch)
+        except Exception as e:
+            # Fallback từng dòng
+            for d in batch:
                 try:
-                    cursor.executemany(q, data[i:i+BATCH_SIZE])
+                    cursor.execute("""
+                        INSERT INTO FACT_GOP_Y_TU_LUAN 
+                        (SubmissionID, MaSV, MaLopHP, NoiDungGopY, Sentiment, Is_Valid,
+                         Tag_HocPhan, Tag_DayHoc, Tag_KiemTra, Tag_Khac)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, d)
                     cursor.connection.commit()
+                    inserted += 1
                 except:
-                    for d in data[i:i+BATCH_SIZE]:
-                        try:
-                            cursor.execute(q, d)
-                            cursor.connection.commit()
-                        except:
-                            pass
+                    pass
     
-    # FACT_KET_QUA
+    print(f"  ✅ FACT_GOP_Y: {inserted:,} rows")
+    return inserted
+
+
+def load_fact_ket_qua(cursor, df):
+    """Load FACT_KET_QUA_DANH_GIA"""
+    print("\n--- FACT_KET_QUA_DANH_GIA ---")
+    
     rows = []
-    for _, r in df[(df['CauHoi'] != '') & (df['GiaTri'] != '')].iterrows():
+    
+    # 1. Câu trắc nghiệm (1-12)
+    df_tn = df[(df['CauHoi'] != '') & (df['GiaTri'] != '')]
+    for _, r in df_tn.iterrows():
         try:
             mc = int(float(r['CauHoi']))
             d = int(float(r['GiaTri']))
-            if 1 <= mc <= 12:
+            if 1 <= mc <= 12 and 1 <= d <= 5:
                 rows.append((str(r['SubmissionID'])[:150], mc, d))
         except:
             pass
     
-    for _, r in de.iterrows():
+    # 2. Câu tự luận (13-16) - lấy điểm từ sentiment
+    df_essay = df[(df['EssayText'].notna()) & (df['EssayText'] != '')].drop_duplicates('SubmissionID')
+    for _, r in df_essay.iterrows():
         s = r['Sentiment']
-        d = 5 if s == 'POSITIVE' else (2 if s == 'NEGATIVE' else 3)
+        if s == 'POSITIVE':
+            d = 5
+        elif s == 'NEGATIVE':
+            d = 2
+        else:
+            d = 3
+        
         for mc in [13, 14, 15, 16]:
             rows.append((str(r['SubmissionID'])[:150], mc, d))
     
-    if rows:
-        print(f"    FACT_KET_QUA: {len(rows):,}")
-        q = "INSERT INTO FACT_KET_QUA_DANH_GIA (SubmissionID,MaCauHoi,Diem) VALUES (?,?,?)"
-        for i in range(0, len(rows), BATCH_SIZE):
-            try:
-                cursor.executemany(q, rows[i:i+BATCH_SIZE])
-                cursor.connection.commit()
-            except:
-                for d in rows[i:i+BATCH_SIZE]:
-                    try:
-                        cursor.execute(q, d)
-                        cursor.connection.commit()
-                    except:
-                        pass
+    if not rows:
+        print("  ✅ No data")
+        return 0
+    
+    print(f"  -> {len(rows):,} rows")
+    
+    inserted = 0
+    for i in range(0, len(rows), BATCH_SIZE):
+        batch = rows[i:i + BATCH_SIZE]
+        try:
+            cursor.executemany(
+                "INSERT INTO FACT_KET_QUA_DANH_GIA (SubmissionID, MaCauHoi, Diem) VALUES (?, ?, ?)",
+                batch
+            )
+            cursor.connection.commit()
+            inserted += len(batch)
+        except:
+            # Fallback từng dòng (bỏ qua duplicate)
+            for d in batch:
+                try:
+                    cursor.execute(
+                        "IF NOT EXISTS (SELECT 1 FROM FACT_KET_QUA_DANH_GIA WHERE SubmissionID=? AND MaCauHoi=?) "
+                        "INSERT INTO FACT_KET_QUA_DANH_GIA (SubmissionID, MaCauHoi, Diem) VALUES (?, ?, ?)",
+                        (d[0], d[1], d[0], d[1], d[2])
+                    )
+                    cursor.connection.commit()
+                    inserted += 1
+                except:
+                    pass
+    
+    print(f"  ✅ FACT_KET_QUA: {inserted:,} rows")
+    return inserted
 
-# ================= MAIN =================
-def main():
-    t0 = time.time()
+
+def load_to_database(df):
+    """Load toàn bộ dữ liệu vào database"""
+    print("\n💾 LOAD TO DATABASE")
+    start = time.time()
     
-    print("\n📥 Connect...")
-    blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
-    load_master()
-    
-    print(f"\n📄 Download: {SURVEY_FILE}...", end=" ", flush=True)
-    content = download_blob(blob_service, CONTAINER_NAME, f"{RAWDATA_PATH}/{SURVEY_FILE}")
-    if not content:
-        print("❌")
-        sys.exit(1)
-    print(f"OK ({len(content):,} bytes)")
-    
-    print(f"\n📝 PARSE + NLP (Vectorized)")
-    t1 = time.time()
-    df = parse_vectorized(content)
-    print(f"  ✅ {time.time()-t1:.1f}s")
-    
-    if df.empty:
-        print("❌ No data")
-        sys.exit(1)
-    
-    # Backup
-    bp = f"/tmp/{FILE_NAME}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.parquet"
-    df.to_parquet(bp, index=False)
-    print(f"📁 {bp}")
-    
-    # Load DB
-    print("\n💾 LOAD DATABASE")
-    t1 = time.time()
     conn = pyodbc.connect(CONN_STR)
     cursor = conn.cursor()
     cursor.fast_executemany = True
     
     try:
-        load_db(cursor, df)
-        print(f"  ✅ {time.time()-t1:.1f}s")
+        dim_count = load_all_dimensions(cursor, df)
+        fact1_count = load_fact_gop_y(cursor, df)
+        fact2_count = load_fact_ket_qua(cursor, df)
+        
+        print(f"\n  ✅ Load hoàn tất: {time.time() - start:.1f}s")
+        print(f"  📊 Dimensions: {dim_count} new")
+        print(f"  📊 FACT_GOP_Y: {fact1_count:,} rows")
+        print(f"  📊 FACT_KET_QUA: {fact2_count:,} rows")
+        
     except Exception as e:
-        print(f"  ❌ {e}")
+        print(f"\n  ❌ Lỗi: {e}")
         import traceback
         traceback.print_exc()
+        raise
     finally:
         conn.close()
+
+
+# ================= MAIN =================
+def main():
+    total_start = time.time()
     
-    print(f"\n🎉 DONE! Total: {time.time()-t0:.1f}s | Rows: {len(df):,}")
+    # 1. Kết nối & Load Master từ DB
+    print("\n📥 1. CONNECT & LOAD MASTER")
+    start = time.time()
+    
+    blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
+    
+    # Load master data từ DB (đã được Pipeline 1 tạo)
+    load_master_from_db()
+    
+    # Download survey
+    survey_content = download_blob(blob_service, CONTAINER_NAME, f"{RAWDATA_PATH}/{SURVEY_FILE}")
+    print(f"  ✅ Extract: {time.time() - start:.1f}s")
+    
+    if not survey_content:
+        print("❌ Không thể đọc file survey!")
+        sys.exit(1)
+    
+    # 2. Parse + NLP
+    print("\n📝 2. PARSE + NLP")
+    start = time.time()
+    df = parse_survey(survey_content)
+    print(f"  ✅ Parse + NLP: {time.time() - start:.1f}s")
+    
+    if df.empty:
+        print("❌ Không có dữ liệu!")
+        sys.exit(1)
+    
+    # 3. Backup
+    print("\n💾 3. BACKUP")
+    backup_path = f"/tmp/{FILE_NAME}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.parquet"
+    df.to_parquet(backup_path, index=False, compression='snappy')
+    print(f"  ✅ Backup: {backup_path}")
+    
+    # 4. Load Database
+    print("\n💾 4. LOAD TO DATABASE")
+    load_to_database(df)
+    
+    # Tổng kết
+    total = time.time() - total_start
+    print("\n" + "=" * 70)
+    print(f"🎉 HOÀN THÀNH!")
+    print(f"⏱️  Tổng thời gian: {total:.1f}s")
+    print(f"📊 Tổng số dòng: {len(df):,}")
+    print(f"📁 Backup: {backup_path}")
+    print("=" * 70)
+
 
 if __name__ == "__main__":
     main()

@@ -105,6 +105,7 @@ def parse_survey(content):
     return df
 
 # ================= LOAD =================
+# ================= LOAD =================
 def load_all(df):
     print("\n💾 LOAD TO DATABASE...")
     t0=time.time()
@@ -126,13 +127,14 @@ def load_all(df):
         s=r['Sentiment']; d=5 if s=='POSITIVE' else (2 if s=='NEGATIVE' else 3)
         for mc in [13,14,15,16]: kq.append((str(r['SubmissionID'])[:200],mc,d))
     
-    # ===== FIX: autocommit=True =====
+    # ===== FIX: pyodbc.pooling = False =====
+    pyodbc.pooling = False
+    
     conn = pyodbc.connect(CONN_STR, autocommit=True)
     cur = conn.cursor()
-    cur.fast_executemany = True
     
-    # ===== FIX: SET NOCOUNT ON =====
-    cur.execute("SET NOCOUNT ON")
+    # ===== FIX: Dùng cursor.execute thay vì executemany =====
+    # Chia nhỏ batch và dùng execute thay vì executemany
     
     try:
         # Tắt constraint
@@ -145,50 +147,87 @@ def load_all(df):
         cur.execute("IF NOT EXISTS(SELECT 1 FROM DIM_HOC_KY WHERE MaHocKy=?) INSERT INTO DIM_HOC_KY(MaHocKy,NamHoc,HocKy) VALUES(?,?,?)",(mhk,mhk,nh,hk))
         print(f"  ✅ DIM_HOC_KY: done")
         
-        # 2. DIM_LOP_SINH_VIEN
+        # 2. DIM_LOP_SINH_VIEN - dùng execute từng dòng
+        print(f"  -> DIM_LOP_SINH_VIEN...")
         lops=df[['MaLopHP']].drop_duplicates().fillna('')
-        data=[(str(r['MaLopHP'])[:50], str(r['MaLopHP'])[:50], str(r['MaLopHP'])[:50]) 
-              for _,r in lops.iterrows() if str(r['MaLopHP']).strip()]
-        if data:
-            cur.executemany("INSERT INTO DIM_LOP_SINH_VIEN(MaLop,Lop,MaChuyenNganh) VALUES(?,?,?)",data)
-        print(f"  ✅ DIM_LOP: {len(data):,}")
+        count=0
+        for _,r in lops.iterrows():
+            v = str(r['MaLopHP']).strip()
+            if v:
+                try:
+                    cur.execute("INSERT INTO DIM_LOP_SINH_VIEN(MaLop,Lop,MaChuyenNganh) VALUES(?,?,?)",
+                               (v[:50], v[:50], v[:50]))
+                    count+=1
+                except: pass
+        print(f"  ✅ DIM_LOP: {count:,}")
         
         # 3. DIM_SINH_VIEN
+        print(f"  -> DIM_SINH_VIEN...")
         svs=df[['MaSV','MaLopHP']].drop_duplicates('MaSV').fillna('')
-        data=[(str(r['MaSV'])[:50], '', '', None, str(r['MaLopHP'])[:50]) 
-              for _,r in svs.iterrows() if str(r['MaSV']).strip()]
-        if data:
-            cur.executemany("INSERT INTO DIM_SINH_VIEN(MaSV,HoDem,Ten,NgaySinh,MaLop) VALUES(?,?,?,?,?)",data)
-        print(f"  ✅ DIM_SV: {len(data):,}")
+        count=0
+        for _,r in svs.iterrows():
+            sv = str(r['MaSV']).strip()
+            ml = str(r['MaLopHP']).strip()
+            if sv:
+                try:
+                    cur.execute("INSERT INTO DIM_SINH_VIEN(MaSV,HoDem,Ten,NgaySinh,MaLop) VALUES(?,?,?,?,?)",
+                               (sv[:50], '', '', None, ml[:50]))
+                    count+=1
+                except: pass
+        print(f"  ✅ DIM_SV: {count:,}")
         
         # 4. DIM_GIANG_VIEN
+        print(f"  -> DIM_GIANG_VIEN...")
         gvs=df[['MaGV']].drop_duplicates().fillna('')
-        data=[(str(r['MaGV'])[:50], '', '') for _,r in gvs.iterrows() if str(r['MaGV']).strip()]
-        if data:
-            cur.executemany("INSERT INTO DIM_GIANG_VIEN(MaGV,HoDemGV,TenGV) VALUES(?,?,?)",data)
-        print(f"  ✅ DIM_GV: {len(data):,}")
+        count=0
+        for _,r in gvs.iterrows():
+            gv = str(r['MaGV']).strip()
+            if gv:
+                try:
+                    cur.execute("INSERT INTO DIM_GIANG_VIEN(MaGV,HoDemGV,TenGV) VALUES(?,?,?)",
+                               (gv[:50], '', ''))
+                    count+=1
+                except: pass
+        print(f"  ✅ DIM_GV: {count:,}")
         
         # 5. DIM_LOP_HOC_PHAN
+        print(f"  -> DIM_LOP_HOC_PHAN...")
         lhps=df[['MaLopHP','MaHP','MaGV']].drop_duplicates('MaLopHP').fillna('')
-        data=[(str(r['MaLopHP'])[:100], str(r['MaLopHP'])[:100], str(r['MaHP'])[:50], str(r['MaGV'])[:50], mhk)
-              for _,r in lhps.iterrows() if str(r['MaLopHP']).strip()]
-        if data:
-            cur.executemany("INSERT INTO DIM_LOP_HOC_PHAN(MaLopHP,LopHP,MaHP,MaGV,MaHocKy) VALUES(?,?,?,?,?)",data)
-        print(f"  ✅ DIM_LHP: {len(data):,}")
+        count=0
+        for _,r in lhps.iterrows():
+            ml = str(r['MaLopHP']).strip()
+            if ml:
+                try:
+                    cur.execute("INSERT INTO DIM_LOP_HOC_PHAN(MaLopHP,LopHP,MaHP,MaGV,MaHocKy) VALUES(?,?,?,?,?)",
+                               (ml[:100], ml[:100], str(r['MaHP'])[:50], str(r['MaGV'])[:50], mhk))
+                    count+=1
+                except: pass
+        print(f"  ✅ DIM_LHP: {count:,}")
         
         # 6. FACT_GOP_Y
+        print(f"  -> FACT_GOP_Y...")
+        count=0
         if not de.empty:
-            data=[(str(r['SubmissionID'])[:200], str(r['MaSV'])[:50], str(r['MaLopHP'])[:100],
-                   str(r['EssayText'])[:4000], str(r['Sentiment'])[:20], int(r['Is_Valid']),
-                   int(r['Tag_HocPhan']), int(r['Tag_DayHoc']), int(r['Tag_KiemTra']), int(r['Tag_Khac']))
-                  for _,r in de.iterrows()]
-            cur.executemany("INSERT INTO FACT_GOP_Y_TU_LUAN(SubmissionID,MaSV,MaLopHP,NoiDungGopY,Sentiment,Is_Valid,Tag_HocPhan,Tag_DayHoc,Tag_KiemTra,Tag_Khac) VALUES(?,?,?,?,?,?,?,?,?,?)",data)
-        print(f"  ✅ FACT_GY: {len(data):,}")
+            for _,r in de.iterrows():
+                try:
+                    cur.execute("INSERT INTO FACT_GOP_Y_TU_LUAN(SubmissionID,MaSV,MaLopHP,NoiDungGopY,Sentiment,Is_Valid,Tag_HocPhan,Tag_DayHoc,Tag_KiemTra,Tag_Khac) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                               (str(r['SubmissionID'])[:200], str(r['MaSV'])[:50], str(r['MaLopHP'])[:100],
+                                str(r['EssayText'])[:4000], str(r['Sentiment'])[:20], int(r['Is_Valid']),
+                                int(r['Tag_HocPhan']), int(r['Tag_DayHoc']), int(r['Tag_KiemTra']), int(r['Tag_Khac'])))
+                    count+=1
+                except: pass
+        print(f"  ✅ FACT_GY: {count:,}")
         
         # 7. FACT_KET_QUA
+        print(f"  -> FACT_KET_QUA...")
+        count=0
         if kq:
-            cur.executemany("INSERT INTO FACT_KET_QUA_DANH_GIA(SubmissionID,MaCauHoi,Diem) VALUES(?,?,?)",kq)
-        print(f"  ✅ FACT_KQ: {len(kq):,}")
+            for d in kq:
+                try:
+                    cur.execute("INSERT INTO FACT_KET_QUA_DANH_GIA(SubmissionID,MaCauHoi,Diem) VALUES(?,?,?)", d)
+                    count+=1
+                except: pass
+        print(f"  ✅ FACT_KQ: {count:,}")
         
     except Exception as e:
         print(f"  ❌ Error: {e}")

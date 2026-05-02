@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SURVEY ETL - FINAL VERSION WITH DATABASE LOAD
+SURVEY ETL - ULTRA FAST LOAD
 """
 
 import os
@@ -10,7 +10,7 @@ import re
 import time
 import pandas as pd
 import pyodbc
-from datetime import datetime
+import tempfile
 from azure.storage.blob import BlobServiceClient
 from multiprocessing import Pool, cpu_count
 
@@ -29,14 +29,14 @@ CONN_STR = (
     f"UID=sqladmin;"
     f"PWD={DB_PASSWORD};"
     f"Encrypt=yes;TrustServerCertificate=no;"
+    f"Connection Timeout=600;Command Timeout=1800;"
 )
 
 CONTAINER_NAME = SEMESTER
 RAWDATA_PATH = "rawdata"
 
 NUM_WORKERS = 4
-CHUNK_SIZE = 20000
-BATCH_SIZE = 40000
+CHUNK_SIZE = 25000
 
 # ================= PATTERNS =================
 _DATE_RE = re.compile(r'^\d{2}/\d{2}/\d{4}$').match
@@ -55,7 +55,7 @@ def load_master_from_db():
         cursor.execute("SELECT MaChuyenNganh, TenChuyenNganh, MaNganh FROM DIM_CHUYEN_NGANH")
         for r in cursor.fetchall():
             key = str(r[0]).strip()
-            _g_cn[key] = (key, str(r[1]).strip(), str(r[2]).strip())
+            _g_cn[key] = tuple(str(x).strip() for x in r)
         
         cursor.execute("SELECT MaHP, TenHP, MaKhoa FROM DIM_HOC_PHAN")
         for r in cursor.fetchall():
@@ -66,17 +66,17 @@ def load_master_from_db():
         conn.close()
         print(f"✅ Master: {len(_g_cn)} CN | {len(_g_hp)} HP")
     except Exception as e:
-        print(f"⚠️ Master load error: {e}")
+        print(f"⚠️ Master error: {e}")
 
 def nlp_fast(text):
     if not text or len(text) < 5:
         return 0,0,0,0,'NEUTRAL',0
     t = text.lower()
-    t1 = 1 if any(k in t for k in ('nội dung','chương trình','học phần')) else 0
-    t2 = 1 if any(k in t for k in ('giảng viên','thầy','cô','nhiệt tình')) else 0
-    t3 = 1 if any(k in t for k in ('kiểm tra','thi','đánh giá')) else 0
-    t4 = 1 if any(k in t for k in ('cơ sở','cải thiện')) else 0
-    sent = 'POSITIVE' if 'tốt' in t or 'hay' in t else 'NEGATIVE' if 'kém' in t or 'không' in t else 'NEUTRAL'
+    t1 = 1 if any(k in t for k in ('nội dung','chương trình','học phần','chuẩn')) else 0
+    t2 = 1 if any(k in t for k in ('giảng viên','thầy','cô','nhiệt tình','tận tâm')) else 0
+    t3 = 1 if any(k in t for k in ('kiểm tra','thi','đánh giá','chấm')) else 0
+    t4 = 1 if any(k in t for k in ('cơ sở','cải thiện','góp ý')) else 0
+    sent = 'POSITIVE' if 'tốt' in t or 'hay' in t else 'NEGATIVE' if any(x in t for x in ('kém','tệ','không')) else 'NEUTRAL'
     return t1,t2,t3,t4,sent,1
 
 def parse_batch(args):
@@ -109,92 +109,47 @@ def parse_batch(args):
         
         sid = f"{ma_sv}_{lhp}_{ma_gv}_{file_name}"
         
-        results.append({
-            'SubmissionID': sid,
-            'MaSV': ma_sv,
-            'Lop': lop,
-            'MaHP': ma_hp,
-            'MaGV': ma_gv,
-            'MaLopHP': lhp,
-            'EssayText': essay,
-            'Tag_HocPhan': t1,
-            'Tag_DayHoc': t2,
-            'Tag_KiemTra': t3,
-            'Tag_Khac': t4,
-            'Sentiment': sent,
-            'Is_Valid': valid
-        })
+        results.append((
+            sid, ma_sv, lop, ma_hp, ma_gv, lhp, essay,
+            t1, t2, t3, t4, sent, valid
+        ))
     return results
 
-def safe_insert(cursor, table, columns, data, batch_size=BATCH_SIZE):
-    if not data: return 0
-    ph = ','.join(['?'] * len(columns))
-    sql = f"INSERT INTO {table} ({','.join(columns)}) VALUES ({ph})"
-    
-    inserted = 0
-    for i in range(0, len(data), batch_size):
-        try:
-            cursor.executemany(sql, data[i:i+batch_size])
-            cursor.connection.commit()
-            inserted += len(data[i:i+batch_size])
-        except Exception as e:
-            print(f"Batch error {i//batch_size}: {e}")
-            # Fallback
-            for row in data[i:i+batch_size]:
-                try:
-                    cursor.execute(sql, row)
-                    cursor.connection.commit()
-                    inserted += 1
-                except: pass
-    return inserted
-def load_to_database(df):
-    """LOAD SIÊU NHANH bằng BULK INSERT"""
+def load_to_database_ultra_fast(df):
+    """CHÈN 1 LẦN - SIÊU NHANH"""
     if df.empty:
-        print("❌ DataFrame rỗng!")
+        print("❌ No data!")
         return
     
-    print("\n💾 LOADING TO DATABASE (BULK INSERT)...")
+    print("\n💾 BULK INSERT - SIÊU NHANH...")
     t0 = time.time()
     
     conn = pyodbc.connect(CONN_STR)
     cursor = conn.cursor()
     
     try:
-        # Tắt constraint để load nhanh
-        print(" → Tắt constraint tạm thời...")
         cursor.execute("ALTER TABLE FACT_GOP_Y_TU_LUAN NOCHECK CONSTRAINT ALL")
         conn.commit()
         
-        # Chuẩn bị dữ liệu
-        df_essay = df[df['EssayText'].str.strip().ne('')].copy()
+        df_essay = df[df['EssayText'].str.strip() != ''].copy()
         
-        data = []
-        for _, r in df_essay.iterrows():
-            data.append((
-                str(r['SubmissionID'])[:150],
-                str(r['MaSV'])[:20],
-                str(r['MaLopHP'])[:50],
-                str(r['EssayText'])[:4000],
-                str(r.get('Sentiment', 'NEUTRAL')),
-                int(r.get('Is_Valid', 1)),
-                int(r.get('Tag_HocPhan', 0)),
-                int(r.get('Tag_DayHoc', 0)),
-                int(r.get('Tag_KiemTra', 0)),
-                int(r.get('Tag_Khac', 0))
-            ))
-        
-        if not data:
-            print("Không có dữ liệu tự luận để load")
-            return
-        
-        print(f" → Đang load {len(data):,} rows vào FACT_GOP_Y_TU_LUAN...")
-        
-        # === BULK INSERT - SIÊU NHANH ===
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, encoding='utf-8') as tmp:
-            temp_path = tmp.name
-            for row in data:
-                line = '|'.join(str(x).replace('\n',' ').replace('\r',' ').replace('|',' ') for x in row)
-                tmp.write(line + '\n')
+        # Tạo file tạm
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, encoding='utf-8') as f:
+            temp_path = f.name
+            for _, r in df_essay.iterrows():
+                line = '|'.join([
+                    str(r['SubmissionID'])[:150],
+                    str(r['MaSV'])[:20],
+                    str(r['MaLopHP'])[:50],
+                    str(r['EssayText'])[:4000].replace('|',' ').replace('\n',' '),
+                    str(r.get('Sentiment','NEUTRAL')),
+                    str(int(r.get('Is_Valid',1))),
+                    str(int(r.get('Tag_HocPhan',0))),
+                    str(int(r.get('Tag_DayHoc',0))),
+                    str(int(r.get('Tag_KiemTra',0))),
+                    str(int(r.get('Tag_Khac',0)))
+                ])
+                f.write(line + '\n')
         
         bulk_sql = f"""
             BULK INSERT FACT_GOP_Y_TU_LUAN
@@ -203,46 +158,33 @@ def load_to_database(df):
                 FIELDTERMINATOR = '|',
                 ROWTERMINATOR = '\\n',
                 CODEPAGE = '65001',
-                KEEPNULLS,
-                TABLOCK
+                TABLOCK,
+                KEEPNULLS
             )
         """
         
         cursor.execute(bulk_sql)
         conn.commit()
-        print(f"✅ BULK INSERT thành công: {len(data):,} rows")
-        
-        # Bật lại constraint
-        cursor.execute("ALTER TABLE FACT_GOP_Y_TU_LUAN CHECK CONSTRAINT ALL")
-        conn.commit()
+        print(f"✅ BULK INSERT HOÀN TẤT: {len(df_essay):,} rows")
         
     except Exception as e:
-        print(f"❌ Lỗi BULK INSERT: {e}")
+        print(f"❌ Lỗi: {e}")
         conn.rollback()
-        
-        # Fallback nếu BULK INSERT lỗi
-        print("→ Thử fallback với batch insert...")
-        safe_insert(cursor, 'FACT_GOP_Y_TU_LUAN', 
-                   ['SubmissionID','MaSV','MaLopHP','NoiDungGopY','Sentiment',
-                    'Is_Valid','Tag_HocPhan','Tag_DayHoc','Tag_KiemTra','Tag_Khac'], 
-                   data, batch_size=20000)
-        
     finally:
         conn.close()
-        if 'temp_path' in locals() and os.path.exists(temp_path):
-            os.remove(temp_path)
+        if 'temp_path' in locals():
+            try: os.remove(temp_path)
+            except: pass
     
-    print(f"✅ Load hoàn tất trong {time.time()-t0:.1f}s")
+    print(f"⏱️ Load xong trong {time.time()-t0:.1f} giây")
 
 def main():
     t0 = time.time()
     blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
     load_master_from_db()
     
-    # Download
     client = blob_service.get_container_client(CONTAINER_NAME).get_blob_client(f"{RAWDATA_PATH}/{SURVEY_FILE}")
     content = client.download_blob().readall().decode('utf-8-sig')
-    print(f"Downloaded: {len(content):,} characters")
     
     lines = [l.strip() for l in content.split('\n') if l.strip()]
     print(f"Total lines: {len(lines):,}")
@@ -254,11 +196,15 @@ def main():
         for res in pool.imap_unordered(parse_batch, batches):
             all_results.extend(res)
     
-    df = pd.DataFrame(all_results)
+    df = pd.DataFrame(all_results, columns=[
+        'SubmissionID','MaSV','Lop','MaHP','MaGV','MaLopHP','EssayText',
+        'Tag_HocPhan','Tag_DayHoc','Tag_KiemTra','Tag_Khac','Sentiment','Is_Valid'
+    ])
+    
     print(f"✅ Parsed: {len(df):,} rows")
     
     if not df.empty:
-        load_to_database(df)
+        load_to_database_ultra_fast(df)
     
     print(f"\n🎉 HOÀN THÀNH! Total time: {time.time()-t0:.1f}s")
 

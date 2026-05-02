@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SURVEY ETL - ULTRA FAST LOAD
+SURVEY ETL - ULTRA FAST VERSION
 """
 
 import os
@@ -10,7 +10,7 @@ import re
 import time
 import pandas as pd
 import pyodbc
-import tempfile
+from datetime import datetime
 from azure.storage.blob import BlobServiceClient
 from multiprocessing import Pool, cpu_count
 
@@ -38,6 +38,11 @@ RAWDATA_PATH = "rawdata"
 NUM_WORKERS = 4
 CHUNK_SIZE = 25000
 
+print("="*90)
+print("🚀 SURVEY ETL - ULTRA FAST PIPELINE")
+print(f"Workers: {NUM_WORKERS} | Chunk: {CHUNK_SIZE:,}")
+print("="*90)
+
 # ================= PATTERNS =================
 _DATE_RE = re.compile(r'^\d{2}/\d{2}/\d{4}$').match
 _MA_GV_RE = re.compile(r'^(\d{7}|TG\d{5}|gvDacThu_TKTH)$').match
@@ -64,9 +69,9 @@ def load_master_from_db():
             _g_khoa_hp[hp] = str(r[2]).strip()
         
         conn.close()
-        print(f"✅ Master: {len(_g_cn)} CN | {len(_g_hp)} HP")
+        print(f"✅ Master loaded: {len(_g_cn)} CN | {len(_g_hp)} HP")
     except Exception as e:
-        print(f"⚠️ Master error: {e}")
+        print(f"⚠️ Master load error: {e}")
 
 def nlp_fast(text):
     if not text or len(text) < 5:
@@ -109,82 +114,90 @@ def parse_batch(args):
         
         sid = f"{ma_sv}_{lhp}_{ma_gv}_{file_name}"
         
-        results.append((
-            sid, ma_sv, lop, ma_hp, ma_gv, lhp, essay,
-            t1, t2, t3, t4, sent, valid
-        ))
+        results.append({
+            'SubmissionID': sid,
+            'MaSV': ma_sv,
+            'Lop': lop,
+            'MaHP': ma_hp,
+            'MaGV': ma_gv,
+            'MaLopHP': lhp,
+            'EssayText': essay,
+            'Tag_HocPhan': t1,
+            'Tag_DayHoc': t2,
+            'Tag_KiemTra': t3,
+            'Tag_Khac': t4,
+            'Sentiment': sent,
+            'Is_Valid': valid
+        })
     return results
 
-def load_to_database_ultra_fast(df):
-    """CHÈN 1 LẦN - SIÊU NHANH"""
+def load_to_database(df):
+    """LOAD NHANH NHẤT CÓ THỂ"""
     if df.empty:
-        print("❌ No data!")
+        print("❌ No data to load!")
         return
     
-    print("\n💾 BULK INSERT - SIÊU NHANH...")
+    print("\n💾 LOADING TO DATABASE...")
     t0 = time.time()
     
     conn = pyodbc.connect(CONN_STR)
     cursor = conn.cursor()
     
     try:
+        # Tắt constraint
         cursor.execute("ALTER TABLE FACT_GOP_Y_TU_LUAN NOCHECK CONSTRAINT ALL")
         conn.commit()
         
         df_essay = df[df['EssayText'].str.strip() != ''].copy()
         
-        # Tạo file tạm
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, encoding='utf-8') as f:
-            temp_path = f.name
-            for _, r in df_essay.iterrows():
-                line = '|'.join([
-                    str(r['SubmissionID'])[:150],
-                    str(r['MaSV'])[:20],
-                    str(r['MaLopHP'])[:50],
-                    str(r['EssayText'])[:4000].replace('|',' ').replace('\n',' '),
-                    str(r.get('Sentiment','NEUTRAL')),
-                    str(int(r.get('Is_Valid',1))),
-                    str(int(r.get('Tag_HocPhan',0))),
-                    str(int(r.get('Tag_DayHoc',0))),
-                    str(int(r.get('Tag_KiemTra',0))),
-                    str(int(r.get('Tag_Khac',0)))
-                ])
-                f.write(line + '\n')
+        load_df = pd.DataFrame({
+            'SubmissionID': df_essay['SubmissionID'].astype(str).str[:150],
+            'MaSV': df_essay['MaSV'].astype(str).str[:20],
+            'MaLopHP': df_essay['MaLopHP'].astype(str).str[:50],
+            'NoiDungGopY': df_essay['EssayText'].astype(str).str[:4000],
+            'Sentiment': df_essay['Sentiment'].astype(str),
+            'Is_Valid': df_essay['Is_Valid'].astype(int),
+            'Tag_HocPhan': df_essay['Tag_HocPhan'].astype(int),
+            'Tag_DayHoc': df_essay['Tag_DayHoc'].astype(int),
+            'Tag_KiemTra': df_essay['Tag_KiemTra'].astype(int),
+            'Tag_Khac': df_essay['Tag_Khac'].astype(int)
+        })
         
-        bulk_sql = f"""
-            BULK INSERT FACT_GOP_Y_TU_LUAN
-            FROM '{temp_path}'
-            WITH (
-                FIELDTERMINATOR = '|',
-                ROWTERMINATOR = '\\n',
-                CODEPAGE = '65001',
-                TABLOCK,
-                KEEPNULLS
-            )
-        """
+        print(f" → Inserting {len(load_df):,} rows...")
         
-        cursor.execute(bulk_sql)
+        # Load nhanh
+        load_df.to_sql(
+            name='FACT_GOP_Y_TU_LUAN',
+            con=conn,
+            if_exists='append',
+            index=False,
+            method='multi',
+            chunksize=15000
+        )
+        
+        # Bật lại constraint
+        cursor.execute("ALTER TABLE FACT_GOP_Y_TU_LUAN CHECK CONSTRAINT ALL")
         conn.commit()
-        print(f"✅ BULK INSERT HOÀN TẤT: {len(df_essay):,} rows")
+        
+        print(f"✅ LOAD HOÀN TẤT: {len(load_df):,} rows")
         
     except Exception as e:
-        print(f"❌ Lỗi: {e}")
+        print(f"❌ Load error: {e}")
         conn.rollback()
     finally:
         conn.close()
-        if 'temp_path' in locals():
-            try: os.remove(temp_path)
-            except: pass
     
-    print(f"⏱️ Load xong trong {time.time()-t0:.1f} giây")
+    print(f"⏱️ Load time: {time.time()-t0:.1f}s")
 
 def main():
     t0 = time.time()
     blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
     load_master_from_db()
     
+    # Download
     client = blob_service.get_container_client(CONTAINER_NAME).get_blob_client(f"{RAWDATA_PATH}/{SURVEY_FILE}")
     content = client.download_blob().readall().decode('utf-8-sig')
+    print(f"Downloaded: {len(content):,} characters")
     
     lines = [l.strip() for l in content.split('\n') if l.strip()]
     print(f"Total lines: {len(lines):,}")
@@ -196,15 +209,11 @@ def main():
         for res in pool.imap_unordered(parse_batch, batches):
             all_results.extend(res)
     
-    df = pd.DataFrame(all_results, columns=[
-        'SubmissionID','MaSV','Lop','MaHP','MaGV','MaLopHP','EssayText',
-        'Tag_HocPhan','Tag_DayHoc','Tag_KiemTra','Tag_Khac','Sentiment','Is_Valid'
-    ])
-    
+    df = pd.DataFrame(all_results)
     print(f"✅ Parsed: {len(df):,} rows")
     
     if not df.empty:
-        load_to_database_ultra_fast(df)
+        load_to_database(df)
     
     print(f"\n🎉 HOÀN THÀNH! Total time: {time.time()-t0:.1f}s")
 

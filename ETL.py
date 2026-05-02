@@ -1,28 +1,24 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PIPELINE 2: PARSE & INSERT TRỰC TIẾP
-- Parse → Insert từng batch vào DB ngay
-- Không lưu file trung gian
+PIPELINE 2A: PARSE & SAVE CSV TO BLOB
+- Parse survey → tạo DataFrame cho từng bảng
+- Lưu mỗi bảng thành 1 file CSV riêng lên Azure Blob
 """
-import os, sys, re, time, pyodbc
+import os, sys, re, time, io
 from multiprocessing import Pool, cpu_count
 from azure.storage.blob import BlobServiceClient
 
 CONNECTION_STRING = os.environ.get("CONNECTION_STRING")
 SEMESTER = os.environ.get("SEMESTER")
 SURVEY_FILE = os.environ.get("SURVEY_FILE")
-DB_PASSWORD = os.environ.get("DB_PASSWORD", "Due@2026")
 FILE_NAME = os.path.splitext(os.path.basename(SURVEY_FILE))[0]
 
-CONN_STR = (
-    f"DRIVER={{ODBC Driver 18 for SQL Server}};SERVER=course-survey.database.windows.net;"
-    f"DATABASE=course-survey-db;UID=sqladmin;PWD={DB_PASSWORD};"
-    f"Encrypt=yes;TrustServerCertificate=no;Connection Timeout=600;Command Timeout=1800;"
-)
-
-CONTAINER_NAME, RAWDATA_PATH = SEMESTER, "rawdata"
-NUM_WORKERS, CHUNK, BATCH = cpu_count(), 100000, 50000
+CONTAINER_NAME = SEMESTER
+RAWDATA_PATH = "rawdata"
+PROCESSED_PATH = "processed-data"
+NUM_WORKERS = cpu_count()
+CHUNK = 100000
 
 _D = re.compile(r'^\d{2}/\d{2}/\d{4}$').match
 _G = re.compile(r'^(\d{7}|TG\d{5}|gvDacThu_TKTH)$').match
@@ -73,124 +69,107 @@ def parse_batch(args):
         lhp = row[mgi+3].strip() if mgi+3 < rl else f"{hp}_{gv}"
         ch = row[mgi+4].strip() if mgi+4 < rl else ''
         gt = row[mgi+5].strip() if mgi+5 < rl else ''
-        essay = right.replace(' , ', ', ').strip()
+        essay = right.replace(' , ', ', ').strip().replace('|', ' ').replace('\n', ' ').replace('\r', ' ')
         t1,t2,t3,t4,sent,valid = nlp(essay) if essay else (0,0,0,0,'NEUTRAL',0)
         sid = f"{sv}_{lhp}_{gv}_{fn}"
-        res.append((sid, sv, ml, hp, gv, lhp, ch, gt, essay, t1, t2, t3, t4, sent, valid))
+        # sid|sv|ml|hp|gv|lhp|ch|gt|essay|t1|t2|t3|t4|sent|valid
+        res.append(f"{sid}|{sv}|{ml}|{hp}|{gv}|{lhp}|{ch}|{gt}|{essay}|{t1}|{t2}|{t3}|{t4}|{sent}|{valid}")
     return res
 
-def fast_insert(cur, sql, data, batch=BATCH):
-    """Insert nhanh, bỏ qua lỗi"""
-    if not data: return 0
-    done = 0
-    for i in range(0, len(data), batch):
-        chunk = data[i:i+batch]
-        try:
-            cur.executemany(sql, chunk)
-            done += len(chunk)
-        except:
-            for row in chunk:
-                try: cur.execute(sql, row); done += 1
-                except: pass
-    return done
+def upload_csv(container, blob_path, header, rows):
+    """Upload CSV lên Azure Blob"""
+    content = header + "\n" + "\n".join(rows)
+    container.get_blob_client(blob_path).upload_blob(content, overwrite=True)
+    return len(content) / 1024 / 1024
 
 def main():
     t0 = time.time()
-    print("="*50, "\n📊 PIPELINE 2: DIRECT INSERT\n", "="*50)
+    print("="*60)
+    print("📊 PIPELINE 2A: PARSE & SAVE CSV")
+    print("="*60)
     
-    # Download
     blob = BlobServiceClient.from_connection_string(CONNECTION_STRING)
-    client = blob.get_container_client(CONTAINER_NAME).get_blob_client(f"{RAWDATA_PATH}/{SURVEY_FILE}")
+    container = blob.get_container_client(CONTAINER_NAME)
+    
+    # Download survey
+    t1 = time.time()
+    client = container.get_blob_client(f"{RAWDATA_PATH}/{SURVEY_FILE}")
     content = client.download_blob().readall().decode('utf-8-sig')
+    print(f"  Download: {time.time()-t1:.1f}s")
     
     # Parse
     t1 = time.time()
     lines = [l.strip() for l in content.split('\n') if l.strip()]
     batches = [(lines[i:i+CHUNK], FILE_NAME) for i in range(0, len(lines), CHUNK)]
-    all_res = []
+    all_rows = []
     with Pool(NUM_WORKERS) as pool:
-        for res in pool.imap_unordered(parse_batch, batches): all_res.extend(res)
-    print(f"  Parse: {len(all_res):,} ({time.time()-t1:.1f}s)")
+        for res in pool.imap_unordered(parse_batch, batches): all_rows.extend(res)
+    print(f"  Parse: {len(all_rows):,} rows ({time.time()-t1:.1f}s)")
     
-    # Chuẩn bị data (1 vòng lặp, set lookup)
+    # Tạo dữ liệu cho từng bảng
     t1 = time.time()
     fn = SURVEY_FILE.replace('.csv','').split('_')[-1]
     yc, hk = int(fn[:-1]), int(fn[-1])
     nbd = 2000 + yc - 1
     mhk = f"HK{hk}_{nbd%100}{(nbd+1)%100}"
     
-    seen = {k: set() for k in ['lop','sv','gv','lhp','gy']}
-    data = {k: [] for k in ['lop','sv','gv','lhp','gy','kq']}
+    seen_lop, seen_sv, seen_gv, seen_lhp, seen_gy = set(), set(), set(), set(), set()
+    data_lop, data_sv, data_gv, data_lhp, data_gy, data_kq = [], [], [], [], [], []
     
-    for r in all_res:
-        sid, sv, ml, hp, gv, lhp, ch, gt, essay, t1v, t2v, t3v, t4v, sent, valid = r
+    for row in all_rows:
+        parts = row.split('|')
+        sid, sv, ml, hp, gv, lhp, ch, gt, essay = parts[0], parts[1], parts[2], parts[3], parts[4], parts[5], parts[6], parts[7], parts[8]
+        t1v, t2v, t3v, t4v, sent, valid = parts[9], parts[10], parts[11], parts[12], parts[13], parts[14]
         
-        if ml and ml not in seen['lop']:
-            seen['lop'].add(ml)
-            data['lop'].append((ml, ml, ml))
-        if sv and sv not in seen['sv']:
-            seen['sv'].add(sv)
-            data['sv'].append((sv, '', '', None, ml))
-        if gv and gv not in seen['gv']:
-            seen['gv'].add(gv)
-            data['gv'].append((gv, '', ''))
-        if lhp and lhp not in seen['lhp']:
-            seen['lhp'].add(lhp)
-            data['lhp'].append((lhp, lhp, hp, gv, mhk))
-        if essay and sid not in seen['gy']:
-            seen['gy'].add(sid)
-            data['gy'].append((sid, sv, lhp, essay[:4000], sent, valid, t1v, t2v, t3v, t4v))
+        if ml and ml not in seen_lop:
+            seen_lop.add(ml)
+            data_lop.append(f"{ml}|{ml}|{ml}")
+        if sv and sv not in seen_sv:
+            seen_sv.add(sv)
+            data_sv.append(f"{sv}|||NULL|{ml}")
+        if gv and gv not in seen_gv:
+            seen_gv.add(gv)
+            data_gv.append(f"{gv}||")
+        if lhp and lhp not in seen_lhp:
+            seen_lhp.add(lhp)
+            data_lhp.append(f"{lhp}|{lhp}|{hp}|{gv}|{mhk}")
+        if essay and sid not in seen_gy:
+            seen_gy.add(sid)
+            data_gy.append(f"{sid}|{sv}|{lhp}|{essay}|{sent}|{valid}|{t1v}|{t2v}|{t3v}|{t4v}")
             d = 5 if sent == 'POSITIVE' else (2 if sent == 'NEGATIVE' else 3)
             for mc in [13,14,15,16]:
-                data['kq'].append((sid, mc, d))
+                data_kq.append(f"{sid}|{mc}|{d}")
         if ch and gt:
             try:
                 mc, d = int(float(ch)), int(float(gt))
                 if 1 <= mc <= 12 and 1 <= d <= 5:
-                    data['kq'].append((sid, mc, d))
+                    data_kq.append(f"{sid}|{mc}|{d}")
             except: pass
     
-    print(f"  Prepare: LOP={len(data['lop'])} SV={len(data['sv'])} GV={len(data['gv'])} LHP={len(data['lhp'])} GY={len(data['gy'])} KQ={len(data['kq'])} ({time.time()-t1:.1f}s)")
+    print(f"  Prepare: LOP={len(data_lop)} SV={len(data_sv)} GV={len(data_gv)} LHP={len(data_lhp)} GY={len(data_gy)} KQ={len(data_kq)} ({time.time()-t1:.1f}s)")
     
-    # INSERT
+    # Upload từng bảng lên Azure Blob
     t1 = time.time()
-    conn = pyodbc.connect(CONN_STR, autocommit=True)
-    cur = conn.cursor()
-    cur.fast_executemany = True
-    
-    # Tắt constraint
-    for t in ['DIM_LOP_SINH_VIEN','DIM_SINH_VIEN','DIM_GIANG_VIEN','DIM_LOP_HOC_PHAN',
-               'FACT_GOP_Y_TU_LUAN','FACT_KET_QUA_DANH_GIA']:
-        try: cur.execute(f"ALTER TABLE {t} NOCHECK CONSTRAINT ALL")
-        except: pass
-    
-    cur.execute("IF NOT EXISTS(SELECT 1 FROM DIM_HOC_KY WHERE MaHocKy=?) INSERT INTO DIM_HOC_KY VALUES(?,?,?)",
-                (mhk, mhk, f"{nbd}-{nbd+1}", hk))
-    
-    # Insert từng bảng - mỗi bảng 1 câu SQL
-    inserts = [
-        ("DIM_LOP", "INSERT INTO DIM_LOP_SINH_VIEN(MaLop,Lop,MaChuyenNganh) VALUES(?,?,?)", data['lop']),
-        ("DIM_SV", "INSERT INTO DIM_SINH_VIEN(MaSV,HoDem,Ten,NgaySinh,MaLop) VALUES(?,?,?,?,?)", data['sv']),
-        ("DIM_GV", "INSERT INTO DIM_GIANG_VIEN(MaGV,HoDemGV,TenGV) VALUES(?,?,?)", data['gv']),
-        ("DIM_LHP", "INSERT INTO DIM_LOP_HOC_PHAN(MaLopHP,LopHP,MaHP,MaGV,MaHocKy) VALUES(?,?,?,?,?)", data['lhp']),
-        ("FACT_GY", "INSERT INTO FACT_GOP_Y_TU_LUAN(SubmissionID,MaSV,MaLopHP,NoiDungGopY,Sentiment,Is_Valid,Tag_HocPhan,Tag_DayHoc,Tag_KiemTra,Tag_Khac) VALUES(?,?,?,?,?,?,?,?,?,?)", data['gy']),
-        ("FACT_KQ", "INSERT INTO FACT_KET_QUA_DANH_GIA(SubmissionID,MaCauHoi,Diem) VALUES(?,?,?)", data['kq']),
+    tables = [
+        ("DIM_HOC_KY", f"{mhk}|{nbd}-{nbd+1}|{hk}", f"MaHocKy|NamHoc|HocKy\n{mhk}|{nbd}-{nbd+1}|{hk}", ["done"]),
+        ("DIM_LOP_SINH_VIEN", f"MaLop|Lop|MaChuyenNganh", f"MaLop|Lop|MaChuyenNganh", data_lop),
+        ("DIM_SINH_VIEN", f"MaSV|HoDem|Ten|NgaySinh|MaLop", f"MaSV|HoDem|Ten|NgaySinh|MaLop", data_sv),
+        ("DIM_GIANG_VIEN", f"MaGV|HoDemGV|TenGV", f"MaGV|HoDemGV|TenGV", data_gv),
+        ("DIM_LOP_HOC_PHAN", f"MaLopHP|LopHP|MaHP|MaGV|MaHocKy", f"MaLopHP|LopHP|MaHP|MaGV|MaHocKy", data_lhp),
+        ("FACT_GOP_Y_TU_LUAN", f"SubmissionID|MaSV|MaLopHP|NoiDungGopY|Sentiment|Is_Valid|Tag_HocPhan|Tag_DayHoc|Tag_KiemTra|Tag_Khac", f"SubmissionID|MaSV|MaLopHP|NoiDungGopY|Sentiment|Is_Valid|Tag_HocPhan|Tag_DayHoc|Tag_KiemTra|Tag_Khac", data_gy),
+        ("FACT_KET_QUA_DANH_GIA", f"SubmissionID|MaCauHoi|Diem", f"SubmissionID|MaCauHoi|Diem", data_kq),
     ]
     
-    for name, sql, d in inserts:
-        t2 = time.time()
-        n = fast_insert(cur, sql, d)
-        print(f"  {name}: {n:,} ({time.time()-t2:.1f}s)")
+    for name, header, full_header, data in tables:
+        if name == "DIM_HOC_KY":
+            container.get_blob_client(f"{PROCESSED_PATH}/{FILE_NAME}/{name}.csv").upload_blob(full_header, overwrite=True)
+        else:
+            size = upload_csv(container, f"{PROCESSED_PATH}/{FILE_NAME}/{name}.csv", header, data)
+            print(f"  ✅ {name}: {len(data):,} rows ({size:.1f}MB)")
     
-    # Bật constraint
-    for t in ['DIM_LOP_SINH_VIEN','DIM_SINH_VIEN','DIM_GIANG_VIEN','DIM_LOP_HOC_PHAN',
-               'FACT_GOP_Y_TU_LUAN','FACT_KET_QUA_DANH_GIA']:
-        try: cur.execute(f"ALTER TABLE {t} CHECK CONSTRAINT ALL")
-        except: pass
-    
-    conn.close()
-    print(f"  Insert total: {time.time()-t1:.1f}s")
-    print(f"\n🎉 Total: {time.time()-t0:.1f}s | {len(all_res):,} rows")
+    print(f"  Upload: {time.time()-t1:.1f}s")
+    print(f"\n🎉 Total: {time.time()-t0:.1f}s | {len(all_rows):,} rows")
+    print(f"\n👉 Chạy: python pipeline2b_load.py")
 
 if __name__ == "__main__":
     main()

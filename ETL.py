@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PIPELINE 2: INSTANT LOAD
-- 1 transaction, 1 commit
-- Không fallback từng dòng
-- Bỏ qua hết lỗi FK
+PIPELINE 2: INSTANT LOAD (KHÔNG INSERT DIM_HOC_PHAN)
+- DIM_HOC_PHAN, DIM_KHOA, DIM_NGANH, DIM_CHUYEN_NGANH đã có từ Pipeline 1
+- Chỉ INSERT: DIM_HOC_KY, DIM_LOP_SINH_VIEN, DIM_SINH_VIEN, DIM_GIANG_VIEN, DIM_LOP_HOC_PHAN
+- FACT_GOP_Y_TU_LUAN, FACT_KET_QUA_DANH_GIA
 """
 
 import os, sys, re, time, pandas as pd, pyodbc
@@ -34,7 +34,7 @@ NUM_WORKERS = cpu_count()
 CHUNK = 100000
 
 print("="*70)
-print("📊 PIPELINE 2: INSTANT")
+print("📊 PIPELINE 2: INSTANT (KHÔNG INSERT MASTER)")
 print(f"   Workers: {NUM_WORKERS}")
 print("="*70)
 
@@ -115,10 +115,8 @@ def load_all(df):
     nbd=2000+(yc-1); nkt=nbd+1
     mhk=f"HK{hk}_{nbd%100}{nkt%100}"; nh=f"{nbd}-{nkt}"
     
-    # Essay data
     de=df[(df['EssayText'].notna())&(df['EssayText']!='')].drop_duplicates('SubmissionID')
     
-    # Kết quả
     kq=[]
     for _,r in df[(df['CauHoi']!='')&(df['GiaTri']!='')].iterrows():
         try:
@@ -134,71 +132,70 @@ def load_all(df):
     cur.fast_executemany=True
     
     try:
-        # TẮT TẤT CẢ CONSTRAINT
-        for t in ['DIM_LOP_SINH_VIEN','DIM_SINH_VIEN','DIM_GIANG_VIEN','DIM_HOC_PHAN',
+        # TẮT CONSTRAINT (chỉ các bảng Pipeline 2 insert)
+        for t in ['DIM_LOP_SINH_VIEN','DIM_SINH_VIEN','DIM_GIANG_VIEN',
                    'DIM_LOP_HOC_PHAN','FACT_GOP_Y_TU_LUAN','FACT_KET_QUA_DANH_GIA']:
             try: cur.execute(f"ALTER TABLE {t} NOCHECK CONSTRAINT ALL")
             except: pass
         
-        # 1. DIM_HOC_KY
+        # 1. DIM_HOC_KY (1 dòng)
         cur.execute("IF NOT EXISTS(SELECT 1 FROM DIM_HOC_KY WHERE MaHocKy=?) INSERT INTO DIM_HOC_KY(MaHocKy,NamHoc,HocKy) VALUES(?,?,?)",(mhk,mhk,nh,hk))
+        print(f"  DIM_HOC_KY: done")
         
-        # 2. DIM_LOP_SINH_VIEN (từ LopHP)
+        # 2. DIM_LOP_SINH_VIEN (từ MaLopHP)
         lops=df[['MaLopHP']].drop_duplicates().fillna('')
         data=[(str(r['MaLopHP'])[:20],str(r['MaLopHP'])[:50],str(r['MaLopHP'])[:20]) 
               for _,r in lops.iterrows() if str(r['MaLopHP']).strip()]
         if data:
             cur.executemany("INSERT INTO DIM_LOP_SINH_VIEN(MaLop,Lop,MaChuyenNganh) VALUES(?,?,?)",data)
+        print(f"  DIM_LOP_SINH_VIEN: {len(data):,}")
         
-        # 3. DIM_SINH_VIEN
+        # 3. DIM_SINH_VIEN (chỉ MaSV)
         svs=df[['MaSV']].drop_duplicates().fillna('')
         data=[(str(r['MaSV'])[:20],'','',None,str(r['MaSV'])[:20]) 
               for _,r in svs.iterrows() if str(r['MaSV']).strip()]
         if data:
             cur.executemany("INSERT INTO DIM_SINH_VIEN(MaSV,HoDem,Ten,NgaySinh,MaLop) VALUES(?,?,?,?,?)",data)
+        print(f"  DIM_SINH_VIEN: {len(data):,}")
         
-        # 4. DIM_GIANG_VIEN
+        # 4. DIM_GIANG_VIEN (chỉ MaGV)
         gvs=df[['MaGV']].drop_duplicates().fillna('')
         data=[(str(r['MaGV'])[:20],'','') for _,r in gvs.iterrows() if str(r['MaGV']).strip()]
         if data:
             cur.executemany("INSERT INTO DIM_GIANG_VIEN(MaGV,HoDemGV,TenGV) VALUES(?,?,?)",data)
+        print(f"  DIM_GIANG_VIEN: {len(data):,}")
         
-        # 5. DIM_HOC_PHAN
-        hps=df[['MaHP']].drop_duplicates().fillna('')
-        data=[(str(r['MaHP'])[:20],str(r['MaHP'])[:200],'KHOA01') 
-              for _,r in hps.iterrows() if str(r['MaHP']).strip()]
-        if data:
-            cur.executemany("INSERT INTO DIM_HOC_PHAN(MaHP,TenHP,MaKhoa) VALUES(?,?,?)",data)
-        
-        # 6. DIM_LOP_HOC_PHAN
+        # 5. DIM_LOP_HOC_PHAN
         lhps=df[['MaLopHP','MaHP','MaGV']].drop_duplicates('MaLopHP').fillna('')
         data=[(str(r['MaLopHP'])[:50],str(r['MaLopHP'])[:100],str(r['MaHP'])[:20],str(r['MaGV'])[:20],mhk)
               for _,r in lhps.iterrows() if str(r['MaLopHP']).strip()]
         if data:
             cur.executemany("INSERT INTO DIM_LOP_HOC_PHAN(MaLopHP,LopHP,MaHP,MaGV,MaHocKy) VALUES(?,?,?,?,?)",data)
+        print(f"  DIM_LOP_HOC_PHAN: {len(data):,}")
         
-        # 7. FACT_GOP_Y
+        # 6. FACT_GOP_Y_TU_LUAN
         if not de.empty:
             data=[(str(r['SubmissionID'])[:150],str(r['MaSV'])[:20],str(r['MaLopHP'])[:50],
                    str(r['EssayText'])[:4000],str(r['Sentiment'])[:20],int(r['Is_Valid']),
                    int(r['Tag_HocPhan']),int(r['Tag_DayHoc']),int(r['Tag_KiemTra']),int(r['Tag_Khac']))
                   for _,r in de.iterrows()]
             cur.executemany("INSERT INTO FACT_GOP_Y_TU_LUAN(SubmissionID,MaSV,MaLopHP,NoiDungGopY,Sentiment,Is_Valid,Tag_HocPhan,Tag_DayHoc,Tag_KiemTra,Tag_Khac) VALUES(?,?,?,?,?,?,?,?,?,?)",data)
+        print(f"  FACT_GOP_Y: {len(data):,}")
         
-        # 8. FACT_KET_QUA
+        # 7. FACT_KET_QUA_DANH_GIA
         if kq:
             cur.executemany("INSERT INTO FACT_KET_QUA_DANH_GIA(SubmissionID,MaCauHoi,Diem) VALUES(?,?,?)",kq)
+        print(f"  FACT_KET_QUA: {len(kq):,}")
         
-        # ✅ COMMIT 1 LẦN DUY NHẤT
+        # ✅ COMMIT 1 LẦN
         conn.commit()
-        print(f"  ✅ Loaded: {len(de):,} essays, {len(kq):,} answers")
+        print(f"  ✅ COMMIT thành công!")
         
     except Exception as e:
         conn.rollback()
         print(f"  ❌ Error: {e}")
     finally:
-        # Bật lại constraint
-        for t in ['DIM_LOP_SINH_VIEN','DIM_SINH_VIEN','DIM_GIANG_VIEN','DIM_HOC_PHAN',
+        for t in ['DIM_LOP_SINH_VIEN','DIM_SINH_VIEN','DIM_GIANG_VIEN',
                    'DIM_LOP_HOC_PHAN','FACT_GOP_Y_TU_LUAN','FACT_KET_QUA_DANH_GIA']:
             try: cur.execute(f"ALTER TABLE {t} CHECK CONSTRAINT ALL"); conn.commit()
             except: pass

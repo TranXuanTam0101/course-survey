@@ -37,7 +37,7 @@ CONN_STR = (
 
 CONTAINER_NAME = SEMESTER
 PROCESSED_PATH = "processed-data"
-
+PREPROCESSED_PATH = "preprocessed-data" 
 # Batch size cho insert
 BATCH_SIZE = 50000
 MAX_WORKERS = 4

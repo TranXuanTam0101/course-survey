@@ -6,6 +6,8 @@ import pyodbc
 import pandas as pd
 from datetime import datetime
 from azure.storage.blob import BlobServiceClient
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -37,9 +39,10 @@ CONN_STR = (
 CONTAINER_NAME = SEMESTER
 PREPROCESSED_PATH = "preprocessed-data"
 
-# Batch size tối ưu
-BATCH_SIZE_DIM = 100000
-BATCH_SIZE_FACT = 500000
+# Batch size tối ưu - GIẢM XUỐNG ĐỂ TRÁNH TIMEOUT
+BATCH_SIZE_DIM = 50000
+BATCH_SIZE_FACT = 100000  # Giảm từ 500k xuống 100k
+PARALLEL_WORKERS = 4      # Số luồng parallel
 
 
 # ================= BLOB FUNCTIONS =================
@@ -56,6 +59,46 @@ def download_preprocessed_data(blob_service, filename):
     except Exception as e:
         print(f"  ❌ Lỗi tải pickle: {e}")
         return None
+
+
+# ================= PARALLEL INSERT FUNCTION =================
+def parallel_insert(cursor, sql, data, batch_size, thread_id):
+    """Insert dữ liệu với cursor riêng cho mỗi thread"""
+    total = 0
+    for i in range(0, len(data), batch_size):
+        batch = data[i:i+batch_size]
+        try:
+            cursor.fast_executemany = True
+            cursor.executemany(sql, batch)
+            cursor.connection.commit()
+            total += len(batch)
+            # In log mỗi 10 batch
+            if (i // batch_size + 1) % 10 == 0:
+                print(f"      Thread-{thread_id} Batch {i//batch_size + 1}: {len(batch):,} rows (total: {total:,})")
+        except Exception as e:
+            print(f"      Thread-{thread_id} Batch error: {e}")
+            cursor.connection.rollback()
+    return total
+
+
+def parallel_insert_table(data, columns, table_name, thread_id):
+    """Tạo connection riêng cho mỗi thread và insert"""
+    try:
+        conn = pyodbc.connect(CONN_STR, autocommit=False)
+        cursor = conn.cursor()
+        cursor.fast_executemany = True
+        
+        placeholders = ', '.join(['?' for _ in columns])
+        sql = f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({placeholders})"
+        
+        total = parallel_insert(cursor, sql, data, BATCH_SIZE_FACT, thread_id)
+        
+        cursor.close()
+        conn.close()
+        return total
+    except Exception as e:
+        print(f"      Thread-{thread_id} failed: {e}")
+        return 0
 
 
 # ================= INSERT DIMENSION TABLES =================
@@ -275,10 +318,10 @@ def insert_dimension_tables(cursor, dims):
     return results
 
 
-# ================= INSERT FACT TABLES - TỐI ƯU CAO =================
-def insert_fact_tables_optimized(cursor, conn, fact_main, fact_ketqua):
-    """Insert FACT tables - TỐI ƯU TỐC ĐỘ"""
-    print("\n  🚀 OPTIMIZED FACT INSERT")
+# ================= INSERT FACT TABLES - PARALLEL =================
+def insert_fact_tables_parallel(cursor, conn, fact_main, fact_ketqua):
+    """Insert FACT tables với parallel processing"""
+    print("\n  🚀 PARALLEL FACT INSERT")
     start = time.time()
     results = {}
     
@@ -287,7 +330,7 @@ def insert_fact_tables_optimized(cursor, conn, fact_main, fact_ketqua):
         return results
     
     # === BƯỚC 1: TẮT CONSTRAINTS VÀ TRIGGERS ===
-    print("\n  ⚡ Disabling constraints, triggers, and indexes...")
+    print("\n  ⚡ Disabling constraints, triggers...")
     try:
         cursor.execute("ALTER TABLE FACT_GOP_Y_TU_LUAN NOCHECK CONSTRAINT ALL")
         cursor.execute("ALTER TABLE FACT_KET_QUA_DANH_GIA NOCHECK CONSTRAINT ALL")
@@ -299,6 +342,7 @@ def insert_fact_tables_optimized(cursor, conn, fact_main, fact_ketqua):
         print(f"  ⚠️ Could not disable: {e}")
     
     # === BƯỚC 2: DROP NON-CLUSTERED INDEXES ===
+    print("\n  🗑️ Dropping non-clustered indexes...")
     for table in ['FACT_GOP_Y_TU_LUAN', 'FACT_KET_QUA_DANH_GIA']:
         try:
             cursor.execute(f"""
@@ -307,52 +351,65 @@ def insert_fact_tables_optimized(cursor, conn, fact_main, fact_ketqua):
                 AND index_id > 1
                 AND is_primary_key = 0
                 AND is_unique_constraint = 0
+                AND name NOT LIKE 'PK%'
+                AND name NOT LIKE 'UQ%'
             """)
             indexes = cursor.fetchall()
             for idx in indexes:
                 try:
                     cursor.execute(f"DROP INDEX {idx[0]} ON {table}")
-                    print(f"      Dropped index: {idx[0]}")
+                    print(f"      Dropped: {idx[0]}")
                 except:
                     pass
             conn.commit()
         except Exception as e:
             print(f"      Error on {table}: {e}")
     
-    # === BƯỚC 3: INSERT BẢNG KET_QUA (NHANH HƠN) ===
-    print("\n  📥 Inserting FACT_KET_QUA_DANH_GIA...")
+    # === BƯỚC 3: PARALLEL INSERT FACT_KET_QUA ===
+    print("\n  📥 Inserting FACT_KET_QUA_DANH_GIA (parallel)...")
     if fact_ketqua is not None and not fact_ketqua.empty:
-        # Chuyển sang list of tuples 1 lần
         data = fact_ketqua[['SubmissionID', 'MaCauHoi', 'Diem']].values.tolist()
-        print(f"      Inserting {len(data):,} rows...")
+        print(f"      Total rows: {len(data):,}")
         
-        sql = "INSERT INTO FACT_KET_QUA_DANH_GIA (SubmissionID, MaCauHoi, Diem) VALUES (?, ?, ?)"
+        # Chia data thành các phần cho parallel insert
+        chunk_size = len(data) // PARALLEL_WORKERS
+        chunks = []
+        for i in range(PARALLEL_WORKERS):
+            start_idx = i * chunk_size
+            end_idx = start_idx + chunk_size if i < PARALLEL_WORKERS - 1 else len(data)
+            chunks.append(data[start_idx:end_idx])
         
-        total = 0
-        for i in range(0, len(data), BATCH_SIZE_FACT):
-            batch = data[i:i+BATCH_SIZE_FACT]
-            cursor.fast_executemany = True
-            cursor.executemany(sql, batch)
-            total += len(batch)
-            conn.commit()
-            print(f"      Batch {i//BATCH_SIZE_FACT + 1}: {len(batch):,} rows (total: {total:,})")
+        columns = ['SubmissionID', 'MaCauHoi', 'Diem']
+        
+        with ThreadPoolExecutor(max_workers=PARALLEL_WORKERS) as executor:
+            futures = []
+            for i, chunk in enumerate(chunks):
+                if chunk:
+                    future = executor.submit(parallel_insert_table, chunk, columns, 'FACT_KET_QUA_DANH_GIA', i+1)
+                    futures.append(future)
+            
+            total = 0
+            for future in as_completed(futures):
+                total += future.result()
         
         results['FACT_KET_QUA_DANH_GIA'] = total
-        print(f"  ✅ Inserted {total:,} rows in {time.time()-start:.1f}s")
+        print(f"  ✅ Inserted {total:,} rows in {time.time()-start:.1f}s (parallel)")
     
-    # === BƯỚC 4: INSERT BẢNG GOP_Y ===
+    # === BƯỚC 4: INSERT FACT_GOP_Y ===
     print("\n  📥 Inserting FACT_GOP_Y_TU_LUAN...")
     if fact_main is not None and not fact_main.empty:
-        # Chuyển sang list of tuples 1 lần
         data = fact_main[['SubmissionID', 'MaSV', 'LopHP', 'NoiDungGopY',
                           'Sentiment', 'Is_Valid', 'Tag_HocPhan', 
                           'Tag_DayHoc', 'Tag_KiemTra', 'Tag_Khac']].values.tolist()
         print(f"      Inserting {len(data):,} rows...")
         
-        sql = """INSERT INTO FACT_GOP_Y_TU_LUAN 
-                 (SubmissionID, MaSV, MaLopHP, NoiDungGopY, Sentiment, 
-                  Is_Valid, Tag_HocPhan, Tag_DayHoc, Tag_KiemTra, Tag_Khac) 
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+        columns = ['SubmissionID', 'MaSV', 'LopHP', 'NoiDungGopY',
+                   'Sentiment', 'Is_Valid', 'Tag_HocPhan', 
+                   'Tag_DayHoc', 'Tag_KiemTra', 'Tag_Khac']
+        
+        placeholders = ', '.join(['?' for _ in columns])
+        sql = f"""INSERT INTO FACT_GOP_Y_TU_LUAN 
+                 ({', '.join(columns)}) VALUES ({placeholders})"""
         
         total = 0
         for i in range(0, len(data), BATCH_SIZE_FACT):
@@ -364,7 +421,7 @@ def insert_fact_tables_optimized(cursor, conn, fact_main, fact_ketqua):
             print(f"      Batch {i//BATCH_SIZE_FACT + 1}: {len(batch):,} rows (total: {total:,})")
         
         results['FACT_GOP_Y_TU_LUAN'] = total
-        print(f"  ✅ Inserted {total:,} rows in {time.time()-start:.1f}s")
+        print(f"  ✅ Inserted {total:,} rows")
     
     # === BƯỚC 5: REBUILD INDEXES ===
     print("\n  🔨 Rebuilding indexes...")
@@ -425,15 +482,17 @@ def verify_data(cursor):
 def main():
     total_start = time.time()
     print("=" * 80)
-    print("🚀 JOB 2: CHÈN DỮ LIỆU (TỐI ƯU TỐC ĐỘ)")
+    print("🚀 JOB 2: CHÈN DỮ LIỆU (PARALLEL - TỐI ƯU TỐC ĐỘ)")
     print("=" * 80)
     print(f"📂 Survey: {SURVEY_FILE}")
     print(f"📁 Semester: {SEMESTER}")
+    print(f"⚙️ Parallel workers: {PARALLEL_WORKERS}")
+    print(f"⚙️ FACT Batch size: {BATCH_SIZE_FACT:,} rows/batch")
     print("=" * 80)
-    print("\n📌 OPTIMIZED STRATEGY:")
+    print("\n📌 PARALLEL STRATEGY:")
     print("   1️⃣ Disable constraints & triggers")
     print("   2️⃣ Drop non-clustered indexes")
-    print("   3️⃣ Batch insert 500k rows/batch")
+    print("   3️⃣ PARALLEL INSERT with 4 connections")
     print("   4️⃣ Rebuild indexes after insert")
     print("   5️⃣ Enable constraints & update statistics")
     print("=" * 80)
@@ -489,8 +548,8 @@ def main():
         # Insert DIMENSION tables
         dim_results = insert_dimension_tables(cursor, dims)
         
-        # Insert FACT tables
-        fact_results = insert_fact_tables_optimized(cursor, conn, fact_main, fact_ketqua)
+        # Insert FACT tables (parallel)
+        fact_results = insert_fact_tables_parallel(cursor, conn, fact_main, fact_ketqua)
         
         # Kiểm tra kết quả
         verify_data(cursor)

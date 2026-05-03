@@ -59,34 +59,26 @@ def derive_ma_hoc_ky():
 
 
 def normalize_khoa_name(ten_khoa: str) -> str:
-    """CHUẨN HÓA TÊN KHOA - TRÁNH LẶP TÊN VỚI NHIỀU MÃ"""
     ten_lower = ten_khoa.lower().strip()
     
-    # Xử lý các trường hợp đặc biệt
     if 'cts' in ten_lower:
         return "Trường ĐH Kinh tế"
     if 'qt' in ten_lower:
         return "Phòng Đào Tạo"
     
-    # Xử lý logic cũ
     special_keywords = ['ngữ văn', 'truyền thông', 'toán', 'tin']
     for keyword in special_keywords:
         if keyword in ten_lower:
             return "Trường ĐHSP"
     
-    # Chuẩn hóa tên (loại bỏ các ký tự đặc biệt, chuẩn hóa khoảng trắng)
     ten_chuan = re.sub(r'\s+', ' ', ten_khoa).strip()
-    
     return ten_chuan
 
 
 def create_ma_khoa_unique(ten_khoa: str, khoa_mapping: dict) -> str:
-    """Tạo mã khoa DUY NHẤT dựa trên tên đã chuẩn hóa"""
     ten_chuan = normalize_khoa_name(ten_khoa)
-    
     if ten_chuan in khoa_mapping:
         return khoa_mapping[ten_chuan]
-    
     new_number = len(khoa_mapping) + 1
     new_ma = f"KHOA{new_number:03d}"
     khoa_mapping[ten_chuan] = new_ma
@@ -94,12 +86,9 @@ def create_ma_khoa_unique(ten_khoa: str, khoa_mapping: dict) -> str:
 
 
 def create_ma_nganh_unique(ten_nganh: str, nganh_mapping: dict) -> str:
-    """Tạo mã ngành DUY NHẤT"""
     ten_chuan = ten_nganh.strip()
-    
     if ten_chuan in nganh_mapping:
         return nganh_mapping[ten_chuan]
-    
     new_number = len(nganh_mapping) + 1
     new_ma = f"NGANH{new_number:03d}"
     nganh_mapping[ten_chuan] = new_ma
@@ -107,27 +96,20 @@ def create_ma_nganh_unique(ten_nganh: str, nganh_mapping: dict) -> str:
 
 
 def get_khoa_from_lop(lop: str) -> str:
-    """Xác định tên khoa từ tên lớp"""
     if not isinstance(lop, str):
         return None
-    
     lop_upper = lop.upper().strip()
-    
     if 'CTS' in lop_upper:
         return "Trường ĐH Kinh tế"
     if 'QT' in lop_upper:
         return "Phòng Đào Tạo"
-    
     return None
 
 
 def get_ma_chuyen_nganh_from_lop(lop: str) -> str:
-    """Xác định mã chuyên ngành từ tên lớp"""
     if not isinstance(lop, str):
         return None
-    
     lop_upper = lop.upper().strip()
-    
     if 'CTS' in lop_upper:
         return "NULL_CTS"
     if 'QT' in lop_upper:
@@ -136,11 +118,9 @@ def get_ma_chuyen_nganh_from_lop(lop: str) -> str:
         match = re.search(r'K(\d{2})', lop_upper)
         if match:
             return f"K{match.group(1)}-ACCA"
-    
     match = re.search(r'K(\d{2})', lop_upper)
     if match:
         return f"K{match.group(1)}"
-    
     return None
 
 
@@ -148,17 +128,13 @@ def get_ma_chuyen_nganh_from_lop(lop: str) -> str:
 def analyze_sentiment_fast(text: str) -> str:
     if not isinstance(text, str) or len(text) < 3:
         return 'neutral'
-    
     text_lower = text.lower()
-    
     if 'tuyệt vời' in text_lower or 'xuất sắc' in text_lower or 'hoàn hảo' in text_lower:
         return 'positive'
     if 'tệ hại' in text_lower or 'tồi tệ' in text_lower or 'thất vọng' in text_lower:
         return 'negative'
-    
     pos_count = sum(1 for w in POSITIVE_WORDS if w in text_lower)
     neg_count = sum(1 for w in NEGATIVE_WORDS if w in text_lower)
-    
     return 'positive' if pos_count > neg_count else ('negative' if neg_count > pos_count else 'neutral')
 
 
@@ -175,7 +151,6 @@ def extract_tags_fast(text: str) -> tuple:
 def process_nlp_batch(df):
     if df.empty:
         return df
-    
     texts = df['NoiDungGopY'].fillna('').astype(str).values
     df['Sentiment'] = [analyze_sentiment_fast(t) for t in texts]
     tags = [extract_tags_fast(t) for t in texts]
@@ -201,7 +176,6 @@ def download_blob(blob_service, container, path):
 
 
 def save_preprocessed_data(blob_service, data_dict, filename):
-    """Lưu dữ liệu đã xử lý dạng pickle"""
     path = f"{PREPROCESSED_PATH}/{filename}.pkl"
     try:
         pickled_data = pickle.dumps(data_dict, protocol=pickle.HIGHEST_PROTOCOL)
@@ -212,21 +186,6 @@ def save_preprocessed_data(blob_service, data_dict, filename):
         return True
     except Exception as e:
         print(f"  ❌ Lỗi: {e}")
-        return False
-
-
-def save_fact_table_separate(blob_service, df, filename, suffix):
-    """Lưu riêng từng bảng FACT dạng CSV để JOB 2 insert nhanh"""
-    path = f"{PREPROCESSED_PATH}/{filename}_{suffix}.csv"
-    try:
-        csv_data = df.to_csv(index=False, encoding='utf-8-sig')
-        container = blob_service.get_container_client(CONTAINER_NAME)
-        blob = container.get_blob_client(path)
-        blob.upload_blob(csv_data, overwrite=True)
-        print(f"  ✅ Đã lưu FACT {suffix}: {path}")
-        return True
-    except Exception as e:
-        print(f"  ❌ Lỗi lưu FACT {suffix}: {e}")
         return False
 
 
@@ -365,17 +324,15 @@ def create_dimensions(df_raw, hp_master, chuyennganh_master):
     
     ma_hoc_ky, nam_hoc, hoc_ky = derive_ma_hoc_ky()
     
-    # Sử dụng mapping để đảm bảo 1 tên khoa chỉ có 1 mã
-    khoa_mapping = {}   # ten_khoa_chuan -> ma_khoa
-    nganh_mapping = {}  # ten_nganh -> ma_nganh
+    khoa_mapping = {}
+    nganh_mapping = {}
     
-    # ================= 1. DIM_KHOA - MỖI TÊN KHOA CHỈ 1 MÃ =================
+    # 1. DIM_KHOA
     khoa_dict = {}
     all_ten_khoa_raw = set()
     
     if not hp_master.empty:
         all_ten_khoa_raw.update(hp_master['TenKhoa'].drop_duplicates().values)
-    
     if not chuyennganh_master.empty:
         all_ten_khoa_raw.update(chuyennganh_master['TenKhoa'].drop_duplicates().values)
     
@@ -384,25 +341,22 @@ def create_dimensions(df_raw, hp_master, chuyennganh_master):
         if khoa_from_lop:
             all_ten_khoa_raw.add(khoa_from_lop)
     
-    # Tạo mã cho từng tên khoa đã chuẩn hóa
     for ten_khoa_raw in sorted(all_ten_khoa_raw):
         ma_khoa = create_ma_khoa_unique(ten_khoa_raw, khoa_mapping)
         ten_chuan = normalize_khoa_name(ten_khoa_raw)
         if ma_khoa not in khoa_dict:
             khoa_dict[ma_khoa] = ten_chuan
     
-    # Đảm bảo có khoa mặc định
     if normalize_khoa_name("Trường ĐH Kinh tế") not in khoa_mapping:
         ma = create_ma_khoa_unique("Trường ĐH Kinh tế", khoa_mapping)
         khoa_dict[ma] = "Trường ĐH Kinh tế"
-    
     if normalize_khoa_name("Phòng Đào Tạo") not in khoa_mapping:
         ma = create_ma_khoa_unique("Phòng Đào Tạo", khoa_mapping)
         khoa_dict[ma] = "Phòng Đào Tạo"
     
     dim_khoa = pd.DataFrame([(k, v) for k, v in khoa_dict.items()], columns=['MaKhoa', 'TenKhoa'])
     
-    # ================= 2. DIM_NGANH =================
+    # 2. DIM_NGANH
     nganh_dict = {}
     all_ten_nganh = set()
     nganh_khoa_mapping = {}
@@ -416,7 +370,6 @@ def create_dimensions(df_raw, hp_master, chuyennganh_master):
             if ten_nganh not in nganh_khoa_mapping:
                 nganh_khoa_mapping[ten_nganh] = ten_khoa_chuan
     
-    # Thêm ngành mặc định
     all_ten_nganh.add("Ngành NULL_CTS")
     all_ten_nganh.add("Ngành NULL_QT")
     nganh_khoa_mapping["Ngành NULL_CTS"] = "Trường ĐH Kinh tế"
@@ -432,7 +385,7 @@ def create_dimensions(df_raw, hp_master, chuyennganh_master):
     dim_nganh = pd.DataFrame([(ma, ten, khoa) for ma, (ten, khoa) in nganh_dict.items()], 
                              columns=['MaNganh', 'TenNganh', 'MaKhoa'])
     
-    # ================= 3. DIM_CHUYEN_NGANH =================
+    # 3. DIM_CHUYEN_NGANH
     dim_chuyen_nganh_list = []
     
     if not chuyennganh_master.empty:
@@ -450,7 +403,7 @@ def create_dimensions(df_raw, hp_master, chuyennganh_master):
     dim_chuyen_nganh = pd.DataFrame(dim_chuyen_nganh_list, 
                                      columns=['MaChuyenNganh', 'TenChuyenNganh', 'MaNganh']).drop_duplicates('MaChuyenNganh')
     
-    # ================= 4. DIM_HOC_PHAN =================
+    # 4. DIM_HOC_PHAN
     hp_dict = {}
     if not hp_master.empty:
         for _, row in hp_master.drop_duplicates('MaHP').iterrows():
@@ -470,13 +423,13 @@ def create_dimensions(df_raw, hp_master, chuyennganh_master):
     
     dim_hoc_phan = pd.DataFrame(hp_list, columns=['MaHP', 'TenHP', 'MaKhoa'])
     
-    # ================= 5. DIM_GIANG_VIEN =================
+    # 5. DIM_GIANG_VIEN
     dim_giang_vien = df_raw[['MaGV', 'HoDemGV', 'TenGV']].drop_duplicates('MaGV').dropna(subset=['MaGV'])
     
-    # ================= 6. DIM_HOC_KY =================
+    # 6. DIM_HOC_KY
     dim_hoc_ky = pd.DataFrame([(ma_hoc_ky, nam_hoc, hoc_ky)], columns=['MaHocKy', 'NamHoc', 'HocKy'])
     
-    # ================= 7. DIM_LOP_SINH_VIEN =================
+    # 7. DIM_LOP_SINH_VIEN
     valid_cn = set(dim_chuyen_nganh['MaChuyenNganh'].values)
     lop_list = []
     for lop in df_raw['Lop'].drop_duplicates().dropna().values:
@@ -486,7 +439,7 @@ def create_dimensions(df_raw, hp_master, chuyennganh_master):
     
     dim_lop_sinh_vien = pd.DataFrame(lop_list, columns=['MaLop', 'Lop', 'MaChuyenNganh'])
     
-    # ================= 8. DIM_SINH_VIEN =================
+    # 8. DIM_SINH_VIEN
     valid_lop = set(dim_lop_sinh_vien['MaLop'].values)
     sv_list = []
     for ma_sv, ho_dem, ten, ngay_sinh, lop in df_raw[['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'Lop']].drop_duplicates('MaSV').dropna(subset=['MaSV']).values:
@@ -499,7 +452,7 @@ def create_dimensions(df_raw, hp_master, chuyennganh_master):
     
     dim_sinh_vien = pd.DataFrame(sv_list, columns=['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop'])
     
-    # ================= 9. DIM_LOP_HOC_PHAN =================
+    # 9. DIM_LOP_HOC_PHAN
     valid_hp = set(dim_hoc_phan['MaHP'].values)
     valid_gv = set(dim_giang_vien['MaGV'].values)
     lhp_list = []
@@ -510,11 +463,6 @@ def create_dimensions(df_raw, hp_master, chuyennganh_master):
     dim_lop_hoc_phan = pd.DataFrame(lhp_list, columns=['MaLopHP', 'LopHP', 'MaHP', 'MaGV', 'MaHocKy'])
     
     print(f"  ✅ Tạo dimensions xong ({time.time()-start:.2f}s)")
-    
-    print(f"\n  📊 Thống kê:")
-    print(f"     - DIM_KHOA: {len(dim_khoa)} rows (mỗi tên khoa 1 mã)")
-    print(f"     - DIM_NGANH: {len(dim_nganh)} rows")
-    print(f"     - DIM_CHUYEN_NGANH: {len(dim_chuyen_nganh)} rows")
     
     return {
         'dim_khoa': dim_khoa,
@@ -591,17 +539,11 @@ def transform_data(df_raw: pd.DataFrame) -> tuple:
 def main():
     total_start = time.time()
     print("=" * 70)
-    print("🚀 JOB 1: TIỀN XỬ LÝ")
+    print("🚀 JOB 1: TIỀN XỬ LÝ (CHỈ 1 FILE PICKLE DUY NHẤT)")
     print("=" * 70)
     print(f"📂 File: {SURVEY_FILE}")
     print(f"📁 Semester: {SEMESTER}")
     print(f"⚙️ Workers: {NUM_WORKERS}")
-    print("=" * 70)
-    print("\n📌 XỬ LÝ:")
-    print("   - DIM_KHOA: Mỗi tên khoa chỉ 1 mã (tránh lặp)")
-    print("   - Lớp 'CTS' → Trường ĐH Kinh tế")
-    print("   - Lớp 'QT' → Phòng Đào Tạo")
-    print("   - Tạo file riêng cho 2 bảng FACT để JOB 2 insert nhanh")
     print("=" * 70)
     
     # 1. Kết nối Azure
@@ -646,25 +588,22 @@ def main():
     fact_main, fact_ketqua = transform_data(df_raw)
     transform_time = time.time() - transform_start
     
-    # 7. Lưu preprocessed data (pickle - đầy đủ)
-    print("\n💾 7. Lưu preprocessed data (pickle)...")
+    # 7. Lưu preprocessed data (CHỈ 1 FILE PICKLE DUY NHẤT)
+    print("\n💾 7. Lưu preprocessed data (1 file pickle)...")
     preprocessed_data = {
-        'metadata': {'semester': SEMESTER, 'survey_file': SURVEY_FILE, 
-                     'timestamp': datetime.now().isoformat(), 'ma_hoc_ky': dims['ma_hoc_ky']},
+        'metadata': {
+            'semester': SEMESTER, 
+            'survey_file': SURVEY_FILE, 
+            'timestamp': datetime.now().isoformat(), 
+            'ma_hoc_ky': dims['ma_hoc_ky']
+        },
         **dims,
         'fact_gop_y_tu_luan': fact_main,
         'fact_ket_qua_danh_gia': fact_ketqua
     }
     save_preprocessed_data(blob_service, preprocessed_data, f"{FILE_NAME}_preprocessed")
     
-    # 8. Lưu riêng 2 bảng FACT dạng CSV (để JOB 2 insert nhanh)
-    print("\n💾 8. Lưu riêng 2 bảng FACT (CSV)...")
-    if not fact_main.empty:
-        save_fact_table_separate(blob_service, fact_main, FILE_NAME, "fact_tuluan")
-    if not fact_ketqua.empty:
-        save_fact_table_separate(blob_service, fact_ketqua, FILE_NAME, "fact_tracnghiem")
-    
-    # 9. Thống kê
+    # 8. Thống kê
     total_time = time.time() - total_start
     print("\n" + "=" * 70)
     print("📊 KẾT QUẢ:")
@@ -679,16 +618,20 @@ def main():
             print(f"      - {sent}: {cnt:,} ({cnt/len(fact_main)*100:.1f}%)")
     
     print(f"\n   📌 Dimensions created:")
-    print(f"      - DIM_KHOA: {len(dims['dim_khoa'])} rows (mỗi tên khoa 1 mã)")
+    print(f"      - DIM_KHOA: {len(dims['dim_khoa'])} rows")
     print(f"      - DIM_NGANH: {len(dims['dim_nganh'])} rows")
     print(f"      - DIM_CHUYEN_NGANH: {len(dims['dim_chuyen_nganh'])} rows")
+    print(f"      - DIM_HOC_PHAN: {len(dims['dim_hoc_phan'])} rows")
+    print(f"      - DIM_GIANG_VIEN: {len(dims['dim_giang_vien'])} rows")
+    print(f"      - DIM_LOP_SINH_VIEN: {len(dims['dim_lop_sinh_vien'])} rows")
+    print(f"      - DIM_SINH_VIEN: {len(dims['dim_sinh_vien'])} rows")
+    print(f"      - DIM_LOP_HOC_PHAN: {len(dims['dim_lop_hoc_phan'])} rows")
     
     print(f"\n⏱️ Tổng thời gian: {total_time:.1f}s")
     print(f"🚀 Tốc độ: {len(df_raw)/total_time:,.0f} rows/s")
     print("=" * 70)
     print("✅ DỮ LIỆU ĐÃ SẴN SÀNG CHO JOB 2!")
-    print("   - File pickle: chứa đầy đủ dimensions + facts")
-    print("   - File CSV riêng: fact_tuluan.csv và fact_tracnghiem.csv")
+    print("   📦 File pickle: khaosat_252_preprocessed.pkl")
     print("=" * 70)
 
 

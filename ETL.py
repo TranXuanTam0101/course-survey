@@ -45,18 +45,6 @@ NUM_WORKERS = max(2, mp.cpu_count())
 CHUNK_SIZE = 50000
 BATCH_SIZE = 100000
 
-# ================= MAPPING MÃ KHOA =================
-# Theo dữ liệu thực tế trong database
-MA_KHOA_MAPPING = {
-    'CTS': 'KHOA19',      # Trường Đại học Kinh Tế
-    'QT': 'KHOA11'        # Phòng Đào Tạo
-}
-
-TEN_KHOA_MAPPING = {
-    'KHOA19': 'Trường Đại học Kinh Tế',
-    'KHOA11': 'Phòng Đào Tạo'
-}
-
 # ================= PATTERNS =================
 _date_pattern = re.compile(r'^\d{2}/\d{2}/\d{4}$')
 _ma_gv_pattern = re.compile(r'^(\d{7}|TG\d{5}|gvDacThu_TKTH)$')
@@ -87,7 +75,7 @@ def is_special_lop(lop: str) -> tuple:
     
     # TH1: Lop có chứa CTS -> gán cho Trường ĐH Kinh Tế (KHOA19)
     if 'CTS' in lop_upper:
-        # Lấy phần số nếu có (CTS-50K -> 50, CTS50K -> 50)
+        # Lấy phần số nếu có (CTS-50K -> 50)
         match = re.search(r'CTS[-_]?(\d{2})K', lop_upper)
         if match:
             so_k = match.group(1)
@@ -101,11 +89,11 @@ def is_special_lop(lop: str) -> tuple:
             ten_nganh = "Ngành CTS"
             ma_nganh = "CTS"
         
-        return (True, 'CTS', MA_KHOA_MAPPING['CTS'], ten_chuyen_nganh, ma_chuyen_nganh, ten_nganh, ma_nganh)
+        return (True, 'CTS', 'KHOA19', ten_chuyen_nganh, ma_chuyen_nganh, ten_nganh, ma_nganh)
     
     # TH2: Lop có chứa QT -> gán cho Phòng Đào Tạo (KHOA11)
     if 'QT' in lop_upper:
-        # Lấy phần số nếu có (49KQT -> 49, 50KQT -> 50)
+        # Lấy phần số nếu có (49KQT -> 49)
         match = re.search(r'(\d{2})KQT', lop_upper)
         if match:
             so_k = match.group(1)
@@ -119,7 +107,7 @@ def is_special_lop(lop: str) -> tuple:
             ten_nganh = "Ngành QT"
             ma_nganh = "QT"
         
-        return (True, 'QT', MA_KHOA_MAPPING['QT'], ten_chuyen_nganh, ma_chuyen_nganh, ten_nganh, ma_nganh)
+        return (True, 'QT', 'KHOA11', ten_chuyen_nganh, ma_chuyen_nganh, ten_nganh, ma_nganh)
     
     return (False, None, None, None, None, None, None)
 
@@ -160,7 +148,7 @@ def load_all_existing_data(cursor):
     # DIM_KHOA
     cursor.execute("SELECT MaKhoa, TenKhoa FROM DIM_KHOA")
     existing_khoa = {row[0]: row[1] for row in cursor.fetchall()}
-    print(f"     - DIM_KHOA: {list(existing_khoa.keys())}")
+    print(f"     - DIM_KHOA: {existing_khoa}")
     
     # DIM_NGANH
     cursor.execute("SELECT MaNganh FROM DIM_NGANH")
@@ -217,9 +205,9 @@ def get_or_create_special_dim(cursor, existing_data, lop, loai, ma_khoa,
     Lấy hoặc tạo mới DIM_NGANH và DIM_CHUYEN_NGANH cho lớp đặc biệt
     Returns: ma_chuyen_nganh (đã tồn tại hoặc vừa tạo)
     """
-    # Kiểm tra MaKhoa có tồn tại trong DIM_KHOA không
+    # Kiểm tra ma_khoa có tồn tại trong DIM_KHOA không
     if ma_khoa not in existing_data['khoa']:
-        print(f"        ❌ LỖI: MaKhoa={ma_khoa} không tồn tại trong DIM_KHOA!")
+        print(f"        ❌ LỖI: MaKhoa '{ma_khoa}' không tồn tại trong DIM_KHOA!")
         print(f"        Các MaKhoa hiện có: {list(existing_data['khoa'].keys())}")
         return None
     
@@ -229,9 +217,9 @@ def get_or_create_special_dim(cursor, existing_data, lop, loai, ma_khoa,
             cursor.execute("INSERT INTO DIM_NGANH (MaNganh, TenNganh, MaKhoa) VALUES (?, ?, ?)", 
                           ma_nganh, ten_nganh, ma_khoa)
             existing_data['nganh'].add(ma_nganh)
-            print(f"        ✅ Đã tạo Ngành mới: {ma_nganh} - {ten_nganh} (thuộc {ma_khoa} - {TEN_KHOA_MAPPING.get(ma_khoa, ma_khoa)})")
+            print(f"        ✅ Đã tạo Ngành mới: {ma_nganh} - {ten_nganh} (thuộc {ma_khoa})")
         except Exception as e:
-            print(f"        ❌ Lỗi khi tạo Ngành: {e}")
+            print(f"        ❌ Lỗi tạo Ngành: {e}")
             return None
     
     # Tạo DIM_CHUYEN_NGANH nếu chưa có
@@ -242,7 +230,7 @@ def get_or_create_special_dim(cursor, existing_data, lop, loai, ma_khoa,
             existing_data['chuyennganh'].add(ma_chuyen_nganh)
             print(f"        ✅ Đã tạo Chuyên ngành mới: {ma_chuyen_nganh} - {ten_chuyen_nganh}")
         except Exception as e:
-            print(f"        ❌ Lỗi khi tạo Chuyên ngành: {e}")
+            print(f"        ❌ Lỗi tạo Chuyên ngành: {e}")
             return None
     
     cursor.connection.commit()
@@ -301,9 +289,9 @@ class VietnameseNLP:
             pos_score = sum(w for word, w in self.positive_words.items() if word in text_lower)
             neg_score = sum(w for word, w in self.negative_words.items() if word in text_lower)
             
-            if pos_score + neg_score > 0.5:
+            if pos_score + neg_score > 0.35:
                 sentiments.append('positive')
-            elif pos_score + neg_score < -0.5:
+            elif pos_score + neg_score < -0.35:
                 sentiments.append('negative')
             else:
                 sentiments.append('neutral')
@@ -525,7 +513,7 @@ def load_remaining_dimensions_optimized(cursor, df_raw, existing_data, ma_hoc_ky
                 else:
                     special_qt.append(lop)
             else:
-                skipped_lops.append(f"{lop} (Không tạo được do lỗi FK)")
+                skipped_lops.append(f"{lop} (Không tạo được chuyên ngành do lỗi FK)")
         else:
             # Lớp thường: Kiểm tra trong DIM_CHUYEN_NGANH
             match = re.search(r'K(\d{2})', lop.upper())
@@ -626,6 +614,7 @@ def load_fact_tables_optimized(cursor, fact_main, fact_ketqua, existing_data, ma
     print(f"     - Số LopHP hợp lệ: {len(valid_lophp)}")
     print(f"     - Số MaSV hợp lệ: {len(valid_sv)}")
     
+    # TẮT CONSTRAINTS
     cursor.execute("ALTER TABLE FACT_GOP_Y_TU_LUAN NOCHECK CONSTRAINT ALL")
     cursor.execute("ALTER TABLE FACT_KET_QUA_DANH_GIA NOCHECK CONSTRAINT ALL")
     cursor.connection.commit()
@@ -707,6 +696,7 @@ def load_fact_tables_optimized(cursor, fact_main, fact_ketqua, existing_data, ma
         cursor.execute("ROLLBACK")
         raise e
     finally:
+        # BẬT LẠI CONSTRAINTS
         cursor.execute("ALTER TABLE FACT_GOP_Y_TU_LUAN CHECK CONSTRAINT ALL")
         cursor.execute("ALTER TABLE FACT_KET_QUA_DANH_GIA CHECK CONSTRAINT ALL")
         cursor.connection.commit()
@@ -722,12 +712,9 @@ def main():
     print("=" * 60)
     print("🚀 ETL PIPELINE - XỬ LÝ LỚP ĐẶC BIỆT (CTS/QT)")
     print("=" * 60)
-    print("📌 Mã khoa trong database:")
-    print("   - KHOA11: Phòng Đào Tạo")
-    print("   - KHOA19: Trường Đại học Kinh Tế")
     print("📌 Xử lý đặc biệt:")
-    print("   - Lớp có chứa 'CTS' -> TẠO MỚI Ngành & Chuyên ngành, gán cho KHOA19 (Trường ĐH Kinh Tế)")
-    print("   - Lớp có chứa 'QT' -> TẠO MỚI Ngành & Chuyên ngành, gán cho KHOA11 (Phòng Đào Tạo)")
+    print("   - Lớp có chứa 'CTS' -> TẠO MỚI Ngành & Chuyên ngành, gán cho Trường ĐH Kinh Tế (KHOA19)")
+    print("   - Lớp có chứa 'QT' -> TẠO MỚI Ngành & Chuyên ngành, gán cho Phòng Đào Tạo (KHOA11)")
     print(f"SEMESTER: {SEMESTER}")
     print(f"SURVEY_FILE: {SURVEY_FILE}")
     print("=" * 60)

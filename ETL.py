@@ -2,12 +2,12 @@ import os
 import sys
 import time
 import pickle
+import io
 import pyodbc
 import pandas as pd
 import numpy as np
 from datetime import datetime
 from azure.storage.blob import BlobServiceClient
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -37,10 +37,10 @@ CONN_STR = (
 
 CONTAINER_NAME = SEMESTER
 PROCESSED_PATH = "processed-data"
-PREPROCESSED_PATH = "preprocessed-data" 
+PREPROCESSED_PATH = "preprocessed-data"
+
 # Batch size cho insert
 BATCH_SIZE = 50000
-MAX_WORKERS = 4
 
 # ================= COMPILE REGEX PATTERNS =================
 import re
@@ -77,6 +77,7 @@ def download_preprocessed_data(blob_service, filename):
 def download_csv_backup(blob_service, filename_pattern):
     """Tải CSV backup mới nhất"""
     try:
+        import io
         container_client = blob_service.get_container_client(CONTAINER_NAME)
         # Liệt kê tất cả file trong processed-data
         blobs = container_client.list_blobs(name_starts_with=f"{PROCESSED_PATH}/")
@@ -101,44 +102,6 @@ def download_csv_backup(blob_service, filename_pattern):
     except Exception as e:
         print(f"  ❌ Lỗi tải CSV: {e}")
         return None
-
-
-# Trong main function, sửa phần tìm dữ liệu:
-print("\n📥 2. Tìm kiếm dữ liệu đã tiền xử lý...")
-
-# Thử tải từ preprocessed-data trước
-preprocessed_data = download_preprocessed_data(blob_service, f"{FILE_NAME}_preprocessed")
-
-if preprocessed_data:
-    print("  ✅ Đã tải dữ liệu từ preprocessed-data")
-    dims = {k: v for k, v in preprocessed_data.items() if k.startswith('dim_')}
-    fact_main = preprocessed_data.get('fact_gop_y_tu_luan', pd.DataFrame())
-    fact_ketqua = preprocessed_data.get('fact_ket_qua_danh_gia', pd.DataFrame())
-else:
-    print("  ⚠️ Không tìm thấy preprocessed data, thử tìm CSV backup...")
-    
-    # Tìm CSV files
-    fact_main = download_csv_backup(blob_service, f"{FILE_NAME}_main")
-    fact_ketqua = download_csv_backup(blob_service, f"{FILE_NAME}_ketqua")
-    
-    if fact_main is None and fact_ketqua is None:
-        print("  ❌ Không tìm thấy dữ liệu đã tiền xử lý!")
-        print("  💡 Hãy chạy JOB 1 trước hoặc kiểm tra đường dẫn file!")
-        return
-    
-    # Tạo dims tối thiểu từ fact data
-    dims = {
-        'dim_khoa': pd.DataFrame(),
-        'dim_nganh': pd.DataFrame(),
-        'dim_chuyen_nganh': pd.DataFrame(),
-        'dim_hoc_phan': pd.DataFrame(),
-        'dim_giang_vien': pd.DataFrame(),
-        'dim_hoc_ky': pd.DataFrame(),
-        'dim_lop_sinh_vien': pd.DataFrame(),
-        'dim_sinh_vien': pd.DataFrame(),
-        'dim_lop_hoc_phan': pd.DataFrame()
-    }
-    print(f"  ✅ Đã tải CSV: main={len(fact_main) if fact_main is not None else 0}, ketqua={len(fact_ketqua) if fact_ketqua is not None else 0}")
 
 
 # ================= NLP FUNCTIONS TỐI ƯU =================
@@ -218,152 +181,173 @@ def batch_insert(cursor, table, columns, data, batch_size=BATCH_SIZE):
 
 
 def insert_dimension_tables(cursor, dims):
-    """
-    Insert dữ liệu vào các bảng DIMENSION
-    CHỈ INSERT NHỮNG BẢN GHI CHƯA TỒN TẠI
-    """
+    """Insert DIMENSION tables - chỉ insert mới"""
     print("\n  📥 Insert DIMENSION tables (chỉ insert mới)...")
     
     total_inserted = {}
     
     # 1. DIM_KHOA
     print("\n    -> DIM_KHOA")
-    df = dims['dim_khoa']
-    cursor.execute("SELECT MaKhoa FROM DIM_KHOA")
-    existing = {row[0] for row in cursor.fetchall()}
-    
-    new_data = [(row['MaKhoa'], row['TenKhoa']) for _, row in df.iterrows() if row['MaKhoa'] not in existing]
-    if new_data:
-        inserted = batch_insert(cursor, 'DIM_KHOA', ['MaKhoa', 'TenKhoa'], new_data)
-        total_inserted['DIM_KHOA'] = inserted
-        print(f"      ✅ Đã insert {inserted} dòng mới")
+    df = dims.get('dim_khoa', pd.DataFrame())
+    if not df.empty:
+        cursor.execute("SELECT MaKhoa FROM DIM_KHOA")
+        existing = {row[0] for row in cursor.fetchall()}
+        
+        new_data = [(row['MaKhoa'], row['TenKhoa']) for _, row in df.iterrows() if row['MaKhoa'] not in existing]
+        if new_data:
+            inserted = batch_insert(cursor, 'DIM_KHOA', ['MaKhoa', 'TenKhoa'], new_data)
+            total_inserted['DIM_KHOA'] = inserted
+            print(f"      ✅ Đã insert {inserted} dòng mới")
+        else:
+            print(f"      ✅ Không có dòng mới (đã tồn tại {len(df)} dòng)")
     else:
-        print(f"      ✅ Không có dòng mới (đã tồn tại {len(df)} dòng)")
+        print(f"      ⚠️ Không có dữ liệu DIM_KHOA")
     
     # 2. DIM_NGANH
     print("\n    -> DIM_NGANH")
-    df = dims['dim_nganh']
-    cursor.execute("SELECT MaNganh FROM DIM_NGANH")
-    existing = {row[0] for row in cursor.fetchall()}
-    
-    new_data = [(row['MaNganh'], row['TenNganh'], row['MaKhoa']) 
-                for _, row in df.iterrows() if row['MaNganh'] not in existing]
-    if new_data:
-        inserted = batch_insert(cursor, 'DIM_NGANH', ['MaNganh', 'TenNganh', 'MaKhoa'], new_data)
-        total_inserted['DIM_NGANH'] = inserted
-        print(f"      ✅ Đã insert {inserted} dòng mới")
+    df = dims.get('dim_nganh', pd.DataFrame())
+    if not df.empty:
+        cursor.execute("SELECT MaNganh FROM DIM_NGANH")
+        existing = {row[0] for row in cursor.fetchall()}
+        
+        new_data = [(row['MaNganh'], row['TenNganh'], row['MaKhoa']) 
+                    for _, row in df.iterrows() if row['MaNganh'] not in existing]
+        if new_data:
+            inserted = batch_insert(cursor, 'DIM_NGANH', ['MaNganh', 'TenNganh', 'MaKhoa'], new_data)
+            total_inserted['DIM_NGANH'] = inserted
+            print(f"      ✅ Đã insert {inserted} dòng mới")
+        else:
+            print(f"      ✅ Không có dòng mới (đã tồn tại {len(df)} dòng)")
     else:
-        print(f"      ✅ Không có dòng mới (đã tồn tại {len(df)} dòng)")
+        print(f"      ⚠️ Không có dữ liệu DIM_NGANH")
     
     # 3. DIM_CHUYEN_NGANH
     print("\n    -> DIM_CHUYEN_NGANH")
-    df = dims['dim_chuyen_nganh']
-    cursor.execute("SELECT MaChuyenNganh FROM DIM_CHUYEN_NGANH")
-    existing = {row[0] for row in cursor.fetchall()}
-    
-    new_data = [(row['MaChuyenNganh'], row['TenChuyenNganh'], row['MaNganh']) 
-                for _, row in df.iterrows() if row['MaChuyenNganh'] not in existing]
-    if new_data:
-        inserted = batch_insert(cursor, 'DIM_CHUYEN_NGANH', ['MaChuyenNganh', 'TenChuyenNganh', 'MaNganh'], new_data)
-        total_inserted['DIM_CHUYEN_NGANH'] = inserted
-        print(f"      ✅ Đã insert {inserted} dòng mới")
+    df = dims.get('dim_chuyen_nganh', pd.DataFrame())
+    if not df.empty:
+        cursor.execute("SELECT MaChuyenNganh FROM DIM_CHUYEN_NGANH")
+        existing = {row[0] for row in cursor.fetchall()}
+        
+        new_data = [(row['MaChuyenNganh'], row['TenChuyenNganh'], row['MaNganh']) 
+                    for _, row in df.iterrows() if row['MaChuyenNganh'] not in existing]
+        if new_data:
+            inserted = batch_insert(cursor, 'DIM_CHUYEN_NGANH', ['MaChuyenNganh', 'TenChuyenNganh', 'MaNganh'], new_data)
+            total_inserted['DIM_CHUYEN_NGANH'] = inserted
+            print(f"      ✅ Đã insert {inserted} dòng mới")
+        else:
+            print(f"      ✅ Không có dòng mới (đã tồn tại {len(df)} dòng)")
     else:
-        print(f"      ✅ Không có dòng mới (đã tồn tại {len(df)} dòng)")
+        print(f"      ⚠️ Không có dữ liệu DIM_CHUYEN_NGANH")
     
     # 4. DIM_HOC_PHAN
     print("\n    -> DIM_HOC_PHAN")
-    df = dims['dim_hoc_phan']
-    cursor.execute("SELECT MaHP FROM DIM_HOC_PHAN")
-    existing = {row[0] for row in cursor.fetchall()}
-    
-    new_data = [(row['MaHP'], row['TenHP'], row['MaKhoa']) for _, row in df.iterrows() if row['MaHP'] not in existing]
-    if new_data:
-        inserted = batch_insert(cursor, 'DIM_HOC_PHAN', ['MaHP', 'TenHP', 'MaKhoa'], new_data)
-        total_inserted['DIM_HOC_PHAN'] = inserted
-        print(f"      ✅ Đã insert {inserted} dòng mới")
+    df = dims.get('dim_hoc_phan', pd.DataFrame())
+    if not df.empty:
+        cursor.execute("SELECT MaHP FROM DIM_HOC_PHAN")
+        existing = {row[0] for row in cursor.fetchall()}
+        
+        new_data = [(row['MaHP'], row['TenHP'], row['MaKhoa']) for _, row in df.iterrows() if row['MaHP'] not in existing]
+        if new_data:
+            inserted = batch_insert(cursor, 'DIM_HOC_PHAN', ['MaHP', 'TenHP', 'MaKhoa'], new_data)
+            total_inserted['DIM_HOC_PHAN'] = inserted
+            print(f"      ✅ Đã insert {inserted} dòng mới")
+        else:
+            print(f"      ✅ Không có dòng mới (đã tồn tại {len(df)} dòng)")
     else:
-        print(f"      ✅ Không có dòng mới (đã tồn tại {len(df)} dòng)")
+        print(f"      ⚠️ Không có dữ liệu DIM_HOC_PHAN")
     
     # 5. DIM_GIANG_VIEN
     print("\n    -> DIM_GIANG_VIEN")
-    df = dims['dim_giang_vien']
-    cursor.execute("SELECT MaGV FROM DIM_GIANG_VIEN")
-    existing = {row[0] for row in cursor.fetchall()}
-    
-    new_data = [(row['MaGV'], row['HoDemGV'], row['TenGV']) for _, row in df.iterrows() if row['MaGV'] not in existing]
-    if new_data:
-        inserted = batch_insert(cursor, 'DIM_GIANG_VIEN', ['MaGV', 'HoDemGV', 'TenGV'], new_data)
-        total_inserted['DIM_GIANG_VIEN'] = inserted
-        print(f"      ✅ Đã insert {inserted} dòng mới")
+    df = dims.get('dim_giang_vien', pd.DataFrame())
+    if not df.empty:
+        cursor.execute("SELECT MaGV FROM DIM_GIANG_VIEN")
+        existing = {row[0] for row in cursor.fetchall()}
+        
+        new_data = [(row['MaGV'], row['HoDemGV'], row['TenGV']) for _, row in df.iterrows() if row['MaGV'] not in existing]
+        if new_data:
+            inserted = batch_insert(cursor, 'DIM_GIANG_VIEN', ['MaGV', 'HoDemGV', 'TenGV'], new_data)
+            total_inserted['DIM_GIANG_VIEN'] = inserted
+            print(f"      ✅ Đã insert {inserted} dòng mới")
+        else:
+            print(f"      ✅ Không có dòng mới (đã tồn tại {len(df)} dòng)")
     else:
-        print(f"      ✅ Không có dòng mới (đã tồn tại {len(df)} dòng)")
+        print(f"      ⚠️ Không có dữ liệu DIM_GIANG_VIEN")
     
     # 6. DIM_HOC_KY
     print("\n    -> DIM_HOC_KY")
-    df = dims['dim_hoc_ky']
-    cursor.execute("SELECT MaHocKy FROM DIM_HOC_KY")
-    existing = {row[0] for row in cursor.fetchall()}
-    
-    new_data = [(row['MaHocKy'], row['NamHoc'], row['HocKy']) for _, row in df.iterrows() if row['MaHocKy'] not in existing]
-    if new_data:
-        inserted = batch_insert(cursor, 'DIM_HOC_KY', ['MaHocKy', 'NamHoc', 'HocKy'], new_data)
-        total_inserted['DIM_HOC_KY'] = inserted
-        print(f"      ✅ Đã insert {inserted} dòng mới")
+    df = dims.get('dim_hoc_ky', pd.DataFrame())
+    if not df.empty:
+        cursor.execute("SELECT MaHocKy FROM DIM_HOC_KY")
+        existing = {row[0] for row in cursor.fetchall()}
+        
+        new_data = [(row['MaHocKy'], row['NamHoc'], row['HocKy']) for _, row in df.iterrows() if row['MaHocKy'] not in existing]
+        if new_data:
+            inserted = batch_insert(cursor, 'DIM_HOC_KY', ['MaHocKy', 'NamHoc', 'HocKy'], new_data)
+            total_inserted['DIM_HOC_KY'] = inserted
+            print(f"      ✅ Đã insert {inserted} dòng mới")
+        else:
+            print(f"      ✅ Không có dòng mới (đã tồn tại {len(df)} dòng)")
     else:
-        print(f"      ✅ Không có dòng mới (đã tồn tại {len(df)} dòng)")
+        print(f"      ⚠️ Không có dữ liệu DIM_HOC_KY")
     
     # 7. DIM_LOP_SINH_VIEN
     print("\n    -> DIM_LOP_SINH_VIEN")
-    df = dims['dim_lop_sinh_vien']
-    cursor.execute("SELECT MaLop FROM DIM_LOP_SINH_VIEN")
-    existing = {row[0] for row in cursor.fetchall()}
-    
-    new_data = [(row['MaLop'], row['Lop'], row['MaChuyenNganh']) for _, row in df.iterrows() if row['MaLop'] not in existing]
-    if new_data:
-        inserted = batch_insert(cursor, 'DIM_LOP_SINH_VIEN', ['MaLop', 'Lop', 'MaChuyenNganh'], new_data)
-        total_inserted['DIM_LOP_SINH_VIEN'] = inserted
-        print(f"      ✅ Đã insert {inserted} dòng mới")
+    df = dims.get('dim_lop_sinh_vien', pd.DataFrame())
+    if not df.empty:
+        cursor.execute("SELECT MaLop FROM DIM_LOP_SINH_VIEN")
+        existing = {row[0] for row in cursor.fetchall()}
+        
+        new_data = [(row['MaLop'], row['Lop'], row['MaChuyenNganh']) for _, row in df.iterrows() if row['MaLop'] not in existing]
+        if new_data:
+            inserted = batch_insert(cursor, 'DIM_LOP_SINH_VIEN', ['MaLop', 'Lop', 'MaChuyenNganh'], new_data)
+            total_inserted['DIM_LOP_SINH_VIEN'] = inserted
+            print(f"      ✅ Đã insert {inserted} dòng mới")
+        else:
+            print(f"      ✅ Không có dòng mới (đã tồn tại {len(df)} dòng)")
     else:
-        print(f"      ✅ Không có dòng mới (đã tồn tại {len(df)} dòng)")
+        print(f"      ⚠️ Không có dữ liệu DIM_LOP_SINH_VIEN")
     
     # 8. DIM_SINH_VIEN
     print("\n    -> DIM_SINH_VIEN")
-    df = dims['dim_sinh_vien']
-    cursor.execute("SELECT MaSV FROM DIM_SINH_VIEN")
-    existing = {row[0] for row in cursor.fetchall()}
-    
-    new_data = [(row['MaSV'], row['HoDem'], row['Ten'], row['NgaySinh'], row['MaLop']) 
-                for _, row in df.iterrows() if row['MaSV'] not in existing]
-    if new_data:
-        inserted = batch_insert(cursor, 'DIM_SINH_VIEN', ['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop'], new_data)
-        total_inserted['DIM_SINH_VIEN'] = inserted
-        print(f"      ✅ Đã insert {inserted} dòng mới")
+    df = dims.get('dim_sinh_vien', pd.DataFrame())
+    if not df.empty:
+        cursor.execute("SELECT MaSV FROM DIM_SINH_VIEN")
+        existing = {row[0] for row in cursor.fetchall()}
+        
+        new_data = [(row['MaSV'], row['HoDem'], row['Ten'], row['NgaySinh'], row['MaLop']) 
+                    for _, row in df.iterrows() if row['MaSV'] not in existing]
+        if new_data:
+            inserted = batch_insert(cursor, 'DIM_SINH_VIEN', ['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop'], new_data)
+            total_inserted['DIM_SINH_VIEN'] = inserted
+            print(f"      ✅ Đã insert {inserted} dòng mới")
+        else:
+            print(f"      ✅ Không có dòng mới (đã tồn tại {len(df)} dòng)")
     else:
-        print(f"      ✅ Không có dòng mới (đã tồn tại {len(df)} dòng)")
+        print(f"      ⚠️ Không có dữ liệu DIM_SINH_VIEN")
     
     # 9. DIM_LOP_HOC_PHAN
     print("\n    -> DIM_LOP_HOC_PHAN")
-    df = dims['dim_lop_hoc_phan']
-    cursor.execute("SELECT MaLopHP FROM DIM_LOP_HOC_PHAN")
-    existing = {row[0] for row in cursor.fetchall()}
-    
-    new_data = [(row['MaLopHP'], row['LopHP'], row['MaHP'], row['MaGV'], row['MaHocKy']) 
-                for _, row in df.iterrows() if row['MaLopHP'] not in existing]
-    if new_data:
-        inserted = batch_insert(cursor, 'DIM_LOP_HOC_PHAN', ['MaLopHP', 'LopHP', 'MaHP', 'MaGV', 'MaHocKy'], new_data)
-        total_inserted['DIM_LOP_HOC_PHAN'] = inserted
-        print(f"      ✅ Đã insert {inserted} dòng mới")
+    df = dims.get('dim_lop_hoc_phan', pd.DataFrame())
+    if not df.empty:
+        cursor.execute("SELECT MaLopHP FROM DIM_LOP_HOC_PHAN")
+        existing = {row[0] for row in cursor.fetchall()}
+        
+        new_data = [(row['MaLopHP'], row['LopHP'], row['MaHP'], row['MaGV'], row['MaHocKy']) 
+                    for _, row in df.iterrows() if row['MaLopHP'] not in existing]
+        if new_data:
+            inserted = batch_insert(cursor, 'DIM_LOP_HOC_PHAN', ['MaLopHP', 'LopHP', 'MaHP', 'MaGV', 'MaHocKy'], new_data)
+            total_inserted['DIM_LOP_HOC_PHAN'] = inserted
+            print(f"      ✅ Đã insert {inserted} dòng mới")
+        else:
+            print(f"      ✅ Không có dòng mới (đã tồn tại {len(df)} dòng)")
     else:
-        print(f"      ✅ Không có dòng mới (đã tồn tại {len(df)} dòng)")
+        print(f"      ⚠️ Không có dữ liệu DIM_LOP_HOC_PHAN")
     
     return total_inserted
 
 
 def insert_fact_tables(cursor, fact_main, fact_ketqua):
-    """
-    Insert dữ liệu vào các bảng FACT
-    CHÈN THÊM MỚI (KHÔNG KIỂM TRA TỒN TẠI)
-    """
+    """Insert FACT tables - chèn thêm mới, có NLP"""
     print("\n  📥 Insert FACT tables (chèn thêm mới)...")
     
     total_inserted = {}
@@ -380,7 +364,7 @@ def insert_fact_tables(cursor, fact_main, fact_ketqua):
         # 1. FACT_GOP_Y_TU_LUAN
         print("\n    -> FACT_GOP_Y_TU_LUAN")
         
-        if not fact_main.empty:
+        if fact_main is not None and not fact_main.empty:
             # Xử lý NLP cho tất cả nội dung
             texts = fact_main['NoiDungGopY'].fillna('').tolist()
             print(f"      -> Đang xử lý NLP cho {len(texts):,} bài...")
@@ -408,6 +392,11 @@ def insert_fact_tables(cursor, fact_main, fact_ketqua):
                 ))
             
             if data:
+                # Kiểm tra xem đã insert chưa (tùy chọn)
+                cursor.execute("SELECT COUNT(*) FROM FACT_GOP_Y_TU_LUAN")
+                existing_count = cursor.fetchone()[0]
+                print(f"      -> Hiện có {existing_count:,} dòng trong FACT_GOP_Y_TU_LUAN")
+                
                 inserted = batch_insert(cursor, 'FACT_GOP_Y_TU_LUAN', 
                                        ['SubmissionID', 'MaSV', 'MaLopHP', 'NoiDungGopY',
                                         'Sentiment', 'Is_Valid', 'Tag_HocPhan', 
@@ -423,12 +412,16 @@ def insert_fact_tables(cursor, fact_main, fact_ketqua):
         # 2. FACT_KET_QUA_DANH_GIA
         print("\n    -> FACT_KET_QUA_DANH_GIA")
         
-        if not fact_ketqua.empty:
+        if fact_ketqua is not None and not fact_ketqua.empty:
             # Chuẩn bị data để insert
             data = [(row['SubmissionID'], row['MaCauHoi'], row['Diem']) 
                     for _, row in fact_ketqua.iterrows()]
             
             if data:
+                cursor.execute("SELECT COUNT(*) FROM FACT_KET_QUA_DANH_GIA")
+                existing_count = cursor.fetchone()[0]
+                print(f"      -> Hiện có {existing_count:,} dòng trong FACT_KET_QUA_DANH_GIA")
+                
                 inserted = batch_insert(cursor, 'FACT_KET_QUA_DANH_GIA', 
                                        ['SubmissionID', 'MaCauHoi', 'Diem'], 
                                        data)
@@ -510,6 +503,10 @@ def main():
     # 2. Tìm và tải dữ liệu đã tiền xử lý
     print("\n📥 2. Tìm kiếm dữ liệu đã tiền xử lý...")
     
+    dims = {}
+    fact_main = pd.DataFrame()
+    fact_ketqua = pd.DataFrame()
+    
     # Thử tải từ preprocessed-data trước
     preprocessed_data = download_preprocessed_data(blob_service, f"{FILE_NAME}_preprocessed")
     
@@ -520,37 +517,22 @@ def main():
         fact_ketqua = preprocessed_data.get('fact_ket_qua_danh_gia', pd.DataFrame())
         
         print(f"     - DIM_KHOA: {len(dims.get('dim_khoa', pd.DataFrame())):,} dòng")
-        print(f"     - DIM_NGANH: {len(dims.get('dim_nganh', pd.DataFrame())):,} dòng")
-        print(f"     - DIM_CHUYEN_NGANH: {len(dims.get('dim_chuyen_nganh', pd.DataFrame())):,} dòng")
         print(f"     - FACT_GOP_Y_TU_LUAN: {len(fact_main):,} dòng")
         print(f"     - FACT_KET_QUA_DANH_GIA: {len(fact_ketqua):,} dòng")
     else:
         print("  ⚠️ Không tìm thấy preprocessed data, thử tìm CSV backup...")
         
-        # Thử tìm CSV backup mới nhất
-        import io
-        timestamp = datetime.now().strftime('%Y%m%d')
-        fact_main = download_csv_backup(blob_service, f"{FILE_NAME}_main_{timestamp}*.csv")
-        fact_ketqua = download_csv_backup(blob_service, f"{FILE_NAME}_ketqua_{timestamp}*.csv")
+        # Tìm CSV files với pattern cụ thể
+        fact_main = download_csv_backup(blob_service, f"{FILE_NAME}_main")
+        fact_ketqua = download_csv_backup(blob_service, f"{FILE_NAME}_ketqua")
         
         if fact_main is None and fact_ketqua is None:
             print("  ❌ Không tìm thấy dữ liệu đã tiền xử lý!")
-            print("  💡 Hãy chạy JOB 1 trước!")
+            print("  💡 Hãy chạy JOB 1 trước hoặc kiểm tra đường dẫn file!")
             return
         
-        # Tạo dims tối thiểu từ fact data
-        dims = {
-            'dim_khoa': pd.DataFrame(),
-            'dim_nganh': pd.DataFrame(),
-            'dim_chuyen_nganh': pd.DataFrame(),
-            'dim_hoc_phan': pd.DataFrame(),
-            'dim_giang_vien': pd.DataFrame(),
-            'dim_hoc_ky': pd.DataFrame(),
-            'dim_lop_sinh_vien': pd.DataFrame(),
-            'dim_sinh_vien': pd.DataFrame(),
-            'dim_lop_hoc_phan': pd.DataFrame()
-        }
-        print("  ⚠️ Chỉ insert FACT tables (không có DIMENSION)")
+        print(f"  ✅ Đã tải CSV: main={len(fact_main) if fact_main is not None else 0}, ketqua={len(fact_ketqua) if fact_ketqua is not None else 0}")
+        print("  ⚠️ Chỉ insert FACT tables (không có DIMENSION vì thiếu dữ liệu master)")
     
     # 3. Kết nối Database
     print("\n💾 3. Kết nối SQL Database...")
@@ -571,7 +553,7 @@ def main():
         if dims and any(len(df) > 0 for df in dims.values()):
             dim_inserted = insert_dimension_tables(cursor, dims)
         else:
-            print("\n  ⚠️ Bỏ qua DIMENSION tables (không có dữ liệu)")
+            print("\n  ⚠️ Bỏ qua DIMENSION tables (không có dữ liệu master)")
             dim_inserted = {}
         
         # Insert FACT tables (CHÈN THÊM MỚI - CÓ NLP)
@@ -604,10 +586,12 @@ def main():
     
     if dim_inserted:
         print("\n   📌 DIMENSION tables (CHỈ INSERT MỚI):")
+        inserted_count = 0
         for table, count in dim_inserted.items():
             if count > 0:
                 print(f"      - {table}: {count:,} dòng mới")
-        if all(count == 0 for count in dim_inserted.values()):
+                inserted_count += count
+        if inserted_count == 0:
             print(f"      - Không có dòng mới nào được insert")
     
     if fact_inserted:

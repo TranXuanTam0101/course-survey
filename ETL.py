@@ -170,7 +170,7 @@ def create_null_special_data(cursor, existing_data):
     cursor.execute("""
         IF NOT EXISTS (SELECT 1 FROM DIM_NGANH WHERE MaNganh = 'NULL_CTS')
         INSERT INTO DIM_NGANH (MaNganh, TenNganh, MaKhoa) 
-        VALUES ('NULL_CTS', '', 'TĐHKT')
+        VALUES ('NULL_CTS', '', 'KHOA19')
     """)
     
     cursor.execute("""
@@ -183,7 +183,7 @@ def create_null_special_data(cursor, existing_data):
     cursor.execute("""
         IF NOT EXISTS (SELECT 1 FROM DIM_NGANH WHERE MaNganh = 'NULL_QT')
         INSERT INTO DIM_NGANH (MaNganh, TenNganh, MaKhoa) 
-        VALUES ('NULL_QT', '', 'PĐT')
+        VALUES ('NULL_QT', '', 'KHOA11')
     """)
     
     cursor.execute("""

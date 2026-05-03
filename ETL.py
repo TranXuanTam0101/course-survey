@@ -537,6 +537,8 @@ def load_remaining_dimensions_optimized(cursor, df_raw, existing_data, ma_hoc_ky
         cursor.executemany("INSERT INTO DIM_LOP_HOC_PHAN (MaLopHP, LopHP, MaHP, MaGV, MaHocKy) VALUES (?, ?, ?, ?, ?)", new_lhp)
         cursor.connection.commit()
         print(f"     ✅ Thêm {len(new_lhp)} lớp học phần mới")
+    else:
+        print(f"     ⚠️ Không có lớp học phần mới (kiểm tra MaHP và MaGV trong DIM_HOC_PHAN và DIM_GIANG_VIEN)")
     
     # Refresh
     cursor.execute("SELECT MaLopHP FROM DIM_LOP_HOC_PHAN")
@@ -658,39 +660,6 @@ def load_hp_master(blob_service):
     return df
 
 
-def load_chuyennganh_master(blob_service):
-    content = download_blob(blob_service, "tailieu", "TenChuyenNganh-Khoa.csv")
-    if not content:
-        return pd.DataFrame(), pd.DataFrame(), {}
-    
-    df = pd.read_csv(io.StringIO(content))
-    if len(df.columns) >= 6:
-        df_clean = df.iloc[:, [1, 2, 4, 5]].copy()
-        df_clean.columns = ['TenKhoa', 'TenNganh', 'TenChuyenNganh', 'MaChuyenNganh']
-    else:
-        return pd.DataFrame(), pd.DataFrame(), {}
-    
-    df_clean = df_clean.dropna(subset=['MaChuyenNganh'])
-    df_clean = df_clean[df_clean['MaChuyenNganh'].astype(str).str.strip() != '']
-    df_clean = df_clean.drop_duplicates(subset=['MaChuyenNganh'])
-    
-    dim_nganh = df_clean[['MaNganh', 'TenNganh', 'MaKhoa']].drop_duplicates('MaNganh') if 'MaNganh' in df_clean.columns else pd.DataFrame()
-    dim_chuyennganh = df_clean[['MaChuyenNganh', 'TenChuyenNganh', 'MaNganh']].drop_duplicates('MaChuyenNganh') if 'MaNganh' in df_clean.columns else pd.DataFrame()
-    
-    mapping = {}
-    for _, row in df_clean.iterrows():
-        ma_chuyen = row['MaChuyenNganh']
-        if ma_chuyen and ma_chuyen not in mapping:
-            mapping[ma_chuyen] = {
-                'TenChuyenNganh': row.get('TenChuyenNganh', ''),
-                'MaNganh': row.get('MaNganh', ''),
-                'TenNganh': row.get('TenNganh', ''),
-                'MaKhoa': row.get('MaKhoa', ''),
-                'TenKhoa': row.get('TenKhoa', '')
-            }
-    return dim_nganh, dim_chuyennganh, mapping
-
-
 # ================= MAIN =================
 def main():
     total_start = time.time()
@@ -716,7 +685,6 @@ def main():
     # 2. Đọc dữ liệu master
     print("\n📥 2. Đọc dữ liệu master...")
     hp_master = load_hp_master(blob_service)
-    dim_nganh, dim_chuyennganh, mapping = load_chuyennganh_master(blob_service)
     print(f"  ✅ HP-Khoa: {len(hp_master)} dòng")
     
     # 3. Đọc dữ liệu survey
@@ -785,7 +753,7 @@ def main():
                 ma_hp = row['MaHP']
                 if ma_hp not in existing_data['hocphan']:
                     cursor.execute("INSERT INTO DIM_HOC_PHAN (MaHP, TenHP, MaKhoa) VALUES (?, ?, ?)",
-                                  ma_hp, row['TenHP'], row.get('MaKhoa', 'TĐHKT'))
+                                  ma_hp, row['TenHP'], 'TĐHKT')
             cursor.connection.commit()
             print(f"     ✅ Đã load DIM_HOC_PHAN")
         

@@ -1,11 +1,9 @@
 import os
 import sys
 import time
-import io
 import pickle
 import pyodbc
 import pandas as pd
-import numpy as np
 from datetime import datetime
 from azure.storage.blob import BlobServiceClient
 import warnings
@@ -39,14 +37,12 @@ CONN_STR = (
 CONTAINER_NAME = SEMESTER
 PREPROCESSED_PATH = "preprocessed-data"
 
-# Batch size tối ưu - TĂNG TỐI ĐA
 BATCH_SIZE_DIM = 100000
 BATCH_SIZE_FACT = 500000
 
 
 # ================= BLOB FUNCTIONS =================
 def download_preprocessed_data(blob_service, filename):
-    """Tải dữ liệu đã tiền xử lý dạng pickle"""
     path = f"{PREPROCESSED_PATH}/{filename}.pkl"
     try:
         container_client = blob_service.get_container_client(CONTAINER_NAME)
@@ -61,23 +57,7 @@ def download_preprocessed_data(blob_service, filename):
         return None
 
 
-def download_fact_csv(blob_service, suffix):
-    """Tải trực tiếp file CSV FACT (đã được xử lý SẴN từ JOB 1)"""
-    path = f"{PREPROCESSED_PATH}/{FILE_NAME}_fact_{suffix}.csv"
-    try:
-        container_client = blob_service.get_container_client(CONTAINER_NAME)
-        blob = container_client.get_blob_client(path)
-        if blob.exists():
-            print(f"  📥 Đang tải {path}...")
-            content = blob.download_blob().readall().decode('utf-8-sig')
-            return pd.read_csv(io.StringIO(content))
-        return None
-    except Exception as e:
-        print(f"  ⚠️ Không tìm thấy {path}: {e}")
-        return None
-
-
-# ================= INSERT DIMENSION TABLES (GIỮ NGUYÊN) =================
+# ================= INSERT DIMENSION TABLES =================
 def insert_dimension_tables(cursor, dims):
     print("\n  📥 Insert DIMENSION tables...")
     start = time.time()
@@ -294,65 +274,32 @@ def insert_dimension_tables(cursor, dims):
     return results
 
 
-# ================= INSERT FACT TABLES - THUẦN TÚC (KHÔNG XỬ LÝ) =================
-def insert_fact_tables_pure(cursor, conn, fact_main_df, fact_ketqua_df):
-    """Insert FACT tables - CHỈ INSERT, KHÔNG XỬ LÝ GÌ THÊM"""
-    print("\n  🚀 PURE FACT INSERT (no processing)")
+# ================= INSERT FACT TABLES =================
+def insert_fact_tables_pure(cursor, conn, fact_main, fact_ketqua):
+    """Insert FACT tables - CHỈ INSERT, KHÔNG XỬ LÝ"""
+    print("\n  🚀 PURE FACT INSERT (data already processed in JOB 1)")
     start = time.time()
     results = {}
     
-    # Kiểm tra dữ liệu
-    if fact_main_df is None or fact_main_df.empty:
-        print("  ⚠️ No data for FACT_GOP_Y_TU_LUAN")
-    if fact_ketqua_df is None or fact_ketqua_df.empty:
-        print("  ⚠️ No data for FACT_KET_QUA_DANH_GIA")
-    
-    if (fact_main_df is None or fact_main_df.empty) and (fact_ketqua_df is None or fact_ketqua_df.empty):
+    if (fact_main is None or fact_main.empty) and (fact_ketqua is None or fact_ketqua.empty):
         print("  ❌ No FACT data to insert!")
         return results
     
-    # === BƯỚC 1: TẮT TOÀN BỘ RÀNG BUỘC ===
-    print("\n  ⚡ Disabling constraints and triggers...")
+    # Tắt constraints
+    print("\n  ⚡ Disabling constraints...")
     try:
         cursor.execute("ALTER TABLE FACT_GOP_Y_TU_LUAN NOCHECK CONSTRAINT ALL")
         cursor.execute("ALTER TABLE FACT_KET_QUA_DANH_GIA NOCHECK CONSTRAINT ALL")
-        cursor.execute("DISABLE TRIGGER ALL ON FACT_GOP_Y_TU_LUAN")
-        cursor.execute("DISABLE TRIGGER ALL ON FACT_KET_QUA_DANH_GIA")
         conn.commit()
-        print("  ✅ Constraints and triggers disabled")
+        print("  ✅ Constraints disabled")
     except Exception as e:
         print(f"  ⚠️ Could not disable: {e}")
     
-    # === BƯỚC 2: DROP NON-CLUSTERED INDEXES ===
-    print("\n  🗑️ Dropping non-clustered indexes...")
-    for table in ['FACT_GOP_Y_TU_LUAN', 'FACT_KET_QUA_DANH_GIA']:
-        try:
-            cursor.execute(f"""
-                SELECT name FROM sys.indexes 
-                WHERE object_id = OBJECT_ID('{table}')
-                AND index_id > 1
-                AND is_primary_key = 0
-                AND is_unique_constraint = 0
-                AND name NOT LIKE 'PK%'
-                AND name NOT LIKE 'UQ%'
-            """)
-            indexes = cursor.fetchall()
-            for idx in indexes:
-                try:
-                    cursor.execute(f"DROP INDEX {idx[0]} ON {table}")
-                    print(f"      Dropped: {idx[0]}")
-                except Exception:
-                    pass
-            conn.commit()
-        except Exception as e:
-            print(f"      Error on {table}: {e}")
-    
-    # === BƯỚC 3: INSERT FACT_KET_QUA_DANH_GIA (CHUẨN BỊ SẴN data) ===
+    # FACT_KET_QUA_DANH_GIA
     print("\n  📥 Inserting FACT_KET_QUA_DANH_GIA...")
-    if fact_ketqua_df is not None and not fact_ketqua_df.empty:
-        # Lấy data trực tiếp, KHÔNG XỬ LÝ
-        data = fact_ketqua_df[['SubmissionID', 'MaCauHoi', 'Diem']].values.tolist()
-        print(f"      Inserting {len(data):,} rows directly...")
+    if fact_ketqua is not None and not fact_ketqua.empty:
+        data = fact_ketqua[['SubmissionID', 'MaCauHoi', 'Diem']].values.tolist()
+        print(f"      Inserting {len(data):,} rows...")
         
         sql = "INSERT INTO FACT_KET_QUA_DANH_GIA (SubmissionID, MaCauHoi, Diem) VALUES (?, ?, ?)"
         
@@ -367,17 +314,14 @@ def insert_fact_tables_pure(cursor, conn, fact_main_df, fact_ketqua_df):
         
         results['FACT_KET_QUA_DANH_GIA'] = total
         print(f"  ✅ Inserted {total:,} rows")
-    else:
-        print(f"      ⚠️ No data (skipped)")
     
-    # === BƯỚC 4: INSERT FACT_GOP_Y_TU_LUAN (CHUẨN BỊ SẴN data) ===
+    # FACT_GOP_Y_TU_LUAN
     print("\n  📥 Inserting FACT_GOP_Y_TU_LUAN...")
-    if fact_main_df is not None and not fact_main_df.empty:
-        # Lấy data trực tiếp, KHÔNG XỬ LÝ
-        data = fact_main_df[['SubmissionID', 'MaSV', 'LopHP', 'NoiDungGopY',
-                             'Sentiment', 'Is_Valid', 'Tag_HocPhan', 
-                             'Tag_DayHoc', 'Tag_KiemTra', 'Tag_Khac']].values.tolist()
-        print(f"      Inserting {len(data):,} rows directly...")
+    if fact_main is not None and not fact_main.empty:
+        data = fact_main[['SubmissionID', 'MaSV', 'LopHP', 'NoiDungGopY',
+                          'Sentiment', 'Is_Valid', 'Tag_HocPhan', 
+                          'Tag_DayHoc', 'Tag_KiemTra', 'Tag_Khac']].values.tolist()
+        print(f"      Inserting {len(data):,} rows...")
         
         sql = """INSERT INTO FACT_GOP_Y_TU_LUAN 
                  (SubmissionID, MaSV, MaLopHP, NoiDungGopY, Sentiment, 
@@ -395,40 +339,16 @@ def insert_fact_tables_pure(cursor, conn, fact_main_df, fact_ketqua_df):
         
         results['FACT_GOP_Y_TU_LUAN'] = total
         print(f"  ✅ Inserted {total:,} rows")
-    else:
-        print(f"      ⚠️ No data (skipped)")
     
-    # === BƯỚC 5: REBUILD INDEXES ===
-    print("\n  🔨 Rebuilding indexes...")
-    for table in ['FACT_GOP_Y_TU_LUAN', 'FACT_KET_QUA_DANH_GIA']:
-        try:
-            cursor.execute(f"ALTER INDEX ALL ON {table} REBUILD")
-            print(f"      Rebuilt indexes on {table}")
-        except Exception as e:
-            print(f"      Error rebuilding on {table}: {e}")
-    conn.commit()
-    
-    # === BƯỚC 6: BẬT LẠI CONSTRAINTS ===
-    print("\n  🔓 Enabling constraints and triggers...")
+    # Bật lại constraints
+    print("\n  🔓 Enabling constraints...")
     try:
         cursor.execute("ALTER TABLE FACT_GOP_Y_TU_LUAN CHECK CONSTRAINT ALL")
         cursor.execute("ALTER TABLE FACT_KET_QUA_DANH_GIA CHECK CONSTRAINT ALL")
-        cursor.execute("ENABLE TRIGGER ALL ON FACT_GOP_Y_TU_LUAN")
-        cursor.execute("ENABLE TRIGGER ALL ON FACT_KET_QUA_DANH_GIA")
         conn.commit()
-        print("  ✅ Constraints and triggers enabled")
+        print("  ✅ Constraints enabled")
     except Exception as e:
         print(f"  ⚠️ Could not enable: {e}")
-    
-    # === BƯỚC 7: UPDATE STATISTICS ===
-    print("\n  📊 Updating statistics...")
-    try:
-        cursor.execute("UPDATE STATISTICS FACT_GOP_Y_TU_LUAN")
-        cursor.execute("UPDATE STATISTICS FACT_KET_QUA_DANH_GIA")
-        conn.commit()
-        print("  ✅ Statistics updated")
-    except Exception as e:
-        print(f"  ⚠️ Could not update statistics: {e}")
     
     elapsed = time.time() - start
     print(f"\n  ✅ FACT tables done in {elapsed:.2f}s")
@@ -457,19 +377,15 @@ def verify_data(cursor):
 def main():
     total_start = time.time()
     print("=" * 80)
-    print("🚀 JOB 2: CHÈN DỮ LIỆU (THUẦN TÚC - KHÔNG XỬ LÝ)")
+    print("🚀 JOB 2: CHÈN DỮ LIỆU (PURE INSERT)")
     print("=" * 80)
     print(f"📂 Survey: {SURVEY_FILE}")
     print(f"📁 Semester: {SEMESTER}")
-    print(f"⚙️ FACT Batch size: {BATCH_SIZE_FACT:,} rows/batch")
     print("=" * 80)
-    print("\n📌 PURE INSERT STRATEGY:")
-    print("   1️⃣ Load DIMENSION từ pickle")
-    print("   2️⃣ Load FACT từ CSV (đã xử lý SẴN)")
-    print("   3️⃣ KHÔNG xử lý gì thêm (no drop_duplicates, no str slicing)")
-    print("   4️⃣ Disable constraints & drop indexes")
-    print("   5️⃣ Batch insert 500k rows/batch")
-    print("   6️⃣ Rebuild indexes & enable constraints")
+    print("\n📌 STRATEGY:")
+    print("   1️⃣ Load 1 file pickle duy nhất")
+    print("   2️⃣ Insert DIMENSION tables")
+    print("   3️⃣ Insert FACT tables (no processing)")
     print("=" * 80)
     
     # 1. Kết nối Azure
@@ -481,8 +397,8 @@ def main():
         print(f"  ❌ Error: {e}")
         return
     
-    # 2. Tải dữ liệu DIMENSION (pickle)
-    print(f"\n📥 2. Tải DIMENSION data...")
+    # 2. Tải dữ liệu (CHỈ 1 FILE DUY NHẤT)
+    print(f"\n📥 2. Tải preprocessed data...")
     preprocessed_data = download_preprocessed_data(blob_service, f"{FILE_NAME}_preprocessed")
     
     if not preprocessed_data:
@@ -490,35 +406,20 @@ def main():
         print("  💡 Hãy chạy JOB 1 trước!")
         return
     
+    # Lấy dữ liệu từ pickle
     dims = {k: v for k, v in preprocessed_data.items() if k.startswith('dim_')}
+    fact_main = preprocessed_data.get('fact_gop_y_tu_luan', pd.DataFrame())
+    fact_ketqua = preprocessed_data.get('fact_ket_qua_danh_gia', pd.DataFrame())
     
-    print(f"\n  📊 DIMENSION summary:")
+    print(f"\n  📊 Data summary:")
     for name, df in dims.items():
         if not df.empty:
             print(f"     - {name}: {len(df):,} rows")
+    print(f"     - FACT_GOP_Y_TU_LUAN: {len(fact_main):,} rows")
+    print(f"     - FACT_KET_QUA_DANH_GIA: {len(fact_ketqua):,} rows")
     
-    # 3. Tải trực tiếp FACT từ CSV (đã xử lý SẴN từ JOB 1)
-    print(f"\n📥 3. Tải FACT data (từ CSV đã xử lý sẵn)...")
-    fact_main_df = download_fact_csv(blob_service, "tuluan")
-    fact_ketqua_df = download_fact_csv(blob_service, "tracnghiem")
-    
-    # Fallback sang pickle nếu không có CSV
-    if fact_main_df is None:
-        fact_main_df = preprocessed_data.get('fact_gop_y_tu_luan', pd.DataFrame())
-        if not fact_main_df.empty:
-            print(f"     ✅ FACT_GOP_Y_TU_LUAN: {len(fact_main_df):,} rows (from pickle)")
-    else:
-        print(f"     ✅ FACT_GOP_Y_TU_LUAN: {len(fact_main_df):,} rows (from CSV)")
-    
-    if fact_ketqua_df is None:
-        fact_ketqua_df = preprocessed_data.get('fact_ket_qua_danh_gia', pd.DataFrame())
-        if not fact_ketqua_df.empty:
-            print(f"     ✅ FACT_KET_QUA_DANH_GIA: {len(fact_ketqua_df):,} rows (from pickle)")
-    else:
-        print(f"     ✅ FACT_KET_QUA_DANH_GIA: {len(fact_ketqua_df):,} rows (from CSV)")
-    
-    # 4. Kết nối Database
-    print("\n💾 4. Kết nối SQL Database...")
+    # 3. Kết nối Database
+    print("\n💾 3. Kết nối SQL Database...")
     try:
         conn = pyodbc.connect(CONN_STR, autocommit=False)
         cursor = conn.cursor()
@@ -528,9 +429,9 @@ def main():
         print(f"  ❌ Error: {e}")
         return
     
-    # 5. Insert dữ liệu
+    # 4. Insert dữ liệu
     print("\n" + "=" * 80)
-    print("🚀 5. BẮT ĐẦU INSERT")
+    print("🚀 4. BẮT ĐẦU INSERT")
     print("=" * 80)
     
     insert_start = time.time()
@@ -539,8 +440,8 @@ def main():
         # Insert DIMENSION tables
         dim_results = insert_dimension_tables(cursor, dims)
         
-        # Insert FACT tables (PURE INSERT - NO PROCESSING)
-        fact_results = insert_fact_tables_pure(cursor, conn, fact_main_df, fact_ketqua_df)
+        # Insert FACT tables
+        fact_results = insert_fact_tables_pure(cursor, conn, fact_main, fact_ketqua)
         
         # Kiểm tra kết quả
         verify_data(cursor)
@@ -557,7 +458,7 @@ def main():
     insert_time = time.time() - insert_start
     total_time = time.time() - total_start
     
-    # 6. Thống kê
+    # 5. Thống kê
     print("\n" + "=" * 80)
     print("📊 KẾT QUẢ")
     print("=" * 80)
@@ -572,13 +473,6 @@ def main():
     if insert_time > 0 and total_inserted > 0:
         speed = total_inserted / insert_time
         print(f"  🚀 Speed: {speed:,.0f} rows/second")
-        
-        if speed > 50000:
-            print(f"  🎉 EXCELLENT! Fast insert speed!")
-        elif speed > 20000:
-            print(f"  👍 GOOD! Acceptable speed")
-        else:
-            print(f"  ⚠️ Speed could be improved (check network/database)")
     
     print(f"\n✅ HOÀN THÀNH! Total time: {total_time:.2f}s")
     print("=" * 80)

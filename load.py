@@ -7,6 +7,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 from azure.storage.blob import BlobServiceClient
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -38,13 +39,15 @@ CONN_STR = (
 CONTAINER_NAME = SEMESTER
 PREPROCESSED_PATH = "preprocessed-data"
 
-# Batch size tối ưu - TĂNG LÊN CHO NHANH
+# Batch size tối ưu
 BATCH_SIZE_DIM = 100000
-BATCH_SIZE_FACT = 500000  # Tăng từ 200k lên 500k
+BATCH_SIZE_FACT = 500000  # 500k dòng/batch
+PARALLEL_THREADS = 4      # Số thread song song
 
 
 # ================= BLOB FUNCTIONS =================
 def download_preprocessed_data(blob_service, filename):
+    """Tải dữ liệu đã tiền xử lý dạng pickle"""
     path = f"{PREPROCESSED_PATH}/{filename}.pkl"
     try:
         container_client = blob_service.get_container_client(CONTAINER_NAME)
@@ -55,7 +58,23 @@ def download_preprocessed_data(blob_service, filename):
             return pickle.loads(pickled_data)
         return None
     except Exception as e:
-        print(f"  ❌ Lỗi tải: {e}")
+        print(f"  ❌ Lỗi tải pickle: {e}")
+        return None
+
+
+def download_fact_csv(blob_service, suffix):
+    """Tải trực tiếp file CSV FACT đã được tiền xử lý"""
+    path = f"{PREPROCESSED_PATH}/{FILE_NAME}_fact_{suffix}.csv"
+    try:
+        container_client = blob_service.get_container_client(CONTAINER_NAME)
+        blob = container_client.get_blob_client(path)
+        if blob.exists():
+            print(f"  📥 Đang tải FACT_{suffix}.csv...")
+            content = blob.download_blob().readall().decode('utf-8-sig')
+            return pd.read_csv(io.StringIO(content))
+        return None
+    except Exception as e:
+        print(f"  ⚠️ Không tìm thấy FACT_{suffix}.csv: {e}")
         return None
 
 
@@ -276,10 +295,35 @@ def insert_dimension_tables(cursor, dims):
     return results
 
 
-# ================= INSERT FACT TABLES - TỐI ƯU CAO NHẤT =================
-def insert_fact_tables_ultra_fast(cursor, conn, fact_main, fact_ketqua):
-    """Insert FACT tables - TỐC ĐỘ CAO NHẤT"""
-    print("\n  🚀 ULTRA FAST FACT INSERT")
+# ================= INSERT FACT TABLES - SIÊU TỐC =================
+def insert_fact_table_from_csv(cursor, conn, csv_df, table_name, columns, batch_size):
+    """Insert FACT table trực tiếp từ CSV (đã được xử lý sẵn)"""
+    if csv_df is None or csv_df.empty:
+        return 0
+    
+    print(f"      Preparing {len(csv_df):,} rows...")
+    
+    # Chuyển DataFrame thành list of tuples
+    data = csv_df[columns].values.tolist()
+    
+    placeholders = ', '.join(['?' for _ in columns])
+    sql = f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({placeholders})"
+    
+    total = 0
+    for i in range(0, len(data), batch_size):
+        batch = data[i:i+batch_size]
+        cursor.fast_executemany = True
+        cursor.executemany(sql, batch)
+        total += len(batch)
+        conn.commit()
+        print(f"      Batch {i//batch_size + 1}: {len(batch):,} rows (total: {total:,})")
+    
+    return total
+
+
+def insert_fact_tables_super_fast(cursor, conn, fact_main_csv, fact_ketqua_csv):
+    """Insert FACT tables - SIÊU NHANH từ file CSV đã xử lý sẵn"""
+    print("\n  🚀 SUPER FAST FACT INSERT (from preprocessed CSV)")
     start = time.time()
     results = {}
     
@@ -295,7 +339,7 @@ def insert_fact_tables_ultra_fast(cursor, conn, fact_main, fact_ketqua):
     except Exception as e:
         print(f"  ⚠️ Could not disable: {e}")
     
-    # === BƯỚC 2: DROP NON-CLUSTERED INDEXES (GIỮ PK VÀ UQ) ===
+    # === BƯỚC 2: DROP NON-CLUSTERED INDEXES ===
     print("\n  🗑️ Dropping non-clustered indexes...")
     for table in ['FACT_GOP_Y_TU_LUAN', 'FACT_KET_QUA_DANH_GIA']:
         try:
@@ -319,59 +363,35 @@ def insert_fact_tables_ultra_fast(cursor, conn, fact_main, fact_ketqua):
         except Exception as e:
             print(f"      Error on {table}: {e}")
     
-    # === BƯỚC 3: INSERT BẢNG KET_QUA TRƯỚC (NHANH HƠN) ===
+    # === BƯỚC 3: INSERT FACT_KET_QUA_DANH_GIA ===
     print("\n  📥 Inserting FACT_KET_QUA_DANH_GIA...")
-    if fact_ketqua is not None and not fact_ketqua.empty:
-        fact_ketqua = fact_ketqua.drop_duplicates(subset=['SubmissionID', 'MaCauHoi'], keep='first')
-        fact_ketqua = fact_ketqua.dropna(subset=['SubmissionID', 'MaCauHoi'])
+    if fact_ketqua_csv is not None and not fact_ketqua_csv.empty:
+        # Loại bỏ duplicate trong data
+        fact_ketqua_csv = fact_ketqua_csv.drop_duplicates(subset=['SubmissionID', 'MaCauHoi'], keep='first')
+        fact_ketqua_csv = fact_ketqua_csv.dropna(subset=['SubmissionID', 'MaCauHoi'])
         
-        data = fact_ketqua[['SubmissionID', 'MaCauHoi', 'Diem']].values.tolist()
-        print(f"      Preparing {len(data):,} rows...")
-        
-        sql = "INSERT INTO FACT_KET_QUA_DANH_GIA (SubmissionID, MaCauHoi, Diem) VALUES (?, ?, ?)"
-        
-        total = 0
-        for i in range(0, len(data), BATCH_SIZE_FACT):
-            batch = data[i:i+BATCH_SIZE_FACT]
-            cursor.fast_executemany = True
-            cursor.executemany(sql, batch)
-            total += len(batch)
-            conn.commit()
-            print(f"      Batch {i//BATCH_SIZE_FACT + 1}: {len(batch):,} rows (total: {total:,})")
-        
-        results['FACT_KET_QUA_DANH_GIA'] = total
-        print(f"  ✅ Inserted {total:,} rows in {time.time()-start:.1f}s")
+        inserted = insert_fact_table_from_csv(
+            cursor, conn, fact_ketqua_csv, 'FACT_KET_QUA_DANH_GIA',
+            ['SubmissionID', 'MaCauHoi', 'Diem'], BATCH_SIZE_FACT
+        )
+        results['FACT_KET_QUA_DANH_GIA'] = inserted
+        print(f"  ✅ Inserted {inserted:,} rows to FACT_KET_QUA_DANH_GIA")
     
-    # === BƯỚC 4: INSERT BẢNG GOP_Y ===
+    # === BƯỚC 4: INSERT FACT_GOP_Y_TU_LUAN ===
     print("\n  📥 Inserting FACT_GOP_Y_TU_LUAN...")
-    if fact_main is not None and not fact_main.empty:
-        fact_main = fact_main.copy()
+    if fact_main_csv is not None and not fact_main_csv.empty:
+        # Giới hạn độ dài text
+        fact_main_csv = fact_main_csv.copy()
+        fact_main_csv['NoiDungGopY'] = fact_main_csv['NoiDungGopY'].astype(str).str[:4000]
         
-        # Đảm bảo text là string
-        fact_main['NoiDungGopY'] = fact_main['NoiDungGopY'].astype(str).str[:4000]
-        
-        data = fact_main[['SubmissionID', 'MaSV', 'LopHP', 'NoiDungGopY',
-                         'Sentiment', 'Is_Valid', 'Tag_HocPhan', 
-                         'Tag_DayHoc', 'Tag_KiemTra', 'Tag_Khac']].values.tolist()
-        
-        print(f"      Preparing {len(data):,} rows...")
-        
-        sql = """INSERT INTO FACT_GOP_Y_TU_LUAN 
-                 (SubmissionID, MaSV, MaLopHP, NoiDungGopY, Sentiment, 
-                  Is_Valid, Tag_HocPhan, Tag_DayHoc, Tag_KiemTra, Tag_Khac) 
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
-        
-        total = 0
-        for i in range(0, len(data), BATCH_SIZE_FACT):
-            batch = data[i:i+BATCH_SIZE_FACT]
-            cursor.fast_executemany = True
-            cursor.executemany(sql, batch)
-            total += len(batch)
-            conn.commit()
-            print(f"      Batch {i//BATCH_SIZE_FACT + 1}: {len(batch):,} rows (total: {total:,})")
-        
-        results['FACT_GOP_Y_TU_LUAN'] = total
-        print(f"  ✅ Inserted {total:,} rows in {time.time()-start:.1f}s")
+        inserted = insert_fact_table_from_csv(
+            cursor, conn, fact_main_csv, 'FACT_GOP_Y_TU_LUAN',
+            ['SubmissionID', 'MaSV', 'LopHP', 'NoiDungGopY', 'Sentiment', 
+             'Is_Valid', 'Tag_HocPhan', 'Tag_DayHoc', 'Tag_KiemTra', 'Tag_Khac'], 
+            BATCH_SIZE_FACT
+        )
+        results['FACT_GOP_Y_TU_LUAN'] = inserted
+        print(f"  ✅ Inserted {inserted:,} rows to FACT_GOP_Y_TU_LUAN")
     
     # === BƯỚC 5: REBUILD INDEXES ===
     print("\n  🔨 Rebuilding indexes...")
@@ -432,31 +452,32 @@ def verify_data(cursor):
 def main():
     total_start = time.time()
     print("=" * 80)
-    print("🚀 JOB 2: CHÈN DỮ LIỆU (TỐI ƯU FACT)")
+    print("🚀 JOB 2: CHÈN DỮ LIỆU (SIÊU NHANH)")
     print("=" * 80)
     print(f"📂 Survey: {SURVEY_FILE}")
     print(f"📁 Semester: {SEMESTER}")
     print(f"⚙️ FACT Batch size: {BATCH_SIZE_FACT:,} rows/batch")
     print("=" * 80)
-    print("\n📌 OPTIMIZATION STRATEGY:")
-    print("   1️⃣ Disable ALL constraints & triggers")
-    print("   2️⃣ Drop non-clustered indexes")
-    print("   3️⃣ Batch insert with 500k rows/batch")
-    print("   4️⃣ Rebuild indexes after insert")
-    print("   5️⃣ Update statistics")
+    print("\n📌 SUPER FAST STRATEGY:")
+    print("   1️⃣ Load DIMENSION từ pickle")
+    print("   2️⃣ Load FACT trực tiếp từ CSV (đã xử lý sẵn)")
+    print("   3️⃣ Disable constraints & drop indexes")
+    print("   4️⃣ Batch insert 500k rows/batch")
+    print("   5️⃣ Rebuild indexes & enable constraints")
     print("=" * 80)
     
     # 1. Kết nối Azure
     print("\n📥 1. Kết nối Azure...")
     try:
+        import io
         blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
         print("  ✅ Connected")
     except Exception as e:
         print(f"  ❌ Error: {e}")
         return
     
-    # 2. Tải dữ liệu
-    print(f"\n📥 2. Tải preprocessed data...")
+    # 2. Tải dữ liệu DIMENSION (pickle)
+    print(f"\n📥 2. Tải DIMENSION data...")
     preprocessed_data = download_preprocessed_data(blob_service, f"{FILE_NAME}_preprocessed")
     
     if not preprocessed_data:
@@ -464,20 +485,25 @@ def main():
         print("  💡 Hãy chạy JOB 1 trước!")
         return
     
-    # Lấy dữ liệu
     dims = {k: v for k, v in preprocessed_data.items() if k.startswith('dim_')}
-    fact_main = preprocessed_data.get('fact_gop_y_tu_luan', pd.DataFrame())
-    fact_ketqua = preprocessed_data.get('fact_ket_qua_danh_gia', pd.DataFrame())
     
-    print(f"\n  📊 Data summary:")
+    print(f"\n  📊 DIMENSION summary:")
     for name, df in dims.items():
         if not df.empty:
             print(f"     - {name}: {len(df):,} rows")
-    print(f"     - FACT_GOP_Y_TU_LUAN: {len(fact_main):,} rows")
-    print(f"     - FACT_KET_QUA_DANH_GIA: {len(fact_ketqua):,} rows")
     
-    # 3. Kết nối Database
-    print("\n💾 3. Kết nối SQL Database...")
+    # 3. Tải trực tiếp FACT từ CSV (đã xử lý sẵn, không cần xử lý lại)
+    print(f"\n📥 3. Tải FACT data (trực tiếp từ CSV)...")
+    fact_main_csv = download_fact_csv(blob_service, "tuluan")
+    fact_ketqua_csv = download_fact_csv(blob_service, "tracnghiem")
+    
+    if fact_main_csv is not None:
+        print(f"     - FACT_GOP_Y_TU_LUAN: {len(fact_main_csv):,} rows (loaded from CSV)")
+    if fact_ketqua_csv is not None:
+        print(f"     - FACT_KET_QUA_DANH_GIA: {len(fact_ketqua_csv):,} rows (loaded from CSV)")
+    
+    # 4. Kết nối Database
+    print("\n💾 4. Kết nối SQL Database...")
     try:
         conn = pyodbc.connect(CONN_STR, autocommit=False)
         cursor = conn.cursor()
@@ -487,9 +513,9 @@ def main():
         print(f"  ❌ Error: {e}")
         return
     
-    # 4. Insert dữ liệu
+    # 5. Insert dữ liệu
     print("\n" + "=" * 80)
-    print("🚀 4. BẮT ĐẦU INSERT")
+    print("🚀 5. BẮT ĐẦU INSERT")
     print("=" * 80)
     
     insert_start = time.time()
@@ -498,8 +524,8 @@ def main():
         # Insert DIMENSION tables
         dim_results = insert_dimension_tables(cursor, dims)
         
-        # Insert FACT tables
-        fact_results = insert_fact_tables_ultra_fast(cursor, conn, fact_main, fact_ketqua)
+        # Insert FACT tables (từ CSV đã xử lý sẵn)
+        fact_results = insert_fact_tables_super_fast(cursor, conn, fact_main_csv, fact_ketqua_csv)
         
         # Kiểm tra kết quả
         verify_data(cursor)
@@ -516,7 +542,7 @@ def main():
     insert_time = time.time() - insert_start
     total_time = time.time() - total_start
     
-    # 5. Thống kê
+    # 6. Thống kê
     print("\n" + "=" * 80)
     print("📊 KẾT QUẢ")
     print("=" * 80)

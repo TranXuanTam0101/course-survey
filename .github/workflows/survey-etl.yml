@@ -53,7 +53,7 @@ jobs:
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
         run: |
           echo "🚀 Starting JOB 1: Preprocessing data..."
-          python ETL.py
+          python etl.py
           echo "✅ JOB 1 completed!"
       
       - name: Upload preprocessed data (artifact)

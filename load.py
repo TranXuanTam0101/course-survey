@@ -7,7 +7,6 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 from azure.storage.blob import BlobServiceClient
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -23,7 +22,7 @@ if not SEMESTER or not SURVEY_FILE:
 
 FILE_NAME = os.path.splitext(os.path.basename(SURVEY_FILE))[0]
 
-# ODBC Connection - Tối ưu tối đa
+# ODBC Connection
 CONN_STR = (
     f"DRIVER={{ODBC Driver 18 for SQL Server}};"
     f"SERVER=course-survey.database.windows.net;"
@@ -39,9 +38,9 @@ CONN_STR = (
 CONTAINER_NAME = SEMESTER
 PREPROCESSED_PATH = "preprocessed-data"
 
-# Batch size tối ưu
+# Batch size tối ưu - TĂNG LÊN CHO NHANH
 BATCH_SIZE_DIM = 100000
-BATCH_SIZE_FACT = 200000
+BATCH_SIZE_FACT = 500000  # Tăng từ 200k lên 500k
 
 
 # ================= BLOB FUNCTIONS =================
@@ -62,7 +61,6 @@ def download_preprocessed_data(blob_service, filename):
 
 # ================= INSERT DIMENSION TABLES =================
 def insert_dimension_tables(cursor, dims):
-    """Insert dimension tables - chỉ insert mới"""
     print("\n  📥 Insert DIMENSION tables...")
     start = time.time()
     results = {}
@@ -278,14 +276,14 @@ def insert_dimension_tables(cursor, dims):
     return results
 
 
-# ================= INSERT FACT TABLES - SIÊU TỐC =================
-def insert_fact_tables_super_fast(cursor, conn, fact_main, fact_ketqua):
-    """Insert FACT tables với tốc độ cao nhất"""
-    print("\n  🚀 SUPER FAST FACT INSERT")
+# ================= INSERT FACT TABLES - TỐI ƯU CAO NHẤT =================
+def insert_fact_tables_ultra_fast(cursor, conn, fact_main, fact_ketqua):
+    """Insert FACT tables - TỐC ĐỘ CAO NHẤT"""
+    print("\n  🚀 ULTRA FAST FACT INSERT")
     start = time.time()
     results = {}
     
-    # === BƯỚC 1: TẮT TOÀN BỘ CONSTRAINTS VÀ TRIGGERS ===
+    # === BƯỚC 1: TẮT TOÀN BỘ RÀNG BUỘC ===
     print("\n  ⚡ Disabling constraints and triggers...")
     try:
         cursor.execute("ALTER TABLE FACT_GOP_Y_TU_LUAN NOCHECK CONSTRAINT ALL")
@@ -297,7 +295,7 @@ def insert_fact_tables_super_fast(cursor, conn, fact_main, fact_ketqua):
     except Exception as e:
         print(f"  ⚠️ Could not disable: {e}")
     
-    # === BƯỚC 2: DROP NON-CLUSTERED INDEXES (CHỈ DROP INDEX THƯỜNG, GIỮ PK/UQ) ===
+    # === BƯỚC 2: DROP NON-CLUSTERED INDEXES (GIỮ PK VÀ UQ) ===
     print("\n  🗑️ Dropping non-clustered indexes...")
     for table in ['FACT_GOP_Y_TU_LUAN', 'FACT_KET_QUA_DANH_GIA']:
         try:
@@ -315,16 +313,15 @@ def insert_fact_tables_super_fast(cursor, conn, fact_main, fact_ketqua):
                 try:
                     cursor.execute(f"DROP INDEX {idx[0]} ON {table}")
                     print(f"      Dropped: {idx[0]}")
-                except Exception as e:
+                except Exception:
                     pass
             conn.commit()
         except Exception as e:
             print(f"      Error on {table}: {e}")
     
-    # === BƯỚC 3: INSERT FACT_KET_QUA_DANH_GIA (BẢNG NHANH HƠN) ===
+    # === BƯỚC 3: INSERT BẢNG KET_QUA TRƯỚC (NHANH HƠN) ===
     print("\n  📥 Inserting FACT_KET_QUA_DANH_GIA...")
     if fact_ketqua is not None and not fact_ketqua.empty:
-        # Loại bỏ duplicate trong data
         fact_ketqua = fact_ketqua.drop_duplicates(subset=['SubmissionID', 'MaCauHoi'], keep='first')
         fact_ketqua = fact_ketqua.dropna(subset=['SubmissionID', 'MaCauHoi'])
         
@@ -340,22 +337,18 @@ def insert_fact_tables_super_fast(cursor, conn, fact_main, fact_ketqua):
             cursor.executemany(sql, batch)
             total += len(batch)
             conn.commit()
-            if (i // BATCH_SIZE_FACT + 1) % 5 == 0:
-                print(f"      Batch {i//BATCH_SIZE_FACT + 1}: {len(batch):,} rows (total: {total:,})")
+            print(f"      Batch {i//BATCH_SIZE_FACT + 1}: {len(batch):,} rows (total: {total:,})")
         
         results['FACT_KET_QUA_DANH_GIA'] = total
         print(f"  ✅ Inserted {total:,} rows in {time.time()-start:.1f}s")
     
-    # === BƯỚC 4: INSERT FACT_GOP_Y_TU_LUAN ===
+    # === BƯỚC 4: INSERT BẢNG GOP_Y ===
     print("\n  📥 Inserting FACT_GOP_Y_TU_LUAN...")
     if fact_main is not None and not fact_main.empty:
         fact_main = fact_main.copy()
         
-        # Đảm bảo text không quá dài (nếu column là NVARCHAR(MAX) thì không cần cắt)
-        fact_main['NoiDungGopY'] = fact_main['NoiDungGopY'].astype(str)
-        
-        # Nếu database column có giới hạn, comment dòng dưới
-        # fact_main['NoiDungGopY'] = fact_main['NoiDungGopY'].str[:4000]
+        # Đảm bảo text là string
+        fact_main['NoiDungGopY'] = fact_main['NoiDungGopY'].astype(str).str[:4000]
         
         data = fact_main[['SubmissionID', 'MaSV', 'LopHP', 'NoiDungGopY',
                          'Sentiment', 'Is_Valid', 'Tag_HocPhan', 
@@ -371,28 +364,11 @@ def insert_fact_tables_super_fast(cursor, conn, fact_main, fact_ketqua):
         total = 0
         for i in range(0, len(data), BATCH_SIZE_FACT):
             batch = data[i:i+BATCH_SIZE_FACT]
-            try:
-                cursor.fast_executemany = True
-                cursor.executemany(sql, batch)
-                total += len(batch)
-                conn.commit()
-                if (i // BATCH_SIZE_FACT + 1) % 5 == 0:
-                    print(f"      Batch {i//BATCH_SIZE_FACT + 1}: {len(batch):,} rows (total: {total:,})")
-            except Exception as e:
-                print(f"      Batch {i//BATCH_SIZE_FACT + 1} error: {e}")
-                # Nếu lỗi, thử với batch nhỏ hơn
-                sub_batch_size = 10000
-                for j in range(0, len(batch), sub_batch_size):
-                    sub_batch = batch[j:j+sub_batch_size]
-                    try:
-                        cursor.fast_executemany = True
-                        cursor.executemany(sql, sub_batch)
-                        total += len(sub_batch)
-                        conn.commit()
-                    except Exception as sub_e:
-                        # Bỏ qua lỗi và tiếp tục
-                        print(f"        Sub-batch error: {sub_e}")
-                print(f"      Batch {i//BATCH_SIZE_FACT + 1}: Completed after retry")
+            cursor.fast_executemany = True
+            cursor.executemany(sql, batch)
+            total += len(batch)
+            conn.commit()
+            print(f"      Batch {i//BATCH_SIZE_FACT + 1}: {len(batch):,} rows (total: {total:,})")
         
         results['FACT_GOP_Y_TU_LUAN'] = total
         print(f"  ✅ Inserted {total:,} rows in {time.time()-start:.1f}s")
@@ -401,14 +377,10 @@ def insert_fact_tables_super_fast(cursor, conn, fact_main, fact_ketqua):
     print("\n  🔨 Rebuilding indexes...")
     for table in ['FACT_GOP_Y_TU_LUAN', 'FACT_KET_QUA_DANH_GIA']:
         try:
-            cursor.execute(f"ALTER INDEX ALL ON {table} REBUILD WITH (ONLINE = ON)")
+            cursor.execute(f"ALTER INDEX ALL ON {table} REBUILD")
             print(f"      Rebuilt indexes on {table}")
         except Exception as e:
-            try:
-                cursor.execute(f"ALTER INDEX ALL ON {table} REBUILD")
-                print(f"      Rebuilt indexes on {table}")
-            except Exception as e2:
-                print(f"      Error rebuilding on {table}: {e2}")
+            print(f"      Error rebuilding on {table}: {e}")
     conn.commit()
     
     # === BƯỚC 6: BẬT LẠI CONSTRAINTS ===
@@ -460,20 +432,18 @@ def verify_data(cursor):
 def main():
     total_start = time.time()
     print("=" * 80)
-    print("🚀 JOB 2: CHÈN DỮ LIỆU (SIÊU TỐC - TỐI ƯU FACT)")
+    print("🚀 JOB 2: CHÈN DỮ LIỆU (TỐI ƯU FACT)")
     print("=" * 80)
     print(f"📂 Survey: {SURVEY_FILE}")
     print(f"📁 Semester: {SEMESTER}")
-    print(f"⚙️ DIM Batch size: {BATCH_SIZE_DIM:,} rows/batch")
     print(f"⚙️ FACT Batch size: {BATCH_SIZE_FACT:,} rows/batch")
     print("=" * 80)
-    print("\n📌 SUPER FAST STRATEGY:")
+    print("\n📌 OPTIMIZATION STRATEGY:")
     print("   1️⃣ Disable ALL constraints & triggers")
     print("   2️⃣ Drop non-clustered indexes")
-    print("   3️⃣ Batch insert with 200k rows/batch")
+    print("   3️⃣ Batch insert with 500k rows/batch")
     print("   4️⃣ Rebuild indexes after insert")
     print("   5️⃣ Update statistics")
-    print("   6️⃣ Fast_executemany = ON")
     print("=" * 80)
     
     # 1. Kết nối Azure
@@ -493,13 +463,6 @@ def main():
         print("  ❌ Không tìm thấy preprocessed data!")
         print("  💡 Hãy chạy JOB 1 trước!")
         return
-    
-    # Lấy metadata
-    metadata = preprocessed_data.get('metadata', {})
-    print(f"\n  📋 Metadata:")
-    print(f"     - Timestamp: {metadata.get('timestamp', 'N/A')}")
-    print(f"     - Semester: {metadata.get('semester', 'N/A')}")
-    print(f"     - MaHocKy: {metadata.get('ma_hoc_ky', 'N/A')}")
     
     # Lấy dữ liệu
     dims = {k: v for k, v in preprocessed_data.items() if k.startswith('dim_')}
@@ -530,15 +493,13 @@ def main():
     print("=" * 80)
     
     insert_start = time.time()
-    dim_results = {}
-    fact_results = {}
     
     try:
         # Insert DIMENSION tables
         dim_results = insert_dimension_tables(cursor, dims)
         
         # Insert FACT tables
-        fact_results = insert_fact_tables_super_fast(cursor, conn, fact_main, fact_ketqua)
+        fact_results = insert_fact_tables_ultra_fast(cursor, conn, fact_main, fact_ketqua)
         
         # Kiểm tra kết quả
         verify_data(cursor)

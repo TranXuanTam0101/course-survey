@@ -15,6 +15,7 @@ on:
         type: string
 
 jobs:
+  # JOB 1: TIỀN XỬ LÝ - KHÔNG CẦN ODBC
   etl:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -28,36 +29,20 @@ jobs:
         with:
           python-version: '3.10'
       
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: |
-          {
-            echo "[1/2] Installing ODBC Driver..."
-            curl -s https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
-            curl -s https://packages.microsoft.com/config/ubuntu/22.04/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list
-            sudo apt-get update -qq
-            sudo ACCEPT_EULA=Y apt-get install -y -qq msodbcsql18 mssql-tools18
-            echo "✅ ODBC Driver done"
-          } &
-          
-          {
-            echo "[2/2] Installing Python deps..."
-            python -m pip install --upgrade pip -q
-            pip install -q pyarrow pandas numpy pyodbc azure-storage-blob sqlalchemy
-            echo "✅ Python deps done"
-          } &
-          
-          wait
-          
-          echo "🎉 ALL DEPENDENCIES INSTALLED!"
+          python -m pip install --upgrade pip -q
+          pip install -q pandas numpy pyarrow azure-storage-blob
+          echo "✅ Python dependencies installed"
     
       - name: Run ETL Pipeline
         env:
           SEMESTER: ${{ github.event.inputs.semester }}
           SURVEY_FILE: ${{ github.event.inputs.survey_file }}
           CONNECTION_STRING: ${{ secrets.AZURE_CONNECTION_STRING }}
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
         run: python etl.py
 
+  # JOB 2: LOAD DỮ LIỆU - CẦN ODBC
   load:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -72,7 +57,7 @@ jobs:
         with:
           python-version: '3.10'
       
-      - name: Install dependencies
+      - name: Install ODBC Driver and Python dependencies
         run: |
           {
             echo "[1/2] Installing ODBC Driver..."
@@ -84,14 +69,13 @@ jobs:
           } &
           
           {
-            echo "[2/2] Installing Python deps..."
+            echo "[2/2] Installing Python dependencies..."
             python -m pip install --upgrade pip -q
-            pip install -q pyarrow pandas numpy pyodbc azure-storage-blob
-            echo "✅ Python deps done"
+            pip install -q pandas numpy pyodbc azure-storage-blob
+            echo "✅ Python dependencies done"
           } &
           
           wait
-          
           echo "🎉 ALL DEPENDENCIES INSTALLED!"
     
       - name: Run Load Pipeline

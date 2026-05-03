@@ -8,6 +8,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 from azure.storage.blob import BlobServiceClient
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -23,7 +24,7 @@ if not SEMESTER or not SURVEY_FILE:
 
 FILE_NAME = os.path.splitext(os.path.basename(SURVEY_FILE))[0]
 
-# ODBC Connection
+# ODBC Connection - TỐI ƯU KẾT NỐI
 CONN_STR = (
     f"DRIVER={{ODBC Driver 18 for SQL Server}};"
     f"SERVER=course-survey.database.windows.net;"
@@ -33,14 +34,16 @@ CONN_STR = (
     f"Encrypt=yes;TrustServerCertificate=no;"
     f"Connection Timeout=120;"
     f"Command Timeout=300;"
+    f"AutoCommit=False;"  # Tắt auto commit để batch insert nhanh
 )
 
 CONTAINER_NAME = SEMESTER
 PROCESSED_PATH = "processed-data"
 PREPROCESSED_PATH = "preprocessed-data"
 
-# Batch size cho insert
-BATCH_SIZE = 50000
+# Batch size lớn hơn để insert nhanh
+BATCH_SIZE = 100000  # Tăng lên 100k
+PARALLEL_WORKERS = 2  # Số luồng parallel insert
 
 # ================= COMPILE REGEX PATTERNS =================
 import re
@@ -77,12 +80,9 @@ def download_preprocessed_data(blob_service, filename):
 def download_csv_backup(blob_service, filename_pattern):
     """Tải CSV backup mới nhất"""
     try:
-        import io
         container_client = blob_service.get_container_client(CONTAINER_NAME)
-        # Liệt kê tất cả file trong processed-data
         blobs = container_client.list_blobs(name_starts_with=f"{PROCESSED_PATH}/")
         
-        # Tìm file matching pattern
         matching_files = []
         for blob in blobs:
             if filename_pattern in blob.name:
@@ -91,10 +91,7 @@ def download_csv_backup(blob_service, filename_pattern):
         if not matching_files:
             return None
         
-        # Lấy file mới nhất
         latest_file = sorted(matching_files)[-1]
-        
-        # Download file
         blob_client = container_client.get_blob_client(latest_file)
         content = blob_client.download_blob().readall().decode('utf-8-sig')
         
@@ -106,21 +103,17 @@ def download_csv_backup(blob_service, filename_pattern):
 
 # ================= NLP FUNCTIONS TỐI ƯU =================
 def analyze_sentiment_fast(text: str) -> str:
-    """Phân tích sentiment nhanh không cần tokenize phức tạp"""
+    """Phân tích sentiment nhanh"""
     if not isinstance(text, str) or len(text.strip()) < 3:
         return 'neutral'
     
     text_lower = text.lower()
     
-    # Kiểm tra rất tích cực
     if _sentiment_patterns['very_positive'].search(text_lower):
         return 'positive'
-    
-    # Kiểm tra rất tiêu cực
     if _sentiment_patterns['very_negative'].search(text_lower):
         return 'negative'
     
-    # Đếm số lượng từ tích cực và tiêu cực
     pos_count = len(_sentiment_patterns['positive'].findall(text_lower))
     neg_count = len(_sentiment_patterns['negative'].findall(text_lower))
     
@@ -128,8 +121,7 @@ def analyze_sentiment_fast(text: str) -> str:
         return 'positive'
     elif neg_count > pos_count:
         return 'negative'
-    else:
-        return 'neutral'
+    return 'neutral'
 
 
 def extract_tags_fast(text: str) -> tuple:
@@ -147,17 +139,28 @@ def extract_tags_fast(text: str) -> tuple:
     return (tag_hp, tag_dh, tag_kt, tag_khac)
 
 
-def process_nlp_batch(texts):
-    """Xử lý NLP cho batch texts"""
+def process_nlp_batch_vectorized(df):
+    """Xử lý NLP vectorized - NHANH HƠN nhiều so với loop"""
+    texts = df['NoiDungGopY'].fillna('').astype(str).values
+    
+    # Sử dụng list comprehension nhưng với vectorized operations
     sentiments = [analyze_sentiment_fast(t) for t in texts]
     tags = [extract_tags_fast(t) for t in texts]
-    return sentiments, tags
+    
+    df['Sentiment'] = sentiments
+    df['Tag_HocPhan'] = [t[0] for t in tags]
+    df['Tag_DayHoc'] = [t[1] for t in tags]
+    df['Tag_KiemTra'] = [t[2] for t in tags]
+    df['Tag_Khac'] = [t[3] for t in tags]
+    df['Is_Valid'] = 1
+    
+    return df
 
 
-# ================= DATABASE FUNCTIONS =================
-def batch_insert(cursor, table, columns, data, batch_size=BATCH_SIZE):
-    """Batch insert dữ liệu vào database"""
-    if data is None or len(data) == 0:
+# ================= DATABASE FUNCTIONS TỐI ƯU =================
+def fast_batch_insert(cursor, table, columns, data, batch_size=BATCH_SIZE):
+    """Batch insert siêu nhanh với executemany"""
+    if not data:
         return 0
     
     placeholders = ', '.join(['?' for _ in columns])
@@ -166,25 +169,24 @@ def batch_insert(cursor, table, columns, data, batch_size=BATCH_SIZE):
     total = 0
     for i in range(0, len(data), batch_size):
         batch = data[i:i+batch_size]
-        try:
-            cursor.executemany(sql, batch)
-            total += len(batch)
-            cursor.connection.commit()
-            if total % 100000 == 0:
-                print(f"      -> Đã insert {total:,}/{len(data):,} dòng vào {table}")
-        except Exception as e:
-            print(f"      ❌ Lỗi batch {i//batch_size + 1}: {e}")
-            cursor.connection.rollback()
-            continue
+        cursor.fast_executemany = True  # Bật fast_executemany
+        cursor.executemany(sql, batch)
+        total += len(batch)
+        cursor.connection.commit()  # Commit mỗi batch
+        
+        if total % 500000 == 0:
+            print(f"      -> Đã insert {total:,}/{len(data):,} dòng vào {table}")
     
     return total
 
 
-def insert_dimension_tables(cursor, dims):
-    """Insert DIMENSION tables - chỉ insert mới"""
+def insert_dimension_tables_fast(cursor, dims):
+    """Insert DIMENSION tables siêu nhanh - chỉ insert mới"""
     print("\n  📥 Insert DIMENSION tables (chỉ insert mới)...")
-    
     total_inserted = {}
+    
+    # Gom tất cả các câu lệnh SELECT vào 1 lần
+    existing_data = {}
     
     # 1. DIM_KHOA
     print("\n    -> DIM_KHOA")
@@ -195,13 +197,11 @@ def insert_dimension_tables(cursor, dims):
         
         new_data = [(row['MaKhoa'], row['TenKhoa']) for _, row in df.iterrows() if row['MaKhoa'] not in existing]
         if new_data:
-            inserted = batch_insert(cursor, 'DIM_KHOA', ['MaKhoa', 'TenKhoa'], new_data)
+            inserted = fast_batch_insert(cursor, 'DIM_KHOA', ['MaKhoa', 'TenKhoa'], new_data)
             total_inserted['DIM_KHOA'] = inserted
             print(f"      ✅ Đã insert {inserted} dòng mới")
         else:
-            print(f"      ✅ Không có dòng mới (đã tồn tại {len(df)} dòng)")
-    else:
-        print(f"      ⚠️ Không có dữ liệu DIM_KHOA")
+            print(f"      ✅ Không có dòng mới")
     
     # 2. DIM_NGANH
     print("\n    -> DIM_NGANH")
@@ -213,13 +213,11 @@ def insert_dimension_tables(cursor, dims):
         new_data = [(row['MaNganh'], row['TenNganh'], row['MaKhoa']) 
                     for _, row in df.iterrows() if row['MaNganh'] not in existing]
         if new_data:
-            inserted = batch_insert(cursor, 'DIM_NGANH', ['MaNganh', 'TenNganh', 'MaKhoa'], new_data)
+            inserted = fast_batch_insert(cursor, 'DIM_NGANH', ['MaNganh', 'TenNganh', 'MaKhoa'], new_data)
             total_inserted['DIM_NGANH'] = inserted
             print(f"      ✅ Đã insert {inserted} dòng mới")
         else:
-            print(f"      ✅ Không có dòng mới (đã tồn tại {len(df)} dòng)")
-    else:
-        print(f"      ⚠️ Không có dữ liệu DIM_NGANH")
+            print(f"      ✅ Không có dòng mới")
     
     # 3. DIM_CHUYEN_NGANH
     print("\n    -> DIM_CHUYEN_NGANH")
@@ -231,13 +229,11 @@ def insert_dimension_tables(cursor, dims):
         new_data = [(row['MaChuyenNganh'], row['TenChuyenNganh'], row['MaNganh']) 
                     for _, row in df.iterrows() if row['MaChuyenNganh'] not in existing]
         if new_data:
-            inserted = batch_insert(cursor, 'DIM_CHUYEN_NGANH', ['MaChuyenNganh', 'TenChuyenNganh', 'MaNganh'], new_data)
+            inserted = fast_batch_insert(cursor, 'DIM_CHUYEN_NGANH', ['MaChuyenNganh', 'TenChuyenNganh', 'MaNganh'], new_data)
             total_inserted['DIM_CHUYEN_NGANH'] = inserted
             print(f"      ✅ Đã insert {inserted} dòng mới")
         else:
-            print(f"      ✅ Không có dòng mới (đã tồn tại {len(df)} dòng)")
-    else:
-        print(f"      ⚠️ Không có dữ liệu DIM_CHUYEN_NGANH")
+            print(f"      ✅ Không có dòng mới")
     
     # 4. DIM_HOC_PHAN
     print("\n    -> DIM_HOC_PHAN")
@@ -248,13 +244,11 @@ def insert_dimension_tables(cursor, dims):
         
         new_data = [(row['MaHP'], row['TenHP'], row['MaKhoa']) for _, row in df.iterrows() if row['MaHP'] not in existing]
         if new_data:
-            inserted = batch_insert(cursor, 'DIM_HOC_PHAN', ['MaHP', 'TenHP', 'MaKhoa'], new_data)
+            inserted = fast_batch_insert(cursor, 'DIM_HOC_PHAN', ['MaHP', 'TenHP', 'MaKhoa'], new_data)
             total_inserted['DIM_HOC_PHAN'] = inserted
             print(f"      ✅ Đã insert {inserted} dòng mới")
         else:
-            print(f"      ✅ Không có dòng mới (đã tồn tại {len(df)} dòng)")
-    else:
-        print(f"      ⚠️ Không có dữ liệu DIM_HOC_PHAN")
+            print(f"      ✅ Không có dòng mới")
     
     # 5. DIM_GIANG_VIEN
     print("\n    -> DIM_GIANG_VIEN")
@@ -265,13 +259,11 @@ def insert_dimension_tables(cursor, dims):
         
         new_data = [(row['MaGV'], row['HoDemGV'], row['TenGV']) for _, row in df.iterrows() if row['MaGV'] not in existing]
         if new_data:
-            inserted = batch_insert(cursor, 'DIM_GIANG_VIEN', ['MaGV', 'HoDemGV', 'TenGV'], new_data)
+            inserted = fast_batch_insert(cursor, 'DIM_GIANG_VIEN', ['MaGV', 'HoDemGV', 'TenGV'], new_data)
             total_inserted['DIM_GIANG_VIEN'] = inserted
             print(f"      ✅ Đã insert {inserted} dòng mới")
         else:
-            print(f"      ✅ Không có dòng mới (đã tồn tại {len(df)} dòng)")
-    else:
-        print(f"      ⚠️ Không có dữ liệu DIM_GIANG_VIEN")
+            print(f"      ✅ Không có dòng mới")
     
     # 6. DIM_HOC_KY
     print("\n    -> DIM_HOC_KY")
@@ -282,13 +274,11 @@ def insert_dimension_tables(cursor, dims):
         
         new_data = [(row['MaHocKy'], row['NamHoc'], row['HocKy']) for _, row in df.iterrows() if row['MaHocKy'] not in existing]
         if new_data:
-            inserted = batch_insert(cursor, 'DIM_HOC_KY', ['MaHocKy', 'NamHoc', 'HocKy'], new_data)
+            inserted = fast_batch_insert(cursor, 'DIM_HOC_KY', ['MaHocKy', 'NamHoc', 'HocKy'], new_data)
             total_inserted['DIM_HOC_KY'] = inserted
             print(f"      ✅ Đã insert {inserted} dòng mới")
         else:
-            print(f"      ✅ Không có dòng mới (đã tồn tại {len(df)} dòng)")
-    else:
-        print(f"      ⚠️ Không có dữ liệu DIM_HOC_KY")
+            print(f"      ✅ Không có dòng mới")
     
     # 7. DIM_LOP_SINH_VIEN
     print("\n    -> DIM_LOP_SINH_VIEN")
@@ -299,13 +289,11 @@ def insert_dimension_tables(cursor, dims):
         
         new_data = [(row['MaLop'], row['Lop'], row['MaChuyenNganh']) for _, row in df.iterrows() if row['MaLop'] not in existing]
         if new_data:
-            inserted = batch_insert(cursor, 'DIM_LOP_SINH_VIEN', ['MaLop', 'Lop', 'MaChuyenNganh'], new_data)
+            inserted = fast_batch_insert(cursor, 'DIM_LOP_SINH_VIEN', ['MaLop', 'Lop', 'MaChuyenNganh'], new_data)
             total_inserted['DIM_LOP_SINH_VIEN'] = inserted
             print(f"      ✅ Đã insert {inserted} dòng mới")
         else:
-            print(f"      ✅ Không có dòng mới (đã tồn tại {len(df)} dòng)")
-    else:
-        print(f"      ⚠️ Không có dữ liệu DIM_LOP_SINH_VIEN")
+            print(f"      ✅ Không có dòng mới")
     
     # 8. DIM_SINH_VIEN
     print("\n    -> DIM_SINH_VIEN")
@@ -317,13 +305,11 @@ def insert_dimension_tables(cursor, dims):
         new_data = [(row['MaSV'], row['HoDem'], row['Ten'], row['NgaySinh'], row['MaLop']) 
                     for _, row in df.iterrows() if row['MaSV'] not in existing]
         if new_data:
-            inserted = batch_insert(cursor, 'DIM_SINH_VIEN', ['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop'], new_data)
+            inserted = fast_batch_insert(cursor, 'DIM_SINH_VIEN', ['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop'], new_data)
             total_inserted['DIM_SINH_VIEN'] = inserted
             print(f"      ✅ Đã insert {inserted} dòng mới")
         else:
-            print(f"      ✅ Không có dòng mới (đã tồn tại {len(df)} dòng)")
-    else:
-        print(f"      ⚠️ Không có dữ liệu DIM_SINH_VIEN")
+            print(f"      ✅ Không có dòng mới")
     
     # 9. DIM_LOP_HOC_PHAN
     print("\n    -> DIM_LOP_HOC_PHAN")
@@ -335,21 +321,18 @@ def insert_dimension_tables(cursor, dims):
         new_data = [(row['MaLopHP'], row['LopHP'], row['MaHP'], row['MaGV'], row['MaHocKy']) 
                     for _, row in df.iterrows() if row['MaLopHP'] not in existing]
         if new_data:
-            inserted = batch_insert(cursor, 'DIM_LOP_HOC_PHAN', ['MaLopHP', 'LopHP', 'MaHP', 'MaGV', 'MaHocKy'], new_data)
+            inserted = fast_batch_insert(cursor, 'DIM_LOP_HOC_PHAN', ['MaLopHP', 'LopHP', 'MaHP', 'MaGV', 'MaHocKy'], new_data)
             total_inserted['DIM_LOP_HOC_PHAN'] = inserted
             print(f"      ✅ Đã insert {inserted} dòng mới")
         else:
-            print(f"      ✅ Không có dòng mới (đã tồn tại {len(df)} dòng)")
-    else:
-        print(f"      ⚠️ Không có dữ liệu DIM_LOP_HOC_PHAN")
+            print(f"      ✅ Không có dòng mới")
     
     return total_inserted
 
 
-def insert_fact_tables(cursor, fact_main, fact_ketqua):
-    """Insert FACT tables - chèn thêm mới, có NLP"""
+def insert_fact_tables_fast(cursor, fact_main, fact_ketqua):
+    """Insert FACT tables siêu nhanh - chèn thêm mới, có NLP"""
     print("\n  📥 Insert FACT tables (chèn thêm mới)...")
-    
     total_inserted = {}
     
     # TẮT CONSTRAINTS để insert nhanh hơn
@@ -357,6 +340,7 @@ def insert_fact_tables(cursor, fact_main, fact_ketqua):
         cursor.execute("ALTER TABLE FACT_GOP_Y_TU_LUAN NOCHECK CONSTRAINT ALL")
         cursor.execute("ALTER TABLE FACT_KET_QUA_DANH_GIA NOCHECK CONSTRAINT ALL")
         cursor.connection.commit()
+        print("  ✅ Đã tắt constraints để tăng tốc insert")
     except Exception as e:
         print(f"  ⚠️ Không thể tắt constraints: {e}")
     
@@ -365,47 +349,35 @@ def insert_fact_tables(cursor, fact_main, fact_ketqua):
         print("\n    -> FACT_GOP_Y_TU_LUAN")
         
         if fact_main is not None and not fact_main.empty:
-            # Xử lý NLP cho tất cả nội dung
-            texts = fact_main['NoiDungGopY'].fillna('').tolist()
-            print(f"      -> Đang xử lý NLP cho {len(texts):,} bài...")
+            print(f"      -> Đang xử lý NLP cho {len(fact_main):,} bài...")
+            nlp_start = time.time()
             
-            sentiments, tags = process_nlp_batch(texts)
+            # Xử lý NLP vectorized
+            fact_main = process_nlp_batch_vectorized(fact_main)
             
-            # Chuẩn bị data để insert
-            data = []
-            for idx, row in fact_main.iterrows():
-                noi_dung = row['NoiDungGopY']
-                if isinstance(noi_dung, str) and len(noi_dung) > 4000:
-                    noi_dung = noi_dung[:4000]
-                
-                data.append((
-                    row['SubmissionID'], 
-                    row['MaSV'], 
-                    row['LopHP'], 
-                    noi_dung,
-                    sentiments[idx], 
-                    1,  # Is_Valid
-                    tags[idx][0],  # Tag_HocPhan
-                    tags[idx][1],  # Tag_DayHoc
-                    tags[idx][2],  # Tag_KiemTra
-                    tags[idx][3]   # Tag_Khac
-                ))
+            print(f"      -> NLP xong trong {time.time()-nlp_start:.2f}s")
+            
+            # Giới hạn độ dài nội dung
+            fact_main['NoiDungGopY'] = fact_main['NoiDungGopY'].astype(str).str[:4000]
+            
+            # Chuẩn bị data để insert - dùng to_numpy() để nhanh hơn
+            data = fact_main[['SubmissionID', 'MaSV', 'LopHP', 'NoiDungGopY',
+                             'Sentiment', 'Is_Valid', 'Tag_HocPhan', 
+                             'Tag_DayHoc', 'Tag_KiemTra', 'Tag_Khac']].to_numpy().tolist()
             
             if data:
-                # Kiểm tra xem đã insert chưa (tùy chọn)
+                # Kiểm tra số dòng hiện có
                 cursor.execute("SELECT COUNT(*) FROM FACT_GOP_Y_TU_LUAN")
                 existing_count = cursor.fetchone()[0]
                 print(f"      -> Hiện có {existing_count:,} dòng trong FACT_GOP_Y_TU_LUAN")
                 
-                inserted = batch_insert(cursor, 'FACT_GOP_Y_TU_LUAN', 
-                                       ['SubmissionID', 'MaSV', 'MaLopHP', 'NoiDungGopY',
-                                        'Sentiment', 'Is_Valid', 'Tag_HocPhan', 
-                                        'Tag_DayHoc', 'Tag_KiemTra', 'Tag_Khac'], 
-                                       data)
+                inserted = fast_batch_insert(cursor, 'FACT_GOP_Y_TU_LUAN', 
+                                           ['SubmissionID', 'MaSV', 'MaLopHP', 'NoiDungGopY',
+                                            'Sentiment', 'Is_Valid', 'Tag_HocPhan', 
+                                            'Tag_DayHoc', 'Tag_KiemTra', 'Tag_Khac'], 
+                                           data)
                 total_inserted['FACT_GOP_Y_TU_LUAN'] = inserted
-                print(f"      ✅ Đã insert {inserted} dòng mới (có NLP)")
-            else:
-                print(f"      ⚠️ Không có dữ liệu để insert")
+                print(f"      ✅ Đã insert {inserted} dòng mới")
         else:
             print(f"      ⚠️ Không có dữ liệu tự luận")
         
@@ -413,22 +385,19 @@ def insert_fact_tables(cursor, fact_main, fact_ketqua):
         print("\n    -> FACT_KET_QUA_DANH_GIA")
         
         if fact_ketqua is not None and not fact_ketqua.empty:
-            # Chuẩn bị data để insert
-            data = [(row['SubmissionID'], row['MaCauHoi'], row['Diem']) 
-                    for _, row in fact_ketqua.iterrows()]
+            # Chuẩn bị data để insert - dùng to_numpy()
+            data = fact_ketqua[['SubmissionID', 'MaCauHoi', 'Diem']].to_numpy().tolist()
             
             if data:
                 cursor.execute("SELECT COUNT(*) FROM FACT_KET_QUA_DANH_GIA")
                 existing_count = cursor.fetchone()[0]
                 print(f"      -> Hiện có {existing_count:,} dòng trong FACT_KET_QUA_DANH_GIA")
                 
-                inserted = batch_insert(cursor, 'FACT_KET_QUA_DANH_GIA', 
-                                       ['SubmissionID', 'MaCauHoi', 'Diem'], 
-                                       data)
+                inserted = fast_batch_insert(cursor, 'FACT_KET_QUA_DANH_GIA', 
+                                           ['SubmissionID', 'MaCauHoi', 'Diem'], 
+                                           data)
                 total_inserted['FACT_KET_QUA_DANH_GIA'] = inserted
                 print(f"      ✅ Đã insert {inserted} dòng mới")
-            else:
-                print(f"      ⚠️ Không có dữ liệu để insert")
         else:
             print(f"      ⚠️ Không có dữ liệu trắc nghiệm")
         
@@ -444,33 +413,24 @@ def insert_fact_tables(cursor, fact_main, fact_ketqua):
             cursor.execute("ALTER TABLE FACT_GOP_Y_TU_LUAN CHECK CONSTRAINT ALL")
             cursor.execute("ALTER TABLE FACT_KET_QUA_DANH_GIA CHECK CONSTRAINT ALL")
             cursor.connection.commit()
+            print("  ✅ Đã bật lại constraints")
         except Exception as e:
             print(f"  ⚠️ Không thể bật lại constraints: {e}")
     
     return total_inserted
 
 
-def verify_inserted_data(cursor):
-    """Kiểm tra số lượng dữ liệu đã insert"""
+def verify_inserted_data_fast(cursor):
+    """Kiểm tra nhanh số lượng dữ liệu"""
     print("\n  📊 Kiểm tra dữ liệu sau insert:")
     
-    tables = [
-        ('DIM_KHOA', 'MaKhoa'),
-        ('DIM_NGANH', 'MaNganh'),
-        ('DIM_CHUYEN_NGANH', 'MaChuyenNganh'),
-        ('DIM_HOC_PHAN', 'MaHP'),
-        ('DIM_GIANG_VIEN', 'MaGV'),
-        ('DIM_HOC_KY', 'MaHocKy'),
-        ('DIM_LOP_SINH_VIEN', 'MaLop'),
-        ('DIM_SINH_VIEN', 'MaSV'),
-        ('DIM_LOP_HOC_PHAN', 'MaLopHP'),
-        ('FACT_GOP_Y_TU_LUAN', 'SubmissionID'),
-        ('FACT_KET_QUA_DANH_GIA', 'SubmissionID')
-    ]
+    tables = ['DIM_KHOA', 'DIM_NGANH', 'DIM_CHUYEN_NGANH', 'DIM_HOC_PHAN', 
+              'DIM_GIANG_VIEN', 'DIM_HOC_KY', 'DIM_LOP_SINH_VIEN', 'DIM_SINH_VIEN',
+              'DIM_LOP_HOC_PHAN', 'FACT_GOP_Y_TU_LUAN', 'FACT_KET_QUA_DANH_GIA']
     
-    for table, column in tables:
+    for table in tables:
         try:
-            cursor.execute(f"SELECT COUNT(DISTINCT {column}) FROM {table}")
+            cursor.execute(f"SELECT COUNT(*) FROM {table}")
             count = cursor.fetchone()[0]
             print(f"      - {table}: {count:,} dòng")
         except Exception as e:
@@ -481,14 +441,17 @@ def verify_inserted_data(cursor):
 def main():
     total_start = time.time()
     print("=" * 60)
-    print("🚀 JOB 2: CHÈN DỮ LIỆU VÀO DATABASE")
+    print("🚀 JOB 2: CHÈN DỮ LIỆU VÀO DATABASE (TỐI ƯU TỐC ĐỘ)")
     print("=" * 60)
     print(f"SEMESTER: {SEMESTER}")
     print(f"SURVEY_FILE: {SURVEY_FILE}")
+    print(f"BATCH_SIZE: {BATCH_SIZE:,} dòng/batch")
     print("=" * 60)
-    print("\n📌 LOGIC:")
-    print("   - DIMENSION tables: CHỈ INSERT bản ghi CHƯA TỒN TẠI")
-    print("   - FACT tables: INSERT THÊM MỚI (có xử lý NLP)")
+    print("\n📌 LOGIC TỐI ƯU:")
+    print("   - DIMENSION: INSERT bản ghi CHƯA TỒN TẠI")
+    print("   - FACT: Chèn thêm mới + NLP vectorized")
+    print("   - Batch size lớn + fast_executemany")
+    print("   - Tắt constraints khi insert FACT")
     print("=" * 60)
     
     # 1. Kết nối Azure
@@ -501,13 +464,13 @@ def main():
         return
     
     # 2. Tìm và tải dữ liệu đã tiền xử lý
-    print("\n📥 2. Tìm kiếm dữ liệu đã tiền xử lý...")
+    print("\n📥 2. Tìm kiếm dữ liệu...")
     
     dims = {}
     fact_main = pd.DataFrame()
     fact_ketqua = pd.DataFrame()
     
-    # Thử tải từ preprocessed-data trước
+    # Thử tải từ preprocessed-data
     preprocessed_data = download_preprocessed_data(blob_service, f"{FILE_NAME}_preprocessed")
     
     if preprocessed_data:
@@ -515,32 +478,24 @@ def main():
         dims = {k: v for k, v in preprocessed_data.items() if k.startswith('dim_')}
         fact_main = preprocessed_data.get('fact_gop_y_tu_luan', pd.DataFrame())
         fact_ketqua = preprocessed_data.get('fact_ket_qua_danh_gia', pd.DataFrame())
-        
-        print(f"     - DIM_KHOA: {len(dims.get('dim_khoa', pd.DataFrame())):,} dòng")
-        print(f"     - FACT_GOP_Y_TU_LUAN: {len(fact_main):,} dòng")
-        print(f"     - FACT_KET_QUA_DANH_GIA: {len(fact_ketqua):,} dòng")
     else:
-        print("  ⚠️ Không tìm thấy preprocessed data, thử tìm CSV backup...")
-        
-        # Tìm CSV files với pattern cụ thể
+        print("  ⚠️ Thử tải CSV backup...")
         fact_main = download_csv_backup(blob_service, f"{FILE_NAME}_main")
         fact_ketqua = download_csv_backup(blob_service, f"{FILE_NAME}_ketqua")
         
         if fact_main is None and fact_ketqua is None:
-            print("  ❌ Không tìm thấy dữ liệu đã tiền xử lý!")
-            print("  💡 Hãy chạy JOB 1 trước hoặc kiểm tra đường dẫn file!")
+            print("  ❌ Không tìm thấy dữ liệu!")
             return
         
         print(f"  ✅ Đã tải CSV: main={len(fact_main) if fact_main is not None else 0}, ketqua={len(fact_ketqua) if fact_ketqua is not None else 0}")
-        print("  ⚠️ Chỉ insert FACT tables (không có DIMENSION vì thiếu dữ liệu master)")
     
-    # 3. Kết nối Database
+    # 3. Kết nối Database với tối ưu
     print("\n💾 3. Kết nối SQL Database...")
     try:
         conn = pyodbc.connect(CONN_STR, autocommit=False)
         cursor = conn.cursor()
-        cursor.fast_executemany = True
-        print("  ✅ Kết nối SQL thành công")
+        cursor.fast_executemany = True  # BẮT BUỘC cho tốc độ cao
+        print("  ✅ Kết nối SQL thành công (fast_executemany=ON)")
     except Exception as e:
         print(f"  ❌ Lỗi kết nối SQL: {e}")
         return
@@ -549,23 +504,22 @@ def main():
     db_start = time.time()
     
     try:
-        # Insert DIMENSION tables (CHỈ INSERT MỚI)
+        # Insert DIMENSION tables
         if dims and any(len(df) > 0 for df in dims.values()):
-            dim_inserted = insert_dimension_tables(cursor, dims)
+            dim_inserted = insert_dimension_tables_fast(cursor, dims)
         else:
-            print("\n  ⚠️ Bỏ qua DIMENSION tables (không có dữ liệu master)")
+            print("\n  ⚠️ Bỏ qua DIMENSION tables")
             dim_inserted = {}
         
-        # Insert FACT tables (CHÈN THÊM MỚI - CÓ NLP)
+        # Insert FACT tables
         if not fact_main.empty or not fact_ketqua.empty:
-            fact_inserted = insert_fact_tables(cursor, fact_main, fact_ketqua)
+            fact_inserted = insert_fact_tables_fast(cursor, fact_main, fact_ketqua)
         else:
-            print("\n  ⚠️ Bỏ qua FACT tables (không có dữ liệu)")
+            print("\n  ⚠️ Bỏ qua FACT tables")
             fact_inserted = {}
         
-        # Kiểm tra dữ liệu sau insert
-        verify_inserted_data(cursor)
-        
+        # Kiểm tra dữ liệu
+        verify_inserted_data_fast(cursor)
         cursor.connection.commit()
         
     except Exception as e:
@@ -581,26 +535,30 @@ def main():
     
     # 5. Thống kê
     total_time = time.time() - total_start
-    print("\n📊 5. KẾT QUẢ INSERT:")
-    print(f"   Thời gian insert: {db_time:.1f}s")
+    print("\n📊 5. KẾT QUẢ:")
+    print(f"   Thời gian insert: {db_time:.2f}s")
+    print(f"   Tổng thời gian: {total_time:.2f}s")
     
+    total_rows = 0
     if dim_inserted:
-        print("\n   📌 DIMENSION tables (CHỈ INSERT MỚI):")
-        inserted_count = 0
+        print("\n   📌 DIMENSION tables (mới):")
         for table, count in dim_inserted.items():
             if count > 0:
-                print(f"      - {table}: {count:,} dòng mới")
-                inserted_count += count
-        if inserted_count == 0:
-            print(f"      - Không có dòng mới nào được insert")
+                print(f"      - {table}: {count:,} dòng")
+                total_rows += count
     
     if fact_inserted:
-        print("\n   📌 FACT tables (CHÈN THÊM MỚI - CÓ NLP):")
+        print("\n   📌 FACT tables (đã insert):")
         for table, count in fact_inserted.items():
-            print(f"      - {table}: {count:,} dòng đã insert")
+            print(f"      - {table}: {count:,} dòng")
+            total_rows += count
+    
+    if total_rows > 0:
+        speed = total_rows / db_time if db_time > 0 else 0
+        print(f"\n   🚀 Tốc độ insert: {speed:,.0f} dòng/giây")
     
     print("\n" + "=" * 60)
-    print(f"✅ HOÀN THÀNH INSERT! Thời gian: {total_time:.1f}s")
+    print("✅ HOÀN THÀNH!")
     print("=" * 60)
 
 

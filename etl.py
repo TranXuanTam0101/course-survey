@@ -48,37 +48,70 @@ TAG_DH = re.compile(r'(giảng viên|thầy|cô|tận tâm|nhiệt tình|truyề
 TAG_KT = re.compile(r'(kiểm tra|đánh giá|công bằng|minh bạch|thi|đề thi|cho điểm|công khai)', re.I)
 
 
-# ================= HÀM TIỆN ÍCH =================
-def derive_ma_hoc_ky():
-    file_number = SURVEY_FILE.replace('.csv', '').split('_')[-1]
-    year_code = int(file_number[:-1])
-    hoc_ky = int(file_number[-1])
-    nam_bat_dau = 2000 + (year_code - 1)
-    nam_ket_thuc = nam_bat_dau + 1
-    return f"HK{hoc_ky}_{nam_bat_dau % 100}{nam_ket_thuc % 100}", f"{nam_bat_dau}-{nam_ket_thuc}", hoc_ky
-
-
+# ================= HÀM CHUẨN HÓA TÊN KHOA (SỬA LỖI TRÙNG) =================
 def normalize_khoa_name(ten_khoa: str) -> str:
+    """CHUẨN HÓA TÊN KHOA - TRÁNH TRÙNG LẶP"""
+    if not isinstance(ten_khoa, str):
+        return ""
+    
+    # Bước 1: Chuyển về chữ thường và loại bỏ khoảng trắng đầu cuối
     ten_lower = ten_khoa.lower().strip()
     
+    # Bước 2: Xử lý các trường hợp đặc biệt
     if 'cts' in ten_lower:
         return "Trường ĐH Kinh tế"
     if 'qt' in ten_lower:
         return "Phòng Đào Tạo"
     
+    # Bước 3: Xử lý logic cũ
     special_keywords = ['ngữ văn', 'truyền thông', 'toán', 'tin']
     for keyword in special_keywords:
         if keyword in ten_lower:
             return "Trường ĐHSP"
     
-    ten_chuan = re.sub(r'\s+', ' ', ten_khoa).strip()
+    # Bước 4: Chuẩn hóa: viết hoa chữ cái đầu mỗi từ
+    words = ten_lower.split()
+    normalized_words = []
+    for word in words:
+        if len(word) <= 2:
+            normalized_words.append(word)
+        else:
+            # Viết hoa chữ cái đầu
+            normalized_words.append(word[0].upper() + word[1:])
+    
+    ten_chuan = ' '.join(normalized_words)
+    
+    # Bước 5: Xử lý các từ viết tắt đặc biệt
+    # "Phong Dao Tao" -> "Phòng Đào Tạo"
+    if ten_chuan == "Phong Dao Tao":
+        return "Phòng Đào Tạo"
+    if ten_chuan == "Phong Dao tao":
+        return "Phòng Đào Tạo"
+    
+    # "Quan Tri Kinh Doanh" -> "Quản trị Kinh doanh"
+    if ten_chuan == "Quan Tri Kinh Doanh":
+        return "Quản trị Kinh doanh"
+    if ten_chuan == "Quản Trị Kinh Doanh":
+        return "Quản trị Kinh doanh"
+    
+    # "Truong Dh Kinh Te" -> "Trường ĐH Kinh tế"
+    if "dh" in ten_chuan.lower() or "đh" in ten_chuan.lower():
+        ten_chuan = ten_chuan.replace("Dh", "ĐH").replace("dh", "ĐH")
+        if "Kinh Te" in ten_chuan:
+            ten_chuan = ten_chuan.replace("Kinh Te", "Kinh tế")
+    
     return ten_chuan
 
 
 def create_ma_khoa_unique(ten_khoa: str, khoa_mapping: dict) -> str:
+    """Tạo mã khoa DUY NHẤT dựa trên tên đã chuẩn hóa"""
     ten_chuan = normalize_khoa_name(ten_khoa)
+    
+    # Nếu tên đã tồn tại trong mapping thì dùng lại mã cũ
     if ten_chuan in khoa_mapping:
         return khoa_mapping[ten_chuan]
+    
+    # Tạo mã mới
     new_number = len(khoa_mapping) + 1
     new_ma = f"KHOA{new_number:03d}"
     khoa_mapping[ten_chuan] = new_ma
@@ -86,6 +119,7 @@ def create_ma_khoa_unique(ten_khoa: str, khoa_mapping: dict) -> str:
 
 
 def create_ma_nganh_unique(ten_nganh: str, nganh_mapping: dict) -> str:
+    """Tạo mã ngành DUY NHẤT"""
     ten_chuan = ten_nganh.strip()
     if ten_chuan in nganh_mapping:
         return nganh_mapping[ten_chuan]
@@ -93,6 +127,15 @@ def create_ma_nganh_unique(ten_nganh: str, nganh_mapping: dict) -> str:
     new_ma = f"NGANH{new_number:03d}"
     nganh_mapping[ten_chuan] = new_ma
     return new_ma
+
+
+def derive_ma_hoc_ky():
+    file_number = SURVEY_FILE.replace('.csv', '').split('_')[-1]
+    year_code = int(file_number[:-1])
+    hoc_ky = int(file_number[-1])
+    nam_bat_dau = 2000 + (year_code - 1)
+    nam_ket_thuc = nam_bat_dau + 1
+    return f"HK{hoc_ky}_{nam_bat_dau % 100}{nam_ket_thuc % 100}", f"{nam_bat_dau}-{nam_ket_thuc}", hoc_ky
 
 
 def get_khoa_from_lop(lop: str) -> str:
@@ -324,39 +367,48 @@ def create_dimensions(df_raw, hp_master, chuyennganh_master):
     
     ma_hoc_ky, nam_hoc, hoc_ky = derive_ma_hoc_ky()
     
-    khoa_mapping = {}
-    nganh_mapping = {}
+    # Sử dụng dictionary để đảm bảo tên khoa duy nhất
+    khoa_mapping = {}  # ten_chuan -> ma_khoa
+    khoa_dict = {}     # ma_khoa -> ten_chuan
     
-    # 1. DIM_KHOA
-    khoa_dict = {}
+    # 1. DIM_KHOA - TẤT CẢ CÁC NGUỒN
     all_ten_khoa_raw = set()
     
+    # Từ master data
     if not hp_master.empty:
         all_ten_khoa_raw.update(hp_master['TenKhoa'].drop_duplicates().values)
     if not chuyennganh_master.empty:
         all_ten_khoa_raw.update(chuyennganh_master['TenKhoa'].drop_duplicates().values)
     
+    # Từ lớp CTS/QT
     for lop in df_raw['Lop'].drop_duplicates().dropna().values:
         khoa_from_lop = get_khoa_from_lop(lop)
         if khoa_from_lop:
             all_ten_khoa_raw.add(khoa_from_lop)
     
+    # Tạo mã cho từng tên khoa (sau khi chuẩn hóa)
     for ten_khoa_raw in sorted(all_ten_khoa_raw):
-        ma_khoa = create_ma_khoa_unique(ten_khoa_raw, khoa_mapping)
         ten_chuan = normalize_khoa_name(ten_khoa_raw)
+        ma_khoa = create_ma_khoa_unique(ten_khoa_raw, khoa_mapping)
         if ma_khoa not in khoa_dict:
             khoa_dict[ma_khoa] = ten_chuan
     
-    if normalize_khoa_name("Trường ĐH Kinh tế") not in khoa_mapping:
-        ma = create_ma_khoa_unique("Trường ĐH Kinh tế", khoa_mapping)
-        khoa_dict[ma] = "Trường ĐH Kinh tế"
-    if normalize_khoa_name("Phòng Đào Tạo") not in khoa_mapping:
-        ma = create_ma_khoa_unique("Phòng Đào Tạo", khoa_mapping)
-        khoa_dict[ma] = "Phòng Đào Tạo"
+    # Đảm bảo có các khoa mặc định
+    default_khoas = ["Trường ĐH Kinh tế", "Phòng Đào Tạo", "Trường ĐHSP"]
+    for ten_khoa in default_khoas:
+        if ten_khoa not in khoa_dict.values():
+            ma_khoa = create_ma_khoa_unique(ten_khoa, khoa_mapping)
+            if ma_khoa not in khoa_dict:
+                khoa_dict[ma_khoa] = ten_khoa
     
     dim_khoa = pd.DataFrame([(k, v) for k, v in khoa_dict.items()], columns=['MaKhoa', 'TenKhoa'])
     
+    # In thông tin DIM_KHOA để kiểm tra
+    print(f"\n  📊 DIM_KHOA: {len(dim_khoa)} rows")
+    print(dim_khoa.to_string(index=False))
+    
     # 2. DIM_NGANH
+    nganh_mapping = {}
     nganh_dict = {}
     all_ten_nganh = set()
     nganh_khoa_mapping = {}
@@ -370,6 +422,7 @@ def create_dimensions(df_raw, hp_master, chuyennganh_master):
             if ten_nganh not in nganh_khoa_mapping:
                 nganh_khoa_mapping[ten_nganh] = ten_khoa_chuan
     
+    # Thêm ngành mặc định cho CTS và QT
     all_ten_nganh.add("Ngành NULL_CTS")
     all_ten_nganh.add("Ngành NULL_QT")
     nganh_khoa_mapping["Ngành NULL_CTS"] = "Trường ĐH Kinh tế"
@@ -378,8 +431,9 @@ def create_dimensions(df_raw, hp_master, chuyennganh_master):
     for ten_nganh in sorted(all_ten_nganh):
         ma_nganh = create_ma_nganh_unique(ten_nganh, nganh_mapping)
         ten_khoa = nganh_khoa_mapping.get(ten_nganh, '')
-        ma_khoa = dim_khoa[dim_khoa['TenKhoa'] == ten_khoa]['MaKhoa'].values
-        ma_khoa = ma_khoa[0] if len(ma_khoa) > 0 else list(khoa_dict.keys())[0]
+        # Tìm mã khoa từ dim_khoa
+        ma_khoa_match = dim_khoa[dim_khoa['TenKhoa'] == ten_khoa]['MaKhoa'].values
+        ma_khoa = ma_khoa_match[0] if len(ma_khoa_match) > 0 else list(khoa_dict.keys())[0]
         nganh_dict[ma_nganh] = (ten_nganh, ma_khoa)
     
     dim_nganh = pd.DataFrame([(ma, ten, khoa) for ma, (ten, khoa) in nganh_dict.items()], 
@@ -393,8 +447,8 @@ def create_dimensions(df_raw, hp_master, chuyennganh_master):
             ma_cn = row['MaChuyenNganh']
             ten_cn = row['TenChuyenNganh']
             ten_nganh = row['TenNganh']
-            ma_nganh = dim_nganh[dim_nganh['TenNganh'] == ten_nganh]['MaNganh'].values
-            ma_nganh = ma_nganh[0] if len(ma_nganh) > 0 else 'NGANH001'
+            ma_nganh_match = dim_nganh[dim_nganh['TenNganh'] == ten_nganh]['MaNganh'].values
+            ma_nganh = ma_nganh_match[0] if len(ma_nganh_match) > 0 else 'NGANH001'
             dim_chuyen_nganh_list.append((ma_cn, ten_cn, ma_nganh))
     
     dim_chuyen_nganh_list.append(('NULL_CTS', 'Chuyên ngành NULL_CTS', 'NGANH001'))
@@ -415,8 +469,8 @@ def create_dimensions(df_raw, hp_master, chuyennganh_master):
         if ma_hp in hp_dict:
             ten_hp, ten_khoa_raw = hp_dict[ma_hp]
             ten_khoa_chuan = normalize_khoa_name(ten_khoa_raw)
-            ma_khoa = dim_khoa[dim_khoa['TenKhoa'] == ten_khoa_chuan]['MaKhoa'].values
-            ma_khoa = ma_khoa[0] if len(ma_khoa) > 0 else list(khoa_dict.keys())[0]
+            ma_khoa_match = dim_khoa[dim_khoa['TenKhoa'] == ten_khoa_chuan]['MaKhoa'].values
+            ma_khoa = ma_khoa_match[0] if len(ma_khoa_match) > 0 else list(khoa_dict.keys())[0]
             hp_list.append((ma_hp, ten_hp, ma_khoa))
         else:
             hp_list.append((ma_hp, ten_hp if pd.notna(ten_hp) else f"Học phần {ma_hp}", list(khoa_dict.keys())[0]))
@@ -539,11 +593,16 @@ def transform_data(df_raw: pd.DataFrame) -> tuple:
 def main():
     total_start = time.time()
     print("=" * 70)
-    print("🚀 JOB 1: TIỀN XỬ LÝ (CHỈ 1 FILE PICKLE DUY NHẤT)")
+    print("🚀 JOB 1: TIỀN XỬ LÝ (ĐÃ SỬA LỖI TRÙNG TÊN KHOA)")
     print("=" * 70)
     print(f"📂 File: {SURVEY_FILE}")
     print(f"📁 Semester: {SEMESTER}")
     print(f"⚙️ Workers: {NUM_WORKERS}")
+    print("=" * 70)
+    print("\n📌 CÁC SỬA LỖI:")
+    print("   - Chuẩn hóa tên khoa (viết hoa chữ cái đầu)")
+    print("   - Gộp các tên khoa trùng nhau (Phòng Đào Tạo, Quản trị Kinh doanh)")
+    print("   - Tạo mã KHOA001, KHOA002... duy nhất cho mỗi tên")
     print("=" * 70)
     
     # 1. Kết nối Azure
@@ -588,7 +647,7 @@ def main():
     fact_main, fact_ketqua = transform_data(df_raw)
     transform_time = time.time() - transform_start
     
-    # 7. Lưu preprocessed data (CHỈ 1 FILE PICKLE DUY NHẤT)
+    # 7. Lưu preprocessed data
     print("\n💾 7. Lưu preprocessed data (1 file pickle)...")
     preprocessed_data = {
         'metadata': {
@@ -631,7 +690,7 @@ def main():
     print(f"🚀 Tốc độ: {len(df_raw)/total_time:,.0f} rows/s")
     print("=" * 70)
     print("✅ DỮ LIỆU ĐÃ SẴN SÀNG CHO JOB 2!")
-    print("   📦 File pickle: khaosat_252_preprocessed.pkl")
+    print("   📦 File pickle: {}_preprocessed.pkl".format(FILE_NAME))
     print("=" * 70)
 
 

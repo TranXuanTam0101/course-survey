@@ -75,11 +75,11 @@ def is_special_lop(lop: str) -> tuple:
     
     # TH1: Lop có chứa CTS -> gán cho Trường ĐH Kinh Tế (TĐHKT)
     if 'CTS' in lop_upper:
-        return (True, 'CTS', 'TĐHKT', 'NULL_CTS', 'NULL_CTS')
+        return (True, 'CTS', 'KHOA19', 'NULL_CTS', 'NULL_CTS')
     
     # TH2: Lop có chứa QT -> gán cho Phòng Đào Tạo (PĐT)
     if 'QT' in lop_upper:
-        return (True, 'QT', 'PĐT', 'NULL_QT', 'NULL_QT')
+        return (True, 'QT', 'KHOA11', 'NULL_QT', 'NULL_QT')
     
     return (False, None, None, None, None)
 

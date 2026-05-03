@@ -74,19 +74,71 @@ def download_preprocessed_data(blob_service, filename):
         return None
 
 
-def download_csv_backup(blob_service, filename):
-    """Tải CSV backup nếu không có pickle"""
-    path = f"{PROCESSED_PATH}/{filename}"
+def download_csv_backup(blob_service, filename_pattern):
+    """Tải CSV backup mới nhất"""
     try:
         container_client = blob_service.get_container_client(CONTAINER_NAME)
-        blob = container_client.get_blob_client(path)
-        if blob.exists():
-            content = blob.download_blob().readall().decode('utf-8-sig')
-            return pd.read_csv(io.StringIO(content))
-        return None
+        # Liệt kê tất cả file trong processed-data
+        blobs = container_client.list_blobs(name_starts_with=f"{PROCESSED_PATH}/")
+        
+        # Tìm file matching pattern
+        matching_files = []
+        for blob in blobs:
+            if filename_pattern in blob.name:
+                matching_files.append(blob.name)
+        
+        if not matching_files:
+            return None
+        
+        # Lấy file mới nhất
+        latest_file = sorted(matching_files)[-1]
+        
+        # Download file
+        blob_client = container_client.get_blob_client(latest_file)
+        content = blob_client.download_blob().readall().decode('utf-8-sig')
+        
+        return pd.read_csv(io.StringIO(content))
     except Exception as e:
         print(f"  ❌ Lỗi tải CSV: {e}")
         return None
+
+
+# Trong main function, sửa phần tìm dữ liệu:
+print("\n📥 2. Tìm kiếm dữ liệu đã tiền xử lý...")
+
+# Thử tải từ preprocessed-data trước
+preprocessed_data = download_preprocessed_data(blob_service, f"{FILE_NAME}_preprocessed")
+
+if preprocessed_data:
+    print("  ✅ Đã tải dữ liệu từ preprocessed-data")
+    dims = {k: v for k, v in preprocessed_data.items() if k.startswith('dim_')}
+    fact_main = preprocessed_data.get('fact_gop_y_tu_luan', pd.DataFrame())
+    fact_ketqua = preprocessed_data.get('fact_ket_qua_danh_gia', pd.DataFrame())
+else:
+    print("  ⚠️ Không tìm thấy preprocessed data, thử tìm CSV backup...")
+    
+    # Tìm CSV files
+    fact_main = download_csv_backup(blob_service, f"{FILE_NAME}_main")
+    fact_ketqua = download_csv_backup(blob_service, f"{FILE_NAME}_ketqua")
+    
+    if fact_main is None and fact_ketqua is None:
+        print("  ❌ Không tìm thấy dữ liệu đã tiền xử lý!")
+        print("  💡 Hãy chạy JOB 1 trước hoặc kiểm tra đường dẫn file!")
+        return
+    
+    # Tạo dims tối thiểu từ fact data
+    dims = {
+        'dim_khoa': pd.DataFrame(),
+        'dim_nganh': pd.DataFrame(),
+        'dim_chuyen_nganh': pd.DataFrame(),
+        'dim_hoc_phan': pd.DataFrame(),
+        'dim_giang_vien': pd.DataFrame(),
+        'dim_hoc_ky': pd.DataFrame(),
+        'dim_lop_sinh_vien': pd.DataFrame(),
+        'dim_sinh_vien': pd.DataFrame(),
+        'dim_lop_hoc_phan': pd.DataFrame()
+    }
+    print(f"  ✅ Đã tải CSV: main={len(fact_main) if fact_main is not None else 0}, ketqua={len(fact_ketqua) if fact_ketqua is not None else 0}")
 
 
 # ================= NLP FUNCTIONS TỐI ƯU =================

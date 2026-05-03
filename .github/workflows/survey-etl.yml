@@ -15,9 +15,10 @@ on:
         type: string
 
 jobs:
-  etl:
+  # JOB 1: TIỀN XỬ LÝ DỮ LIỆU
+  preprocess:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     
     steps:
       - name: Checkout code
@@ -30,30 +31,90 @@ jobs:
       
       - name: Install dependencies
         run: |
-          {
-            echo "[1/2] Installing ODBC Driver..."
-            curl -s https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
-            curl -s https://packages.microsoft.com/config/ubuntu/22.04/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list
-            sudo apt-get update -qq
-            sudo ACCEPT_EULA=Y apt-get install -y -qq msodbcsql18 mssql-tools18
-            echo "✅ ODBC Driver done"
-          } &
+          echo "[1/2] Installing ODBC Driver..."
+          curl -s https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
+          curl -s https://packages.microsoft.com/config/ubuntu/22.04/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list
+          sudo apt-get update -qq
+          sudo ACCEPT_EULA=Y apt-get install -y -qq msodbcsql18 mssql-tools18
+          echo "✅ ODBC Driver done"
           
-          {
-            echo "[2/2] Installing Python deps..."
-            python -m pip install --upgrade pip -q
-            pip install -q pyarrow pandas numpy pyodbc azure-storage-blob sqlalchemy
-            echo "✅ Python deps done"
-          } &
-          
-          wait
+          echo "[2/2] Installing Python deps..."
+          python -m pip install --upgrade pip -q
+          pip install -q pyarrow pandas numpy pyodbc azure-storage-blob
+          echo "✅ Python deps done"
           
           echo "🎉 ALL DEPENDENCIES INSTALLED!"
-    
-      - name: Run ETL Pipeline
+      
+      - name: Run Preprocess (ETL.py)
         env:
           SEMESTER: ${{ github.event.inputs.semester }}
           SURVEY_FILE: ${{ github.event.inputs.survey_file }}
           CONNECTION_STRING: ${{ secrets.AZURE_CONNECTION_STRING }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-        run: python ETL.py
+        run: |
+          echo "🚀 Starting JOB 1: Preprocessing data..."
+          python ETL.py
+          echo "✅ JOB 1 completed!"
+      
+      - name: Upload preprocessed data (artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: preprocessed-data
+          path: |
+            preprocessed-data/*.pkl
+            processed-data/*.csv
+          retention-days: 1
+          if-no-files-found: warn
+
+  # JOB 2: LOAD DỮ LIỆU VÀO DATABASE (CHẠY SAU JOB 1)
+  load:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: preprocess  # CHỈ CHẠY SAU KHI JOB 1 HOÀN THÀNH
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      
+      - name: Download preprocessed data
+        uses: actions/download-artifact@v4
+        with:
+          name: preprocessed-data
+          path: .
+      
+      - name: Install dependencies
+        run: |
+          echo "[1/2] Installing ODBC Driver..."
+          curl -s https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
+          curl -s https://packages.microsoft.com/config/ubuntu/22.04/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list
+          sudo apt-get update -qq
+          sudo ACCEPT_EULA=Y apt-get install -y -qq msodbcsql18 mssql-tools18
+          echo "✅ ODBC Driver done"
+          
+          echo "[2/2] Installing Python deps..."
+          python -m pip install --upgrade pip -q
+          pip install -q pyarrow pandas numpy pyodbc azure-storage-blob
+          echo "✅ Python deps done"
+          
+          echo "🎉 ALL DEPENDENCIES INSTALLED!"
+      
+      - name: Run Load (load.py)
+        env:
+          SEMESTER: ${{ github.event.inputs.semester }}
+          SURVEY_FILE: ${{ github.event.inputs.survey_file }}
+          CONNECTION_STRING: ${{ secrets.AZURE_CONNECTION_STRING }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        run: |
+          echo "🚀 Starting JOB 2: Loading data to database..."
+          python load.py
+          echo "✅ JOB 2 completed!"
+      
+      - name: Verify insertion
+        run: |
+          echo "📊 Data loading completed!"
+          echo "✅ Pipeline finished successfully!"

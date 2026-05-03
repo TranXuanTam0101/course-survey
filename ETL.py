@@ -66,50 +66,22 @@ def derive_ma_hoc_ky():
 def is_special_lop(lop: str) -> tuple:
     """
     Kiểm tra lớp có phải là lớp đặc biệt (chứa CTS hoặc QT)
-    Returns: (is_special, loai, ma_khoa, ten_chuyen_nganh, ma_chuyen_nganh, ten_nganh, ma_nganh)
+    Returns: (is_special, loai, ma_khoa)
     """
     if not lop or not isinstance(lop, str):
-        return (False, None, None, None, None, None, None)
+        return (False, None, None)
     
     lop_upper = lop.upper().strip()
     
     # TH1: Lop có chứa CTS -> gán cho Trường ĐH Kinh Tế (KHOA19)
     if 'CTS' in lop_upper:
-        # Lấy phần số nếu có (CTS-50K -> 50)
-        match = re.search(r'CTS[-_]?(\d{2})K', lop_upper)
-        if match:
-            so_k = match.group(1)
-            ten_chuyen_nganh = f"Chuyên ngành CTS {so_k}K"
-            ma_chuyen_nganh = f"CTS_{so_k}K"
-            ten_nganh = f"Ngành CTS {so_k}K"
-            ma_nganh = f"CTS_{so_k}K"
-        else:
-            ten_chuyen_nganh = "Chuyên ngành CTS"
-            ma_chuyen_nganh = "CTS"
-            ten_nganh = "Ngành CTS"
-            ma_nganh = "CTS"
-        
-        return (True, 'CTS', 'KHOA19', ten_chuyen_nganh, ma_chuyen_nganh, ten_nganh, ma_nganh)
+        return (True, 'CTS', 'KHOA19')
     
     # TH2: Lop có chứa QT -> gán cho Phòng Đào Tạo (KHOA11)
     if 'QT' in lop_upper:
-        # Lấy phần số nếu có (49KQT -> 49)
-        match = re.search(r'(\d{2})KQT', lop_upper)
-        if match:
-            so_k = match.group(1)
-            ten_chuyen_nganh = f"Chuyên ngành QT {so_k}K"
-            ma_chuyen_nganh = f"QT_{so_k}K"
-            ten_nganh = f"Ngành QT {so_k}K"
-            ma_nganh = f"QT_{so_k}K"
-        else:
-            ten_chuyen_nganh = "Chuyên ngành QT"
-            ma_chuyen_nganh = "QT"
-            ten_nganh = "Ngành QT"
-            ma_nganh = "QT"
-        
-        return (True, 'QT', 'KHOA11', ten_chuyen_nganh, ma_chuyen_nganh, ten_nganh, ma_nganh)
+        return (True, 'QT', 'KHOA11')
     
-    return (False, None, None, None, None, None, None)
+    return (False, None, None)
 
 
 # ================= BLOB FUNCTIONS =================
@@ -199,42 +171,66 @@ def load_all_existing_data(cursor):
     }
 
 
-def get_or_create_special_dim(cursor, existing_data, lop, loai, ma_khoa, 
-                               ten_chuyen_nganh, ma_chuyen_nganh, ten_nganh, ma_nganh):
+def create_null_dim_data(cursor, existing_data):
     """
-    Lấy hoặc tạo mới DIM_NGANH và DIM_CHUYEN_NGANH cho lớp đặc biệt
-    Returns: ma_chuyen_nganh (đã tồn tại hoặc vừa tạo)
+    Tạo dòng dữ liệu NULL cho DIM_NGANH và DIM_CHUYEN_NGANH 
+    cho các lớp đặc biệt CTS và QT (chỉ tạo 1 lần duy nhất)
     """
-    # Kiểm tra ma_khoa có tồn tại trong DIM_KHOA không
-    if ma_khoa not in existing_data['khoa']:
-        print(f"        ❌ LỖI: MaKhoa '{ma_khoa}' không tồn tại trong DIM_KHOA!")
-        print(f"        Các MaKhoa hiện có: {list(existing_data['khoa'].keys())}")
-        return None
+    print("\n  -> Tạo dòng dữ liệu NULL cho lớp đặc biệt CTS và QT...")
     
-    # Tạo DIM_NGANH nếu chưa có
-    if ma_nganh not in existing_data['nganh']:
+    # Dữ liệu NULL cho CTS (KHOA19 - Trường ĐH Kinh Tế)
+    cts_ma_nganh = 'NULL_CTS'
+    cts_ten_nganh = ''
+    cts_ma_chuyen_nganh = 'NULL_CTS'
+    cts_ten_chuyen_nganh = ''
+    cts_ma_khoa = 'KHOA19'
+    
+    # Dữ liệu NULL cho QT (KHOA11 - Phòng Đào Tạo)
+    qt_ma_nganh = 'NULL_QT'
+    qt_ten_nganh = ''
+    qt_ma_chuyen_nganh = 'NULL_QT'
+    qt_ten_chuyen_nganh = ''
+    qt_ma_khoa = 'KHOA11'
+    
+    # Tạo cho CTS
+    if cts_ma_nganh not in existing_data['nganh']:
         try:
             cursor.execute("INSERT INTO DIM_NGANH (MaNganh, TenNganh, MaKhoa) VALUES (?, ?, ?)", 
-                          ma_nganh, ten_nganh, ma_khoa)
-            existing_data['nganh'].add(ma_nganh)
-            print(f"        ✅ Đã tạo Ngành mới: {ma_nganh} - {ten_nganh} (thuộc {ma_khoa})")
+                          cts_ma_nganh, cts_ten_nganh, cts_ma_khoa)
+            existing_data['nganh'].add(cts_ma_nganh)
+            print(f"        ✅ Đã tạo Ngành NULL cho CTS: {cts_ma_nganh}")
         except Exception as e:
-            print(f"        ❌ Lỗi tạo Ngành: {e}")
-            return None
+            print(f"        ⚠️ Lỗi tạo Ngành CTS: {e}")
     
-    # Tạo DIM_CHUYEN_NGANH nếu chưa có
-    if ma_chuyen_nganh not in existing_data['chuyennganh']:
+    if cts_ma_chuyen_nganh not in existing_data['chuyennganh']:
         try:
             cursor.execute("INSERT INTO DIM_CHUYEN_NGANH (MaChuyenNganh, TenChuyenNganh, MaNganh) VALUES (?, ?, ?)", 
-                          ma_chuyen_nganh, ten_chuyen_nganh, ma_nganh)
-            existing_data['chuyennganh'].add(ma_chuyen_nganh)
-            print(f"        ✅ Đã tạo Chuyên ngành mới: {ma_chuyen_nganh} - {ten_chuyen_nganh}")
+                          cts_ma_chuyen_nganh, cts_ten_chuyen_nganh, cts_ma_nganh)
+            existing_data['chuyennganh'].add(cts_ma_chuyen_nganh)
+            print(f"        ✅ Đã tạo Chuyên ngành NULL cho CTS: {cts_ma_chuyen_nganh}")
         except Exception as e:
-            print(f"        ❌ Lỗi tạo Chuyên ngành: {e}")
-            return None
+            print(f"        ⚠️ Lỗi tạo Chuyên ngành CTS: {e}")
+    
+    # Tạo cho QT
+    if qt_ma_nganh not in existing_data['nganh']:
+        try:
+            cursor.execute("INSERT INTO DIM_NGANH (MaNganh, TenNganh, MaKhoa) VALUES (?, ?, ?)", 
+                          qt_ma_nganh, qt_ten_nganh, qt_ma_khoa)
+            existing_data['nganh'].add(qt_ma_nganh)
+            print(f"        ✅ Đã tạo Ngành NULL cho QT: {qt_ma_nganh}")
+        except Exception as e:
+            print(f"        ⚠️ Lỗi tạo Ngành QT: {e}")
+    
+    if qt_ma_chuyen_nganh not in existing_data['chuyennganh']:
+        try:
+            cursor.execute("INSERT INTO DIM_CHUYEN_NGANH (MaChuyenNganh, TenChuyenNganh, MaNganh) VALUES (?, ?, ?)", 
+                          qt_ma_chuyen_nganh, qt_ten_chuyen_nganh, qt_ma_nganh)
+            existing_data['chuyennganh'].add(qt_ma_chuyen_nganh)
+            print(f"        ✅ Đã tạo Chuyên ngành NULL cho QT: {qt_ma_chuyen_nganh}")
+        except Exception as e:
+            print(f"        ⚠️ Lỗi tạo Chuyên ngành QT: {e}")
     
     cursor.connection.commit()
-    return ma_chuyen_nganh
 
 
 # ================= NLP CLASS =================
@@ -479,8 +475,8 @@ def load_remaining_dimensions_optimized(cursor, df_raw, existing_data, ma_hoc_ky
     
     # 3. DIM_LOP_SINH_VIEN - XỬ LÝ ĐẶC BIỆT
     print("\n  -> 3. XỬ LÝ ĐẶC BIỆT DIM_LOP_SINH_VIEN")
-    print("     - Lớp có chứa 'CTS' -> TẠO MỚI Ngành & Chuyên ngành, gán cho Trường ĐH Kinh Tế (KHOA19)")
-    print("     - Lớp có chứa 'QT' -> TẠO MỚI Ngành & Chuyên ngành, gán cho Phòng Đào Tạo (KHOA11)")
+    print("     - Lớp có chứa 'CTS' -> DIM Ngành & DIM Chuyên ngành NULL, gán cho Trường ĐH Kinh Tế (KHOA19)")
+    print("     - Lớp có chứa 'QT' -> DIM Ngành & DIM Chuyên ngành NULL, gán cho Phòng Đào Tạo (KHOA11)")
     
     df_lop_unique = df_raw[['Lop']].drop_duplicates('Lop').dropna()
     print(f"     - Tổng số lớp unique: {len(df_lop_unique)}")
@@ -500,20 +496,21 @@ def load_remaining_dimensions_optimized(cursor, df_raw, existing_data, ma_hoc_ky
             continue
         
         # Kiểm tra lớp đặc biệt
-        is_special, loai, ma_khoa, ten_cn, ma_cn, ten_nganh, ma_nganh = is_special_lop(lop)
+        is_special, loai, ma_khoa = is_special_lop(lop)
         
         if is_special:
-            # Lớp đặc biệt: Tạo mới hoặc lấy chuyên ngành
-            ma_chuyen_nganh = get_or_create_special_dim(cursor, existing_data, lop, loai, 
-                                                         ma_khoa, ten_cn, ma_cn, ten_nganh, ma_nganh)
-            if ma_chuyen_nganh:
-                new_lop_data.append((lop, lop, ma_chuyen_nganh))
-                if loai == 'CTS':
-                    special_cts.append(lop)
-                else:
-                    special_qt.append(lop)
+            # Lớp đặc biệt: Sử dụng chuyên ngành NULL
+            if loai == 'CTS':
+                ma_chuyen_nganh = 'NULL_CTS'
+                special_cts.append(lop)
             else:
-                skipped_lops.append(f"{lop} (Không tạo được chuyên ngành do lỗi FK)")
+                ma_chuyen_nganh = 'NULL_QT'
+                special_qt.append(lop)
+            
+            if ma_chuyen_nganh in existing_data['chuyennganh']:
+                new_lop_data.append((lop, lop, ma_chuyen_nganh))
+            else:
+                skipped_lops.append(f"{lop} (Chuyên ngành {ma_chuyen_nganh} chưa được tạo)")
         else:
             # Lớp thường: Kiểm tra trong DIM_CHUYEN_NGANH
             match = re.search(r'K(\d{2})', lop.upper())
@@ -529,14 +526,14 @@ def load_remaining_dimensions_optimized(cursor, df_raw, existing_data, ma_hoc_ky
     
     # In thống kê
     if special_cts:
-        print(f"     📌 Lớp CTS (KHOA19 - Trường ĐH Kinh Tế): {len(special_cts)} lớp")
+        print(f"     📌 Lớp CTS (KHOA19 - Trường ĐH Kinh Tế) - Chuyên ngành NULL: {len(special_cts)} lớp")
         for lop in special_cts[:10]:
             print(f"        - {lop}")
         if len(special_cts) > 10:
             print(f"        ... và {len(special_cts) - 10} lớp khác")
     
     if special_qt:
-        print(f"     📌 Lớp QT (KHOA11 - Phòng Đào Tạo): {len(special_qt)} lớp")
+        print(f"     📌 Lớp QT (KHOA11 - Phòng Đào Tạo) - Chuyên ngành NULL: {len(special_qt)} lớp")
         for lop in special_qt[:10]:
             print(f"        - {lop}")
         if len(special_qt) > 10:
@@ -710,11 +707,11 @@ def load_fact_tables_optimized(cursor, fact_main, fact_ketqua, existing_data, ma
 def main():
     total_start = time.time()
     print("=" * 60)
-    print("🚀 ETL PIPELINE - XỬ LÝ LỚP ĐẶC BIỆT (CTS/QT)")
+    print("🚀 ETL PIPELINE - XỬ LÝ LỚP ĐẶC BIỆT (CTS/QT) VỚI DỮ LIỆU NULL")
     print("=" * 60)
     print("📌 Xử lý đặc biệt:")
-    print("   - Lớp có chứa 'CTS' -> TẠO MỚI Ngành & Chuyên ngành, gán cho Trường ĐH Kinh Tế (KHOA19)")
-    print("   - Lớp có chứa 'QT' -> TẠO MỚI Ngành & Chuyên ngành, gán cho Phòng Đào Tạo (KHOA11)")
+    print("   - Lớp có chứa 'CTS' -> DIM Ngành & DIM Chuyên ngành = NULL, gán cho Trường ĐH Kinh Tế (KHOA19)")
+    print("   - Lớp có chứa 'QT' -> DIM Ngành & DIM Chuyên ngành = NULL, gán cho Phòng Đào Tạo (KHOA11)")
     print(f"SEMESTER: {SEMESTER}")
     print(f"SURVEY_FILE: {SURVEY_FILE}")
     print("=" * 60)
@@ -779,10 +776,17 @@ def main():
         # 7. Load existing data
         existing_data = load_all_existing_data(cursor)
         
-        # 8. Lấy thông tin học kỳ
+        # 8. Tạo dữ liệu NULL cho CTS và QT (chỉ 1 lần)
+        create_null_dim_data(cursor, existing_data)
+        
+        # Refresh existing data sau khi tạo NULL
+        cursor.execute("SELECT MaChuyenNganh FROM DIM_CHUYEN_NGANH")
+        existing_data['chuyennganh'] = {row[0] for row in cursor.fetchall()}
+        
+        # 9. Lấy thông tin học kỳ
         ma_hoc_ky, nam_hoc, hoc_ky = derive_ma_hoc_ky()
         
-        # 9. Load các bảng DIM còn lại
+        # 10. Load các bảng DIM còn lại
         load_remaining_dimensions_optimized(cursor, df_raw, existing_data, ma_hoc_ky, nam_hoc, hoc_ky)
         
         # Refresh existing data
@@ -791,7 +795,7 @@ def main():
         cursor.execute("SELECT MaLopHP FROM DIM_LOP_HOC_PHAN")
         existing_data['lophp'] = {row[0] for row in cursor.fetchall()}
         
-        # 10. Load FACT tables
+        # 11. Load FACT tables
         count_main, count_kq = load_fact_tables_optimized(cursor, fact_main, fact_ketqua, existing_data, ma_hoc_ky)
         
     except Exception as e:

@@ -574,10 +574,14 @@ def load_remaining_dimensions_optimized(cursor, df_raw, existing_data, ma_hoc_ky
 
 
 # ================= LOAD FACT TABLES =================
-def load_fact_tables_optimized(cursor, fact_main, fact_ketqua, existing_data, ma_hoc_ky):
-    print("\n📥 Loading FACT tables...")
+def load_fact_tables_bulk(cursor, conn, fact_main, fact_ketqua, existing_data, ma_hoc_ky):
+    """
+    Tối ưu insert FACT tables bằng bulk insert
+    """
+    print("\n📥 Loading FACT tables (BULK INSERT)...")
     start_time = time.time()
     
+    # Lấy danh sách hợp lệ
     cursor.execute("SELECT MaLopHP FROM DIM_LOP_HOC_PHAN WHERE MaHocKy = ?", ma_hoc_ky)
     valid_lophp = {row[0] for row in cursor.fetchall()}
     valid_sv = existing_data['sinhvien']
@@ -585,91 +589,100 @@ def load_fact_tables_optimized(cursor, fact_main, fact_ketqua, existing_data, ma
     print(f"     - Số LopHP hợp lệ: {len(valid_lophp)}")
     print(f"     - Số MaSV hợp lệ: {len(valid_sv)}")
     
-    cursor.execute("ALTER TABLE FACT_GOP_Y_TU_LUAN NOCHECK CONSTRAINT ALL")
-    cursor.execute("ALTER TABLE FACT_KET_QUA_DANH_GIA NOCHECK CONSTRAINT ALL")
-    cursor.connection.commit()
+    if not valid_lophp:
+        print("      ⚠️ Không có LopHP hợp lệ, bỏ qua FACT tables!")
+        return 0, 0
     
+    # ===== 1. Filter dữ liệu hợp lệ =====
+    print("     - Lọc dữ liệu hợp lệ...")
+    
+    # Filter fact_main
+    if not fact_main.empty:
+        fact_main_filtered = fact_main[
+            fact_main['MaSV'].isin(valid_sv) & 
+            fact_main['LopHP'].isin(valid_lophp)
+        ].copy()
+        print(f"     - fact_main sau lọc: {len(fact_main_filtered):,} dòng (bỏ {len(fact_main) - len(fact_main_filtered):,})")
+    else:
+        fact_main_filtered = pd.DataFrame()
+    
+    # ===== 2. INSERT FACT_GOP_Y_TU_LUAN trực tiếp =====
     count_main = 0
-    count_kq = 0
-    
-    try:
-        cursor.execute("BEGIN TRANSACTION")
+    if not fact_main_filtered.empty:
+        print("     - Đang insert FACT_GOP_Y_TU_LUAN...")
         
-        # FACT_GOP_Y_TU_LUAN
-        if not fact_main.empty and valid_lophp:
-            data_main = []
-            for _, row in fact_main.iterrows():
-                if row['MaSV'] not in valid_sv or row['LopHP'] not in valid_lophp:
-                    continue
-                noi_dung = row['NoiDungGopY'][:4000] if isinstance(row['NoiDungGopY'], str) else ''
-                data_main.append((
-                    row['SubmissionID'], row['MaSV'], row['LopHP'], noi_dung,
-                    row['Sentiment'], row['Is_Valid'],
-                    row['Tag_HocPhan'], row['Tag_DayHoc'], row['Tag_KiemTra'], row['Tag_Khac']
-                ))
-            
-            if data_main:
-                sql_main = """INSERT INTO FACT_GOP_Y_TU_LUAN 
-                             (SubmissionID, MaSV, MaLopHP, NoiDungGopY, Sentiment, Is_Valid, 
-                              Tag_HocPhan, Tag_DayHoc, Tag_KiemTra, Tag_Khac) 
-                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
-                cursor.executemany(sql_main, data_main)
-                count_main = len(data_main)
-                print(f"      ✅ FACT_GOP_Y_TU_LUAN: {count_main:,} dòng")
-        elif not valid_lophp:
-            print(f"      ⚠️ Không thể insert FACT_GOP_Y_TU_LUAN vì không có LopHP hợp lệ!")
+        # Chuẩn bị data
+        fact_main_filtered['NoiDungGopY'] = fact_main_filtered['NoiDungGopY'].astype(str).str[:4000]
         
-        # FACT_KET_QUA_DANH_GIA
-        if not fact_ketqua.empty and count_main > 0:
-            cursor.execute("SELECT SubmissionID FROM FACT_GOP_Y_TU_LUAN")
-            valid_subs = {row[0] for row in cursor.fetchall()}
-            
-            if valid_subs:
-                all_questions = list(range(1, 13))
-                submission_data = {}
-                
-                for _, row in fact_ketqua.iterrows():
-                    sub_id = row['SubmissionID']
-                    if sub_id not in valid_subs:
-                        continue
-                    if sub_id not in submission_data:
-                        submission_data[sub_id] = {}
-                    submission_data[sub_id][row['MaCauHoi']] = row['Diem']
-                
-                final_data = []
-                missing_count = 0
-                
-                for sub_id in valid_subs:
-                    answers = submission_data.get(sub_id, {})
-                    for q in all_questions:
-                        diem = answers.get(q, 5)
-                        if q not in answers:
-                            missing_count += 1
-                        final_data.append((sub_id, q, diem))
-                
-                unique_data = {}
-                for sub_id, q, diem in final_data:
-                    key = (sub_id, q)
-                    if key not in unique_data or diem > unique_data[key]:
-                        unique_data[key] = diem
-                
-                final_unique = [(k[0], k[1], v) for k, v in unique_data.items()]
-                
-                if final_unique:
-                    sql_kq = "INSERT INTO FACT_KET_QUA_DANH_GIA (SubmissionID, MaCauHoi, Diem) VALUES (?, ?, ?)"
-                    cursor.executemany(sql_kq, final_unique)
-                    count_kq = len(final_unique)
-                    print(f"      ✅ FACT_KET_QUA_DANH_GIA: {count_kq:,} dòng (đã bổ sung {missing_count} câu thiếu)")
+        # Chuyển thành list of tuples
+        data_main = list(fact_main_filtered[[
+            'SubmissionID', 'MaSV', 'LopHP', 'NoiDungGopY',
+            'Sentiment', 'Is_Valid', 'Tag_HocPhan', 'Tag_DayHoc', 'Tag_KiemTra', 'Tag_Khac'
+        ]].itertuples(index=False, name=None))
         
-        cursor.execute("COMMIT")
+        # Bulk insert
+        sql_main = """INSERT INTO FACT_GOP_Y_TU_LUAN 
+                     (SubmissionID, MaSV, MaLopHP, NoiDungGopY, Sentiment, Is_Valid, 
+                      Tag_HocPhan, Tag_DayHoc, Tag_KiemTra, Tag_Khac) 
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
         
-    except Exception as e:
-        cursor.execute("ROLLBACK")
-        raise e
-    finally:
-        cursor.execute("ALTER TABLE FACT_GOP_Y_TU_LUAN CHECK CONSTRAINT ALL")
-        cursor.execute("ALTER TABLE FACT_KET_QUA_DANH_GIA CHECK CONSTRAINT ALL")
+        cursor.fast_executemany = True
+        cursor.executemany(sql_main, data_main)
         cursor.connection.commit()
+        count_main = len(data_main)
+        print(f"      ✅ FACT_GOP_Y_TU_LUAN: {count_main:,} dòng")
+    
+    # ===== 3. INSERT FACT_KET_QUA_DANH_GIA =====
+    count_kq = 0
+    if not fact_ketqua.empty and count_main > 0:
+        print("     - Đang chuẩn bị FACT_KET_QUA_DANH_GIA...")
+        
+        # Lấy danh sách SubmissionID hợp lệ
+        cursor.execute("SELECT SubmissionID FROM FACT_GOP_Y_TU_LUAN")
+        valid_subs = {row[0] for row in cursor.fetchall()}
+        
+        # Filter fact_ketqua
+        fact_ketqua_filtered = fact_ketqua[fact_ketqua['SubmissionID'].isin(valid_subs)].copy()
+        
+        if not fact_ketqua_filtered.empty:
+            # Tạo dữ liệu đầy đủ 12 câu hỏi cho mỗi submission
+            print("     - Tạo dữ liệu đầy đủ 12 câu hỏi...")
+            
+            all_questions = list(range(1, 13))
+            
+            # Group by SubmissionID
+            submission_dict = fact_ketqua_filtered.groupby('SubmissionID').apply(
+                lambda x: dict(zip(x['MaCauHoi'], x['Diem']))
+            ).to_dict()
+            
+            # Tạo data hoàn chỉnh
+            complete_data = []
+            missing_count = 0
+            
+            for sub_id in valid_subs:
+                answers = submission_dict.get(sub_id, {})
+                for q in all_questions:
+                    diem = answers.get(q, 5)
+                    if q not in answers:
+                        missing_count += 1
+                    complete_data.append((sub_id, q, diem))
+            
+            # Loại bỏ duplicate (giữ giá trị lớn nhất)
+            unique_dict = {}
+            for sub_id, q, diem in complete_data:
+                key = (sub_id, q)
+                if key not in unique_dict or diem > unique_dict[key]:
+                    unique_dict[key] = diem
+            
+            final_data = [(k[0], k[1], v) for k, v in unique_dict.items()]
+            
+            print(f"     - Insert {len(final_data):,} dòng vào FACT_KET_QUA_DANH_GIA...")
+            
+            sql_kq = "INSERT INTO FACT_KET_QUA_DANH_GIA (SubmissionID, MaCauHoi, Diem) VALUES (?, ?, ?)"
+            cursor.executemany(sql_kq, final_data)
+            cursor.connection.commit()
+            count_kq = len(final_data)
+            print(f"      ✅ FACT_KET_QUA_DANH_GIA: {count_kq:,} dòng (bổ sung {missing_count} câu thiếu)")
     
     elapsed = time.time() - start_time
     print(f"  ✅ FACT loaded in {elapsed:.1f}s")
@@ -799,7 +812,7 @@ def main():
         existing_data['lophp'] = {row[0] for row in cursor.fetchall()}
         
         # 13. Load FACT tables
-        count_main, count_kq = load_fact_tables_optimized(cursor, fact_main, fact_ketqua, existing_data, ma_hoc_ky)
+        count_main, count_kq = load_fact_tables_bulk(cursor, conn, fact_main, fact_ketqua, existing_data, ma_hoc_ky)
         
     except Exception as e:
         print(f"  ❌ Lỗi: {e}")

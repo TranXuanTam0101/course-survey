@@ -13,7 +13,7 @@ import multiprocessing as mp
 import warnings
 warnings.filterwarnings('ignore')
 
-# ================= CONFIG TỐI ƯU =================
+# ================= CONFIG =================
 CONNECTION_STRING = os.environ.get("CONNECTION_STRING")
 SEMESTER = os.environ.get("SEMESTER")
 SURVEY_FILE = os.environ.get("SURVEY_FILE")
@@ -29,15 +29,14 @@ RAWDATA_PATH = "rawdata"
 TAILIEU_CONTAINER = "tailieu"
 PREPROCESSED_PATH = "preprocessed-data"
 
-# Tối ưu số worker = CPU cores
 NUM_WORKERS = mp.cpu_count()
 CHUNK_SIZE = 500000
 
-# ================= COMPILE REGEX PATTERNS =================
+# ================= REGEX PATTERNS =================
 _date_pattern = re.compile(r'^\d{2}/\d{2}/\d{4}$')
 _ma_gv_pattern = re.compile(r'^(\d{7}|TG\d{5}|gvDacThu_TKTH)$')
 
-# Tối ưu NLP
+# ================= NLP PATTERNS =================
 POSITIVE_WORDS = {'tuyệt', 'tốt', 'hay', 'ổn', 'hài lòng', 'cảm ơn', 'ok', 'great', 'excellent', 
                   'thoải mái', 'vui', 'sôi nổi', 'hấp dẫn', 'dễ', 'thân thiện', 'tâm lý', 
                   'tận tâm', 'nhiệt tình', 'chu đáo', 'chi tiết', 'sáng tạo', 'thực tế', 'hiệu quả'}
@@ -60,53 +59,72 @@ def derive_ma_hoc_ky():
 
 
 def create_ma_khoa_auto(ten_khoa: str, khoa_counter: dict) -> str:
-    """Tạo mã khoa tự động tuần tự: KHOA001, KHOA002, KHOA003, ..."""
-    # Nếu đã có mã thì dùng lại
+    """Tạo mã khoa tự động: KHOA001, KHOA002,..."""
     if ten_khoa in khoa_counter:
         return khoa_counter[ten_khoa]
     
-    # Tạo mã mới: KHOA001, KHOA002, ...
     new_number = len(khoa_counter) + 1
     new_ma = f"KHOA{new_number:03d}"
-    
     khoa_counter[ten_khoa] = new_ma
     return new_ma
 
 
 def create_ma_nganh_auto(ten_nganh: str, nganh_counter: dict) -> str:
-    """Tạo mã ngành tự động tuần tự: NGANH001, NGANH002, NGANH003, ..."""
-    # Nếu đã có mã thì dùng lại
+    """Tạo mã ngành tự động: NGANH001, NGANH002,..."""
     if ten_nganh in nganh_counter:
         return nganh_counter[ten_nganh]
     
-    # Tạo mã mới: NGANH001, NGANH002, ...
     new_number = len(nganh_counter) + 1
     new_ma = f"NGANH{new_number:03d}"
-    
     nganh_counter[ten_nganh] = new_ma
     return new_ma
 
 
-def create_ma_chuyen_nganh_auto(ten_chuyen_nganh: str, chuyen_nganh_counter: dict) -> str:
-    """Tạo mã chuyên ngành tự động tuần tự: CN001, CN002, CN003, ..."""
-    if ten_chuyen_nganh in chuyen_nganh_counter:
-        return chuyen_nganh_counter[ten_chuyen_nganh]
+def get_normalized_khoa_name(ten_khoa: str) -> str:
+    """Chuẩn hóa tên khoa:
+    - Nếu chứa ngữ văn, truyền thông, toán, tin -> Trường ĐHSP
+    - Nếu là CTS -> Trường ĐH Kinh tế
+    - Nếu là QT -> Phòng Đào Tạo
+    """
+    ten_lower = ten_khoa.lower()
     
-    new_number = len(chuyen_nganh_counter) + 1
-    new_ma = f"CN{new_number:03d}"
+    # Xử lý các trường hợp đặc biệt từ lớp
+    if 'cts' in ten_lower:
+        return "Trường ĐH Kinh tế"
+    if 'qt' in ten_lower:
+        return "Phòng Đào Tạo"
     
-    chuyen_nganh_counter[ten_chuyen_nganh] = new_ma
-    return new_ma
+    # Xử lý logic cũ
+    special_keywords = ['ngữ văn', 'truyền thông', 'toán', 'tin']
+    for keyword in special_keywords:
+        if keyword in ten_lower:
+            return "Trường ĐHSP"
+    
+    return ten_khoa
 
 
-def determine_ma_chuyen_nganh_tu_lop(lop: str, chuyen_nganh_counter: dict) -> str:
-    """Xác định mã chuyên ngành từ Lop, tự sinh nếu chưa có"""
+def get_khoa_from_lop(lop: str) -> str:
+    """Xác định tên khoa từ tên lớp"""
     if not isinstance(lop, str):
         return None
     
     lop_upper = lop.upper().strip()
     
-    # Các trường hợp đặc biệt vẫn giữ nguyên tên
+    if 'CTS' in lop_upper:
+        return "Trường ĐH Kinh tế"
+    if 'QT' in lop_upper:
+        return "Phòng Đào Tạo"
+    
+    return None
+
+
+def get_ma_chuyen_nganh_from_lop(lop: str) -> str:
+    """Xác định mã chuyên ngành từ tên lớp"""
+    if not isinstance(lop, str):
+        return None
+    
+    lop_upper = lop.upper().strip()
+    
     if 'CTS' in lop_upper:
         return "NULL_CTS"
     if 'QT' in lop_upper:
@@ -116,12 +134,11 @@ def determine_ma_chuyen_nganh_tu_lop(lop: str, chuyen_nganh_counter: dict) -> st
         if match:
             return f"K{match.group(1)}-ACCA"
     
-    # Tạo mã mới cho lớp nếu chưa có
-    if lop not in chuyen_nganh_counter:
-        new_number = len(chuyen_nganh_counter) + 1
-        chuyen_nganh_counter[lop] = f"CN{new_number:03d}"
+    match = re.search(r'K(\d{2})', lop_upper)
+    if match:
+        return f"K{match.group(1)}"
     
-    return chuyen_nganh_counter[lop]
+    return None
 
 
 # ================= NLP FUNCTIONS =================
@@ -322,102 +339,100 @@ def parse_survey(content: str) -> pd.DataFrame:
     return df
 
 
-# ================= TẠO DIMENSIONS - TẤT CẢ ĐỀU TỰ SINH =================
+# ================= TẠO DIMENSIONS =================
 def create_dimensions(df_raw, hp_master, chuyennganh_master):
-    print("  -> Tạo dimension tables (tất cả mã đều tự sinh)...")
+    print("  -> Tạo dimension tables...")
     start = time.time()
     
     ma_hoc_ky, nam_hoc, hoc_ky = derive_ma_hoc_ky()
     
     # Counter cho mã tự sinh
-    khoa_counter = {}      # Lưu mapping tên_khoa -> mã_khoa
-    nganh_counter = {}     # Lưu mapping tên_ngành -> mã_ngành
-    chuyen_nganh_counter = {}  # Lưu mapping tên_chuyên_ngành -> mã_chuyên_ngành
+    khoa_counter = {}
+    nganh_counter = {}
     
-    # ================= 1. DIM_KHOA - TỰ SINH TOÀN BỘ =================
+    # ================= 1. DIM_KHOA (TỰ SINH) =================
     khoa_dict = {}
+    all_ten_khoa_raw = set()
     
-    # Thu thập tất cả tên khoa từ các nguồn
-    all_ten_khoa = set()
-    
-    # Từ hp_master
+    # Thêm các khoa từ HP-Khoa.csv
     if not hp_master.empty:
-        all_ten_khoa.update(hp_master['TenKhoa'].drop_duplicates().values)
+        all_ten_khoa_raw.update(hp_master['TenKhoa'].drop_duplicates().values)
     
-    # Từ chuyennganh_master
+    # Thêm các khoa từ TenChuyenNganh-Khoa.csv
     if not chuyennganh_master.empty:
-        all_ten_khoa.update(chuyennganh_master['TenKhoa'].drop_duplicates().values)
+        all_ten_khoa_raw.update(chuyennganh_master['TenKhoa'].drop_duplicates().values)
     
-    # Tạo mã cho tất cả khoa
-    for ten_khoa in sorted(all_ten_khoa):
-        ma_khoa = create_ma_khoa_auto(ten_khoa, khoa_counter)
-        khoa_dict[ma_khoa] = ten_khoa
+    # Thêm khoa từ các lớp CTS và QT trong dữ liệu survey
+    for lop in df_raw['Lop'].drop_duplicates().dropna().values:
+        khoa_from_lop = get_khoa_from_lop(lop)
+        if khoa_from_lop:
+            all_ten_khoa_raw.add(khoa_from_lop)
+    
+    # Chuẩn hóa tên khoa và tạo mã
+    for ten_khoa_raw in sorted(all_ten_khoa_raw):
+        ten_khoa_normalized = get_normalized_khoa_name(ten_khoa_raw)
+        ma_khoa = create_ma_khoa_auto(ten_khoa_normalized, khoa_counter)
+        khoa_dict[ma_khoa] = ten_khoa_normalized
+    
+    # Đảm bảo có khoa mặc định nếu chưa có
+    if "Trường ĐH Kinh tế" not in khoa_dict.values():
+        ma_khoa = create_ma_khoa_auto("Trường ĐH Kinh tế", khoa_counter)
+        khoa_dict[ma_khoa] = "Trường ĐH Kinh tế"
+    
+    if "Phòng Đào Tạo" not in khoa_dict.values():
+        ma_khoa = create_ma_khoa_auto("Phòng Đào Tạo", khoa_counter)
+        khoa_dict[ma_khoa] = "Phòng Đào Tạo"
     
     dim_khoa = pd.DataFrame([(k, v) for k, v in khoa_dict.items()], columns=['MaKhoa', 'TenKhoa'])
     
-    # ================= 2. DIM_NGANH - TỰ SINH TOÀN BỘ =================
+    # ================= 2. DIM_NGANH (TỰ SINH) =================
     nganh_dict = {}
-    
-    # Thu thập tất cả tên ngành từ chuyennganh_master
     all_ten_nganh = set()
-    nganh_khoa_mapping = {}  # Lưu mapping tên_ngành -> tên_khoa
+    nganh_khoa_mapping = {}
     
     if not chuyennganh_master.empty:
         for _, row in chuyennganh_master.iterrows():
             ten_nganh = row['TenNganh']
-            ten_khoa = row['TenKhoa']
+            ten_khoa_raw = row['TenKhoa']
+            ten_khoa_normalized = get_normalized_khoa_name(ten_khoa_raw)
             all_ten_nganh.add(ten_nganh)
             if ten_nganh not in nganh_khoa_mapping:
-                nganh_khoa_mapping[ten_nganh] = ten_khoa
+                nganh_khoa_mapping[ten_nganh] = ten_khoa_normalized
     
-    # Tạo mã cho tất cả ngành
+    # Thêm ngành mặc định cho CTS và QT
+    all_ten_nganh.add("Ngành NULL_CTS")
+    all_ten_nganh.add("Ngành NULL_QT")
+    nganh_khoa_mapping["Ngành NULL_CTS"] = "Trường ĐH Kinh tế"
+    nganh_khoa_mapping["Ngành NULL_QT"] = "Phòng Đào Tạo"
+    
     for ten_nganh in sorted(all_ten_nganh):
         ma_nganh = create_ma_nganh_auto(ten_nganh, nganh_counter)
         ten_khoa = nganh_khoa_mapping.get(ten_nganh, '')
-        # Tìm mã khoa từ dim_khoa
         ma_khoa = dim_khoa[dim_khoa['TenKhoa'] == ten_khoa]['MaKhoa'].values
-        ma_khoa = ma_khoa[0] if len(ma_khoa) > 0 else 'KHOA001'
+        ma_khoa = ma_khoa[0] if len(ma_khoa) > 0 else list(khoa_dict.keys())[0]
         nganh_dict[ma_nganh] = (ten_nganh, ma_khoa)
     
-    # Tạo DataFrame DIM_NGANH
-    dim_nganh_list = [(ma, ten, khoa) for ma, (ten, khoa) in nganh_dict.items()]
-    dim_nganh = pd.DataFrame(dim_nganh_list, columns=['MaNganh', 'TenNganh', 'MaKhoa'])
+    dim_nganh = pd.DataFrame([(ma, ten, khoa) for ma, (ten, khoa) in nganh_dict.items()], 
+                             columns=['MaNganh', 'TenNganh', 'MaKhoa'])
     
-    # ================= 3. DIM_CHUYEN_NGANH - TỰ SINH =================
-    chuyen_nganh_dict = {}
-    
-    # Thu thập tất cả tên chuyên ngành
-    all_ten_chuyen_nganh = set()
-    chuyen_nganh_nganh_mapping = {}  # Lưu mapping tên_chuyên_ngành -> tên_ngành
+    # ================= 3. DIM_CHUYEN_NGANH (KHÔNG TỰ SINH) =================
+    dim_chuyen_nganh_list = []
     
     if not chuyennganh_master.empty:
         for _, row in chuyennganh_master.iterrows():
-            ten_chuyen = row['TenChuyenNganh']
+            ma_cn = row['MaChuyenNganh']
+            ten_cn = row['TenChuyenNganh']
             ten_nganh = row['TenNganh']
-            all_ten_chuyen_nganh.add(ten_chuyen)
-            if ten_chuyen not in chuyen_nganh_nganh_mapping:
-                chuyen_nganh_nganh_mapping[ten_chuyen] = ten_nganh
+            ma_nganh = dim_nganh[dim_nganh['TenNganh'] == ten_nganh]['MaNganh'].values
+            ma_nganh = ma_nganh[0] if len(ma_nganh) > 0 else 'NGANH001'
+            dim_chuyen_nganh_list.append((ma_cn, ten_cn, ma_nganh))
     
-    # Tạo mã cho tất cả chuyên ngành
-    for ten_chuyen in sorted(all_ten_chuyen_nganh):
-        ma_chuyen = create_ma_chuyen_nganh_auto(ten_chuyen, chuyen_nganh_counter)
-        ten_nganh = chuyen_nganh_nganh_mapping.get(ten_chuyen, '')
-        # Tìm mã ngành từ dim_nganh
-        ma_nganh = dim_nganh[dim_nganh['TenNganh'] == ten_nganh]['MaNganh'].values
-        ma_nganh = ma_nganh[0] if len(ma_nganh) > 0 else 'NGANH001'
-        chuyen_nganh_dict[ma_chuyen] = (ten_chuyen, ma_nganh)
+    # Thêm các giá trị NULL_CTS và NULL_QT
+    dim_chuyen_nganh_list.append(('NULL_CTS', 'Chuyên ngành NULL_CTS', 'NGANH001'))
+    dim_chuyen_nganh_list.append(('NULL_QT', 'Chuyên ngành NULL_QT', 'NGANH002'))
     
-    # Thêm các giá trị đặc biệt
-    special_chuyen_nganh = [
-        ('NULL_CTS', 'Chuyên ngành NULL_CTS', 'NULL_CTS'),
-        ('NULL_QT', 'Chuyên ngành NULL_QT', 'NULL_QT')
-    ]
-    
-    dim_chuyen_nganh_list = list(special_chuyen_nganh)
-    for ma, (ten, ma_nganh) in chuyen_nganh_dict.items():
-        dim_chuyen_nganh_list.append((ma, ten, ma_nganh))
-    
-    dim_chuyen_nganh = pd.DataFrame(dim_chuyen_nganh_list, columns=['MaChuyenNganh', 'TenChuyenNganh', 'MaNganh']).drop_duplicates('MaChuyenNganh')
+    dim_chuyen_nganh = pd.DataFrame(dim_chuyen_nganh_list, 
+                                     columns=['MaChuyenNganh', 'TenChuyenNganh', 'MaNganh']).drop_duplicates('MaChuyenNganh')
     
     # ================= 4. DIM_HOC_PHAN =================
     hp_dict = {}
@@ -429,12 +444,13 @@ def create_dimensions(df_raw, hp_master, chuyennganh_master):
     df_hp = df_raw[['MaHP', 'TenHP']].drop_duplicates('MaHP').dropna(subset=['MaHP'])
     for ma_hp, ten_hp in df_hp.values:
         if ma_hp in hp_dict:
-            ten_hp, ten_khoa = hp_dict[ma_hp]
-            ma_khoa = dim_khoa[dim_khoa['TenKhoa'] == ten_khoa]['MaKhoa'].values
-            ma_khoa = ma_khoa[0] if len(ma_khoa) > 0 else 'KHOA001'
+            ten_hp, ten_khoa_raw = hp_dict[ma_hp]
+            ten_khoa_normalized = get_normalized_khoa_name(ten_khoa_raw)
+            ma_khoa = dim_khoa[dim_khoa['TenKhoa'] == ten_khoa_normalized]['MaKhoa'].values
+            ma_khoa = ma_khoa[0] if len(ma_khoa) > 0 else list(khoa_dict.keys())[0]
             hp_list.append((ma_hp, ten_hp, ma_khoa))
         else:
-            hp_list.append((ma_hp, ten_hp if pd.notna(ten_hp) else f"Học phần {ma_hp}", 'KHOA001'))
+            hp_list.append((ma_hp, ten_hp if pd.notna(ten_hp) else f"Học phần {ma_hp}", list(khoa_dict.keys())[0]))
     
     dim_hoc_phan = pd.DataFrame(hp_list, columns=['MaHP', 'TenHP', 'MaKhoa'])
     
@@ -444,22 +460,13 @@ def create_dimensions(df_raw, hp_master, chuyennganh_master):
     # ================= 6. DIM_HOC_KY =================
     dim_hoc_ky = pd.DataFrame([(ma_hoc_ky, nam_hoc, hoc_ky)], columns=['MaHocKy', 'NamHoc', 'HocKy'])
     
-    # ================= 7. DIM_LOP_SINH_VIEN - TỰ SINH MÃ =================
-    lop_counter = {}
+    # ================= 7. DIM_LOP_SINH_VIEN =================
+    valid_cn = set(dim_chuyen_nganh['MaChuyenNganh'].values)
     lop_list = []
-    all_lop = df_raw['Lop'].drop_duplicates().dropna().values
-    
-    for lop in all_lop:
-        ma_cn = determine_ma_chuyen_nganh_tu_lop(lop, lop_counter)
-        # Kiểm tra ma_cn có trong dim_chuyen_nganh không
-        valid_cn = set(dim_chuyen_nganh['MaChuyenNganh'].values)
-        if ma_cn in valid_cn:
+    for lop in df_raw['Lop'].drop_duplicates().dropna().values:
+        ma_cn = get_ma_chuyen_nganh_from_lop(lop)
+        if ma_cn and ma_cn in valid_cn:
             lop_list.append((lop, lop, ma_cn))
-        else:
-            # Nếu chưa có, thêm vào dim_chuyen_nganh
-            new_ma_cn = create_ma_chuyen_nganh_auto(f"Lớp {lop}", chuyen_nganh_counter)
-            dim_chuyen_nganh = pd.concat([dim_chuyen_nganh, pd.DataFrame([(new_ma_cn, f"Lớp {lop}", 'NGANH001')], columns=['MaChuyenNganh', 'TenChuyenNganh', 'MaNganh'])], ignore_index=True)
-            lop_list.append((lop, lop, new_ma_cn))
     
     dim_lop_sinh_vien = pd.DataFrame(lop_list, columns=['MaLop', 'Lop', 'MaChuyenNganh'])
     
@@ -488,12 +495,10 @@ def create_dimensions(df_raw, hp_master, chuyennganh_master):
     
     print(f"  ✅ Tạo dimensions xong ({time.time()-start:.2f}s)")
     
-    # In thống kê
-    print(f"\n  📊 Thống kê mã tự sinh:")
+    print(f"\n  📊 Thống kê:")
     print(f"     - DIM_KHOA: {len(dim_khoa)} rows (mã: KHOA001, KHOA002, ...)")
     print(f"     - DIM_NGANH: {len(dim_nganh)} rows (mã: NGANH001, NGANH002, ...)")
-    print(f"     - DIM_CHUYEN_NGANH: {len(dim_chuyen_nganh)} rows (mã: CN001, CN002, ...)")
-    print(f"     - DIM_LOP_SINH_VIEN: {len(dim_lop_sinh_vien)} rows")
+    print(f"     - DIM_CHUYEN_NGANH: {len(dim_chuyen_nganh)} rows (mã giữ nguyên)")
     
     return {
         'dim_khoa': dim_khoa,
@@ -533,7 +538,7 @@ def transform_data(df_raw: pd.DataFrame) -> tuple:
                                      'Sentiment', 'Is_Valid', 'Tag_HocPhan', 
                                      'Tag_DayHoc', 'Tag_KiemTra', 'Tag_Khac']]
     
-    # XỬ LÝ TRẮC NGHIỆM - TẠO ĐỦ 12 CÂU
+    # XỬ LÝ TRẮC NGHIỆM
     mcq_mask = (df_raw['CauHoi'].notna() & (df_raw['CauHoi'] != '') &
                 df_raw['GiaTri'].notna() & (df_raw['GiaTri'] != ''))
     mcq_df = df_raw[mcq_mask][['SubmissionID', 'CauHoi', 'GiaTri']].copy()
@@ -570,17 +575,20 @@ def transform_data(df_raw: pd.DataFrame) -> tuple:
 def main():
     total_start = time.time()
     print("=" * 70)
-    print("🚀 JOB 1: TIỀN XỬ LÝ (TẤT CẢ MÃ ĐỀU TỰ SINH)")
+    print("🚀 JOB 1: TIỀN XỬ LÝ")
     print("=" * 70)
     print(f"📂 File: {SURVEY_FILE}")
     print(f"📁 Semester: {SEMESTER}")
     print(f"⚙️ Workers: {NUM_WORKERS}")
     print("=" * 70)
-    print("\n📌 LOGIC TỰ SINH MÃ:")
-    print("   - Mã Khoa: KHOA001, KHOA002, KHOA003, ...")
-    print("   - Mã Ngành: NGANH001, NGANH002, NGANH003, ...")
-    print("   - Mã Chuyên ngành: CN001, CN002, CN003, ...")
-    print("   - XỬ LÝ HẾT TẤT CẢ DỮ LIỆU, KHÔNG XÓA BẤT KỲ DÒNG NÀO")
+    print("\n📌 LOGIC XỬ LÝ LỚP:")
+    print("   - Lớp chứa 'CTS' → Trường ĐH Kinh tế quản lý")
+    print("   - Lớp chứa 'QT' → Phòng Đào Tạo quản lý")
+    print("\n📌 LOGIC MÃ:")
+    print("   - Mã Khoa: KHOA001, KHOA002, ... (tự sinh)")
+    print("   - Mã Ngành: NGANH001, NGANH002, ... (tự sinh)")
+    print("   - Mã Chuyên ngành: GIỮ NGUYÊN (không tự sinh)")
+    print("   - Đặc biệt: Ngữ Văn, Truyền thông, Toán, Tin → Trường ĐHSP")
     print("=" * 70)
     
     # 1. Kết nối Azure

@@ -64,23 +64,13 @@ def derive_ma_hoc_ky():
 
 
 def is_special_lop(lop: str) -> tuple:
-    """
-    Kiểm tra lớp có phải là lớp đặc biệt (chứa CTS hoặc QT)
-    Returns: (is_special, loai, ma_khoa)
-    """
     if not lop or not isinstance(lop, str):
         return (False, None, None)
-    
     lop_upper = lop.upper().strip()
-    
-    # TH1: Lop có chứa CTS -> gán cho Trường ĐH Kinh Tế (KHOA19)
     if 'CTS' in lop_upper:
         return (True, 'CTS', 'KHOA19')
-    
-    # TH2: Lop có chứa QT -> gán cho Phòng Đào Tạo (KHOA11)
     if 'QT' in lop_upper:
         return (True, 'QT', 'KHOA11')
-    
     return (False, None, None)
 
 
@@ -113,50 +103,39 @@ def save_processed(blob_service, df, filename):
 
 # ================= LOAD EXISTING DATA =================
 def load_all_existing_data(cursor):
-    """Load tất cả existing data từ database"""
     print("  -> Đang load existing data từ database...")
     start = time.time()
     
-    # DIM_KHOA
     cursor.execute("SELECT MaKhoa, TenKhoa FROM DIM_KHOA")
     existing_khoa = {row[0]: row[1] for row in cursor.fetchall()}
-    print(f"     - DIM_KHOA: {existing_khoa}")
     
-    # DIM_NGANH
     cursor.execute("SELECT MaNganh FROM DIM_NGANH")
     existing_nganh = {row[0] for row in cursor.fetchall()}
     
-    # DIM_CHUYEN_NGANH
     cursor.execute("SELECT MaChuyenNganh FROM DIM_CHUYEN_NGANH")
     existing_chuyennganh = {row[0] for row in cursor.fetchall()}
     
-    # DIM_HOC_PHAN
     cursor.execute("SELECT MaHP FROM DIM_HOC_PHAN")
     existing_hocphan = {row[0] for row in cursor.fetchall()}
     
-    # DIM_GIANG_VIEN
     cursor.execute("SELECT MaGV FROM DIM_GIANG_VIEN")
     existing_giangvien = {row[0] for row in cursor.fetchall()}
     
-    # DIM_LOP_SINH_VIEN
     cursor.execute("SELECT MaLop FROM DIM_LOP_SINH_VIEN")
     existing_lop = {row[0] for row in cursor.fetchall()}
     
-    # DIM_SINH_VIEN
     cursor.execute("SELECT MaSV FROM DIM_SINH_VIEN")
     existing_sinhvien = {row[0] for row in cursor.fetchall()}
     
-    # DIM_LOP_HOC_PHAN
     cursor.execute("SELECT MaLopHP FROM DIM_LOP_HOC_PHAN")
     existing_lophp = {row[0] for row in cursor.fetchall()}
     
-    # DIM_HOC_KY
     cursor.execute("SELECT MaHocKy FROM DIM_HOC_KY")
     existing_hocky = {row[0] for row in cursor.fetchall()}
     
     print(f"     ✅ Loaded in {time.time()-start:.1f}s")
-    print(f"     - DIM_NGANH: {len(existing_nganh)} dòng")
-    print(f"     - DIM_CHUYEN_NGANH: {len(existing_chuyennganh)} dòng")
+    print(f"     - DIM_HOC_PHAN: {len(existing_hocphan)} dòng")
+    print(f"     - DIM_GIANG_VIEN: {len(existing_giangvien)} dòng")
     
     return {
         'khoa': existing_khoa,
@@ -172,63 +151,43 @@ def load_all_existing_data(cursor):
 
 
 def create_null_dim_data(cursor, existing_data):
-    """
-    Tạo dòng dữ liệu NULL cho DIM_NGANH và DIM_CHUYEN_NGANH 
-    cho các lớp đặc biệt CTS và QT (chỉ tạo 1 lần duy nhất)
-    """
     print("\n  -> Tạo dòng dữ liệu NULL cho lớp đặc biệt CTS và QT...")
     
-    # Dữ liệu NULL cho CTS (KHOA19 - Trường ĐH Kinh Tế)
     cts_ma_nganh = 'NULL_CTS'
     cts_ten_nganh = ''
     cts_ma_chuyen_nganh = 'NULL_CTS'
     cts_ten_chuyen_nganh = ''
     cts_ma_khoa = 'KHOA19'
     
-    # Dữ liệu NULL cho QT (KHOA11 - Phòng Đào Tạo)
     qt_ma_nganh = 'NULL_QT'
     qt_ten_nganh = ''
     qt_ma_chuyen_nganh = 'NULL_QT'
     qt_ten_chuyen_nganh = ''
     qt_ma_khoa = 'KHOA11'
     
-    # Tạo cho CTS
     if cts_ma_nganh not in existing_data['nganh']:
-        try:
-            cursor.execute("INSERT INTO DIM_NGANH (MaNganh, TenNganh, MaKhoa) VALUES (?, ?, ?)", 
-                          cts_ma_nganh, cts_ten_nganh, cts_ma_khoa)
-            existing_data['nganh'].add(cts_ma_nganh)
-            print(f"        ✅ Đã tạo Ngành NULL cho CTS: {cts_ma_nganh}")
-        except Exception as e:
-            print(f"        ⚠️ Lỗi tạo Ngành CTS: {e}")
+        cursor.execute("INSERT INTO DIM_NGANH (MaNganh, TenNganh, MaKhoa) VALUES (?, ?, ?)", 
+                      cts_ma_nganh, cts_ten_nganh, cts_ma_khoa)
+        existing_data['nganh'].add(cts_ma_nganh)
+        print(f"        ✅ Đã tạo Ngành NULL cho CTS: {cts_ma_nganh}")
     
     if cts_ma_chuyen_nganh not in existing_data['chuyennganh']:
-        try:
-            cursor.execute("INSERT INTO DIM_CHUYEN_NGANH (MaChuyenNganh, TenChuyenNganh, MaNganh) VALUES (?, ?, ?)", 
-                          cts_ma_chuyen_nganh, cts_ten_chuyen_nganh, cts_ma_nganh)
-            existing_data['chuyennganh'].add(cts_ma_chuyen_nganh)
-            print(f"        ✅ Đã tạo Chuyên ngành NULL cho CTS: {cts_ma_chuyen_nganh}")
-        except Exception as e:
-            print(f"        ⚠️ Lỗi tạo Chuyên ngành CTS: {e}")
+        cursor.execute("INSERT INTO DIM_CHUYEN_NGANH (MaChuyenNganh, TenChuyenNganh, MaNganh) VALUES (?, ?, ?)", 
+                      cts_ma_chuyen_nganh, cts_ten_chuyen_nganh, cts_ma_nganh)
+        existing_data['chuyennganh'].add(cts_ma_chuyen_nganh)
+        print(f"        ✅ Đã tạo Chuyên ngành NULL cho CTS: {cts_ma_chuyen_nganh}")
     
-    # Tạo cho QT
     if qt_ma_nganh not in existing_data['nganh']:
-        try:
-            cursor.execute("INSERT INTO DIM_NGANH (MaNganh, TenNganh, MaKhoa) VALUES (?, ?, ?)", 
-                          qt_ma_nganh, qt_ten_nganh, qt_ma_khoa)
-            existing_data['nganh'].add(qt_ma_nganh)
-            print(f"        ✅ Đã tạo Ngành NULL cho QT: {qt_ma_nganh}")
-        except Exception as e:
-            print(f"        ⚠️ Lỗi tạo Ngành QT: {e}")
+        cursor.execute("INSERT INTO DIM_NGANH (MaNganh, TenNganh, MaKhoa) VALUES (?, ?, ?)", 
+                      qt_ma_nganh, qt_ten_nganh, qt_ma_khoa)
+        existing_data['nganh'].add(qt_ma_nganh)
+        print(f"        ✅ Đã tạo Ngành NULL cho QT: {qt_ma_nganh}")
     
     if qt_ma_chuyen_nganh not in existing_data['chuyennganh']:
-        try:
-            cursor.execute("INSERT INTO DIM_CHUYEN_NGANH (MaChuyenNganh, TenChuyenNganh, MaNganh) VALUES (?, ?, ?)", 
-                          qt_ma_chuyen_nganh, qt_ten_chuyen_nganh, qt_ma_nganh)
-            existing_data['chuyennganh'].add(qt_ma_chuyen_nganh)
-            print(f"        ✅ Đã tạo Chuyên ngành NULL cho QT: {qt_ma_chuyen_nganh}")
-        except Exception as e:
-            print(f"        ⚠️ Lỗi tạo Chuyên ngành QT: {e}")
+        cursor.execute("INSERT INTO DIM_CHUYEN_NGANH (MaChuyenNganh, TenChuyenNganh, MaNganh) VALUES (?, ?, ?)", 
+                      qt_ma_chuyen_nganh, qt_ten_chuyen_nganh, qt_ma_nganh)
+        existing_data['chuyennganh'].add(qt_ma_chuyen_nganh)
+        print(f"        ✅ Đã tạo Chuyên ngành NULL cho QT: {qt_ma_chuyen_nganh}")
     
     cursor.connection.commit()
 
@@ -418,18 +377,18 @@ def transform_with_nlp_optimized(df_raw: pd.DataFrame) -> tuple:
     if text_df.empty:
         fact_main = pd.DataFrame()
     else:
-        text_df_unique = text_df.drop_duplicates(subset=['SubmissionID'], keep='first')
-        text_df_unique['NoiDungGopY'] = text_df_unique['EssayText'].str.replace(r'\s+', ' ', regex=True).str.strip()
+        text_df_unique = text_df.drop_duplicates(subset=['SubmissionID'], keep='first').copy()
+        text_df_unique.loc[:, 'NoiDungGopY'] = text_df_unique['EssayText'].str.replace(r'\s+', ' ', regex=True).str.strip()
         
         texts = text_df_unique['NoiDungGopY'].tolist()
         sentiments, tags = _nlp.process_batch(texts)
         
-        text_df_unique['Sentiment'] = sentiments
-        text_df_unique['Tag_HocPhan'] = [t[0] for t in tags]
-        text_df_unique['Tag_DayHoc'] = [t[1] for t in tags]
-        text_df_unique['Tag_KiemTra'] = [t[2] for t in tags]
-        text_df_unique['Tag_Khac'] = [t[3] for t in tags]
-        text_df_unique['Is_Valid'] = 1
+        text_df_unique.loc[:, 'Sentiment'] = sentiments
+        text_df_unique.loc[:, 'Tag_HocPhan'] = [t[0] for t in tags]
+        text_df_unique.loc[:, 'Tag_DayHoc'] = [t[1] for t in tags]
+        text_df_unique.loc[:, 'Tag_KiemTra'] = [t[2] for t in tags]
+        text_df_unique.loc[:, 'Tag_Khac'] = [t[3] for t in tags]
+        text_df_unique.loc[:, 'Is_Valid'] = 1
         
         fact_main = text_df_unique[['SubmissionID', 'MaSV', 'LopHP', 'NoiDungGopY',
                                      'Sentiment', 'Is_Valid', 'Tag_HocPhan', 
@@ -438,8 +397,8 @@ def transform_with_nlp_optimized(df_raw: pd.DataFrame) -> tuple:
     mcq_df = df_raw[df_raw['CauHoi'].notna() & (df_raw['CauHoi'] != '')].copy()
     
     if not mcq_df.empty:
-        mcq_df['MaCauHoi'] = mcq_df['CauHoi'].astype(int)
-        mcq_df['Diem'] = mcq_df['GiaTri'].astype(int)
+        mcq_df.loc[:, 'MaCauHoi'] = mcq_df['CauHoi'].astype(int)
+        mcq_df.loc[:, 'Diem'] = mcq_df['GiaTri'].astype(int)
         fact_ketqua = mcq_df[['SubmissionID', 'MaCauHoi', 'Diem']].copy()
     else:
         fact_ketqua = pd.DataFrame()
@@ -450,7 +409,6 @@ def transform_with_nlp_optimized(df_raw: pd.DataFrame) -> tuple:
 
 # ================= LOAD DIMENSIONS =================
 def load_remaining_dimensions_optimized(cursor, df_raw, existing_data, ma_hoc_ky, nam_hoc, hoc_ky):
-    """Load các bảng DIM còn lại"""
     print("\n📥 Loading các bảng DIM còn lại...")
     
     # 1. DIM_HOC_KY
@@ -459,8 +417,6 @@ def load_remaining_dimensions_optimized(cursor, df_raw, existing_data, ma_hoc_ky
                        ma_hoc_ky, nam_hoc, hoc_ky)
         cursor.connection.commit()
         print(f"     ✅ Đã thêm {ma_hoc_ky} vào DIM_HOC_KY")
-    else:
-        print(f"     ✅ {ma_hoc_ky} đã tồn tại")
     
     # 2. DIM_GIANG_VIEN
     df_gv = df_raw[['MaGV', 'HoDemGV', 'TenGV']].drop_duplicates('MaGV').dropna(subset=['MaGV'])
@@ -470,36 +426,29 @@ def load_remaining_dimensions_optimized(cursor, df_raw, existing_data, ma_hoc_ky
         cursor.executemany("INSERT INTO DIM_GIANG_VIEN (MaGV, HoDemGV, TenGV) VALUES (?, ?, ?)", new_gv)
         cursor.connection.commit()
         print(f"     ✅ Thêm {len(new_gv)} giảng viên mới")
-    else:
-        print(f"     ✅ Không có giảng viên mới")
     
-    # 3. DIM_LOP_SINH_VIEN - XỬ LÝ ĐẶC BIỆT
+    # 3. DIM_LOP_SINH_VIEN
     print("\n  -> 3. XỬ LÝ ĐẶC BIỆT DIM_LOP_SINH_VIEN")
-    print("     - Lớp có chứa 'CTS' -> DIM Ngành & DIM Chuyên ngành NULL, gán cho Trường ĐH Kinh Tế (KHOA19)")
-    print("     - Lớp có chứa 'QT' -> DIM Ngành & DIM Chuyên ngành NULL, gán cho Phòng Đào Tạo (KHOA11)")
+    print("     - Lớp có chứa 'CTS' -> Chuyên ngành NULL, gán cho Trường ĐH Kinh Tế (KHOA19)")
+    print("     - Lớp có chứa 'QT' -> Chuyên ngành NULL, gán cho Phòng Đào Tạo (KHOA11)")
     
     df_lop_unique = df_raw[['Lop']].drop_duplicates('Lop').dropna()
     print(f"     - Tổng số lớp unique: {len(df_lop_unique)}")
     
-    # Thống kê
     special_cts = []
     special_qt = []
     normal_lops = []
     skipped_lops = []
-    
     new_lop_data = []
     
     for _, row in df_lop_unique.iterrows():
         lop = row['Lop']
-        
         if lop in existing_data['lop']:
             continue
         
-        # Kiểm tra lớp đặc biệt
         is_special, loai, ma_khoa = is_special_lop(lop)
         
         if is_special:
-            # Lớp đặc biệt: Sử dụng chuyên ngành NULL
             if loai == 'CTS':
                 ma_chuyen_nganh = 'NULL_CTS'
                 special_cts.append(lop)
@@ -512,7 +461,6 @@ def load_remaining_dimensions_optimized(cursor, df_raw, existing_data, ma_hoc_ky
             else:
                 skipped_lops.append(f"{lop} (Chuyên ngành {ma_chuyen_nganh} chưa được tạo)")
         else:
-            # Lớp thường: Kiểm tra trong DIM_CHUYEN_NGANH
             match = re.search(r'K(\d{2})', lop.upper())
             if match:
                 ma_cn = f"K{match.group(1)}"
@@ -520,43 +468,27 @@ def load_remaining_dimensions_optimized(cursor, df_raw, existing_data, ma_hoc_ky
                     new_lop_data.append((lop, lop, ma_cn))
                     normal_lops.append(lop)
                 else:
-                    skipped_lops.append(f"{lop} (MaChuyenNganh={ma_cn} không tồn tại trong DIM_CHUYEN_NGANH)")
+                    skipped_lops.append(f"{lop} (MaChuyenNganh={ma_cn} không tồn tại)")
             else:
                 skipped_lops.append(f"{lop} (không xác định được mã chuyên ngành)")
     
-    # In thống kê
     if special_cts:
-        print(f"     📌 Lớp CTS (KHOA19 - Trường ĐH Kinh Tế) - Chuyên ngành NULL: {len(special_cts)} lớp")
-        for lop in special_cts[:10]:
+        print(f"     📌 Lớp CTS: {len(special_cts)} lớp")
+        for lop in special_cts[:5]:
             print(f"        - {lop}")
-        if len(special_cts) > 10:
-            print(f"        ... và {len(special_cts) - 10} lớp khác")
-    
     if special_qt:
-        print(f"     📌 Lớp QT (KHOA11 - Phòng Đào Tạo) - Chuyên ngành NULL: {len(special_qt)} lớp")
-        for lop in special_qt[:10]:
+        print(f"     📌 Lớp QT: {len(special_qt)} lớp")
+        for lop in special_qt[:5]:
             print(f"        - {lop}")
-        if len(special_qt) > 10:
-            print(f"        ... và {len(special_qt) - 10} lớp khác")
-    
     if normal_lops:
-        print(f"     📌 Lớp thường (Kxx): {len(normal_lops)} lớp")
-    
-    if skipped_lops:
-        print(f"     ⚠️ Bỏ qua {len(skipped_lops)} lớp:")
-        for lop in skipped_lops[:10]:
-            print(f"        - {lop}")
-        if len(skipped_lops) > 10:
-            print(f"        ... và {len(skipped_lops) - 10} lớp khác")
+        print(f"     📌 Lớp thường: {len(normal_lops)} lớp")
     
     if new_lop_data:
         cursor.executemany("INSERT INTO DIM_LOP_SINH_VIEN (MaLop, Lop, MaChuyenNganh) VALUES (?, ?, ?)", new_lop_data)
         cursor.connection.commit()
         print(f"     ✅ Đã thêm {len(new_lop_data)} lớp mới vào DIM_LOP_SINH_VIEN")
-    else:
-        print(f"     ✅ Không có lớp mới")
     
-    # Refresh existing data
+    # Refresh
     cursor.execute("SELECT MaLop FROM DIM_LOP_SINH_VIEN")
     existing_data['lop'] = {row[0] for row in cursor.fetchall()}
     
@@ -577,24 +509,61 @@ def load_remaining_dimensions_optimized(cursor, df_raw, existing_data, ma_hoc_ky
         cursor.executemany("INSERT INTO DIM_SINH_VIEN (MaSV, HoDem, Ten, NgaySinh, MaLop) VALUES (?, ?, ?, ?, ?)", new_sv)
         cursor.connection.commit()
         print(f"     ✅ Thêm {len(new_sv)} sinh viên mới")
-    else:
-        print(f"     ✅ Không có sinh viên mới")
     
-    # 5. DIM_LOP_HOC_PHAN
+    # 5. DIM_LOP_HOC_PHAN - QUAN TRỌNG: CẦN INSERT DỮ LIỆU VÀO BẢNG NÀY
+    print("\n  -> 5. DIM_LOP_HOC_PHAN")
+    
     df_lhp = df_raw[['LopHP', 'MaHP', 'MaGV']].drop_duplicates('LopHP').dropna(subset=['LopHP'])
+    print(f"     - Số LopHP unique từ dữ liệu: {len(df_lhp)}")
+    print(f"     - Số MaHP có trong DIM_HOC_PHAN: {len(existing_data['hocphan'])}")
+    print(f"     - Số MaGV có trong DIM_GIANG_VIEN: {len(existing_data['giangvien'])}")
+    
+    # Kiểm tra xem MaHP và MaGV có tồn tại không
+    missing_hp = set()
+    missing_gv = set()
+    
     new_lhp = []
     for _, r in df_lhp.iterrows():
-        if (r['LopHP'] not in existing_data['lophp'] and 
-            r['MaHP'] in existing_data['hocphan'] and 
-            r['MaGV'] in existing_data['giangvien']):
-            new_lhp.append((r['LopHP'], r['LopHP'], r['MaHP'], r['MaGV'], ma_hoc_ky))
+        lop_hp = r['LopHP']
+        ma_hp = r['MaHP']
+        ma_gv = r['MaGV']
+        
+        if lop_hp in existing_data['lophp']:
+            continue
+        
+        # Kiểm tra MaHP
+        if ma_hp not in existing_data['hocphan']:
+            missing_hp.add(ma_hp)
+            continue
+        
+        # Kiểm tra MaGV
+        if ma_gv not in existing_data['giangvien']:
+            missing_gv.add(ma_gv)
+            continue
+        
+        new_lhp.append((lop_hp, lop_hp, ma_hp, ma_gv, ma_hoc_ky))
+    
+    if missing_hp:
+        print(f"     ⚠️ Có {len(missing_hp)} MaHP không tồn tại trong DIM_HOC_PHAN:")
+        for hp in list(missing_hp)[:10]:
+            print(f"        - {hp}")
+    
+    if missing_gv:
+        print(f"     ⚠️ Có {len(missing_gv)} MaGV không tồn tại trong DIM_GIANG_VIEN:")
+        for gv in list(missing_gv)[:10]:
+            print(f"        - {gv}")
     
     if new_lhp:
         cursor.executemany("INSERT INTO DIM_LOP_HOC_PHAN (MaLopHP, LopHP, MaHP, MaGV, MaHocKy) VALUES (?, ?, ?, ?, ?)", new_lhp)
         cursor.connection.commit()
-        print(f"     ✅ Thêm {len(new_lhp)} lớp học phần mới")
+        print(f"     ✅ Đã thêm {len(new_lhp)} lớp học phần mới vào DIM_LOP_HOC_PHAN")
     else:
-        print(f"     ✅ Không có lớp học phần mới")
+        print(f"     ❌ KHÔNG có lớp học phần nào được thêm!")
+        print(f"        Nguyên nhân có thể: MaHP hoặc MaGV không tồn tại trong các DIM tương ứng")
+    
+    # Refresh existing data
+    cursor.execute("SELECT MaLopHP FROM DIM_LOP_HOC_PHAN")
+    existing_data['lophp'] = {row[0] for row in cursor.fetchall()}
     
     print("  ✅ Các bảng DIM còn lại đã được load xong!")
 
@@ -610,6 +579,10 @@ def load_fact_tables_optimized(cursor, fact_main, fact_ketqua, existing_data, ma
     
     print(f"     - Số LopHP hợp lệ: {len(valid_lophp)}")
     print(f"     - Số MaSV hợp lệ: {len(valid_sv)}")
+    print(f"     - Số submission trong fact_main: {len(fact_main) if not fact_main.empty else 0}")
+    
+    if valid_lophp:
+        print(f"     - Ví dụ LopHP hợp lệ: {list(valid_lophp)[:5]}")
     
     # TẮT CONSTRAINTS
     cursor.execute("ALTER TABLE FACT_GOP_Y_TU_LUAN NOCHECK CONSTRAINT ALL")
@@ -625,15 +598,26 @@ def load_fact_tables_optimized(cursor, fact_main, fact_ketqua, existing_data, ma
         # FACT_GOP_Y_TU_LUAN
         if not fact_main.empty:
             data_main = []
+            skipped_no_lophp = 0
+            skipped_no_sv = 0
+            
             for _, row in fact_main.iterrows():
-                if row['MaSV'] not in valid_sv or row['LopHP'] not in valid_lophp:
+                if row['MaSV'] not in valid_sv:
+                    skipped_no_sv += 1
                     continue
+                if row['LopHP'] not in valid_lophp:
+                    skipped_no_lophp += 1
+                    continue
+                
                 noi_dung = row['NoiDungGopY'][:4000] if isinstance(row['NoiDungGopY'], str) else ''
                 data_main.append((
                     row['SubmissionID'], row['MaSV'], row['LopHP'], noi_dung,
                     row['Sentiment'], row['Is_Valid'],
                     row['Tag_HocPhan'], row['Tag_DayHoc'], row['Tag_KiemTra'], row['Tag_Khac']
                 ))
+            
+            print(f"     - Skipped (no MaSV): {skipped_no_sv}")
+            print(f"     - Skipped (no LopHP): {skipped_no_lophp}")
             
             if data_main:
                 sql_main = """INSERT INTO FACT_GOP_Y_TU_LUAN 
@@ -643,9 +627,11 @@ def load_fact_tables_optimized(cursor, fact_main, fact_ketqua, existing_data, ma
                 cursor.executemany(sql_main, data_main)
                 count_main = len(data_main)
                 print(f"      ✅ FACT_GOP_Y_TU_LUAN: {count_main:,} dòng")
+            else:
+                print(f"      ❌ Không có dữ liệu nào để insert vào FACT_GOP_Y_TU_LUAN!")
         
         # FACT_KET_QUA_DANH_GIA
-        if not fact_ketqua.empty:
+        if not fact_ketqua.empty and count_main > 0:
             cursor.execute("SELECT SubmissionID FROM FACT_GOP_Y_TU_LUAN")
             valid_subs = {row[0] for row in cursor.fetchall()}
             
@@ -672,7 +658,6 @@ def load_fact_tables_optimized(cursor, fact_main, fact_ketqua, existing_data, ma
                             missing_count += 1
                         final_data.append((sub_id, q, diem))
                 
-                # Loại bỏ duplicate
                 unique_data = {}
                 for sub_id, q, diem in final_data:
                     key = (sub_id, q)
@@ -693,7 +678,6 @@ def load_fact_tables_optimized(cursor, fact_main, fact_ketqua, existing_data, ma
         cursor.execute("ROLLBACK")
         raise e
     finally:
-        # BẬT LẠI CONSTRAINTS
         cursor.execute("ALTER TABLE FACT_GOP_Y_TU_LUAN CHECK CONSTRAINT ALL")
         cursor.execute("ALTER TABLE FACT_KET_QUA_DANH_GIA CHECK CONSTRAINT ALL")
         cursor.connection.commit()
@@ -707,11 +691,8 @@ def load_fact_tables_optimized(cursor, fact_main, fact_ketqua, existing_data, ma
 def main():
     total_start = time.time()
     print("=" * 60)
-    print("🚀 ETL PIPELINE - XỬ LÝ LỚP ĐẶC BIỆT (CTS/QT) VỚI DỮ LIỆU NULL")
+    print("🚀 ETL PIPELINE - FIX DIM_LOP_HOC_PHAN & FACT TABLES")
     print("=" * 60)
-    print("📌 Xử lý đặc biệt:")
-    print("   - Lớp có chứa 'CTS' -> DIM Ngành & DIM Chuyên ngành = NULL, gán cho Trường ĐH Kinh Tế (KHOA19)")
-    print("   - Lớp có chứa 'QT' -> DIM Ngành & DIM Chuyên ngành = NULL, gán cho Phòng Đào Tạo (KHOA11)")
     print(f"SEMESTER: {SEMESTER}")
     print(f"SURVEY_FILE: {SURVEY_FILE}")
     print("=" * 60)
@@ -750,6 +731,8 @@ def main():
     fact_main, fact_ketqua, df_raw = transform_with_nlp_optimized(df_raw)
     transform_time = time.time() - transform_start
     print(f"  ✅ Transform: {transform_time:.1f}s")
+    print(f"     - fact_main: {len(fact_main)} dòng")
+    print(f"     - fact_ketqua: {len(fact_ketqua)} dòng")
     
     # 5. Lưu backup
     print("\n💾 5. Lưu backup...")
@@ -776,10 +759,10 @@ def main():
         # 7. Load existing data
         existing_data = load_all_existing_data(cursor)
         
-        # 8. Tạo dữ liệu NULL cho CTS và QT (chỉ 1 lần)
+        # 8. Tạo dữ liệu NULL
         create_null_dim_data(cursor, existing_data)
         
-        # Refresh existing data sau khi tạo NULL
+        # Refresh
         cursor.execute("SELECT MaChuyenNganh FROM DIM_CHUYEN_NGANH")
         existing_data['chuyennganh'] = {row[0] for row in cursor.fetchall()}
         
@@ -815,8 +798,8 @@ def main():
     print(f"   - Transform: {transform_time:.1f}s")
     print(f"   - Database: {db_time:.1f}s")
     print(f"   - TOTAL: {total_time:.1f}s")
-    print(f"   - Submissions: {count_main:,}")
-    print(f"   - Answers: {count_kq:,}")
+    print(f"   - Submissions (FACT_GOP_Y_TU_LUAN): {count_main:,}")
+    print(f"   - Answers (FACT_KET_QUA_DANH_GIA): {count_kq:,}")
     print("=" * 60)
 
 

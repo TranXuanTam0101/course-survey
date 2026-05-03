@@ -37,8 +37,7 @@ CONN_STR = (
 CONTAINER_NAME = SEMESTER
 PREPROCESSED_PATH = "preprocessed-data"
 
-BATCH_SIZE_DIM = 100000
-BATCH_SIZE_FACT = 500000
+BATCH_SIZE = 100000
 
 
 # ================= BLOB FUNCTIONS =================
@@ -50,7 +49,9 @@ def download_preprocessed_data(blob_service, filename):
         if blob.exists():
             print(f"  📥 Đang tải {path}...")
             pickled_data = blob.download_blob().readall()
-            return pickle.loads(pickled_data)
+            data = pickle.loads(pickled_data)
+            print(f"  ✅ Đã tải thành công {len(pickle.dumps(data)):,} bytes")
+            return data
         return None
     except Exception as e:
         print(f"  ❌ Lỗi tải pickle: {e}")
@@ -58,216 +59,123 @@ def download_preprocessed_data(blob_service, filename):
 
 
 # ================= INSERT DIMENSION TABLES =================
-def insert_dimension_tables(cursor, dims):
+def insert_dimension_table(cursor, df, table_name, columns, key_col):
+    if df is None or df.empty:
+        return 0
+    
+    cursor.execute(f"SELECT {key_col} FROM {table_name}")
+    existing = {row[0] for row in cursor.fetchall()}
+    
+    new_data = []
+    for _, row in df.iterrows():
+        if row[key_col] not in existing:
+            new_data.append(tuple(row[col] for col in columns))
+            existing.add(row[key_col])
+    
+    if not new_data:
+        return 0
+    
+    placeholders = ', '.join(['?' for _ in columns])
+    sql = f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({placeholders})"
+    
+    total = 0
+    for i in range(0, len(new_data), BATCH_SIZE):
+        batch = new_data[i:i+BATCH_SIZE]
+        cursor.fast_executemany = True
+        cursor.executemany(sql, batch)
+        total += len(batch)
+        cursor.connection.commit()
+        print(f"      Batch {i//BATCH_SIZE + 1}: {len(batch):,} rows")
+    
+    return total
+
+
+def insert_all_dimensions(cursor, dims):
     print("\n  📥 Insert DIMENSION tables...")
     start = time.time()
     results = {}
     
-    # 1. DIM_KHOA
+    # DIM_KHOA
     print("\n    📌 DIM_KHOA")
     df = dims.get('dim_khoa')
     if df is not None and not df.empty:
-        cursor.execute("SELECT MaKhoa FROM DIM_KHOA")
-        existing = {row[0] for row in cursor.fetchall()}
-        new_data = [(row['MaKhoa'], row['TenKhoa']) for _, row in df.iterrows() if row['MaKhoa'] not in existing]
-        if new_data:
-            sql = "INSERT INTO DIM_KHOA (MaKhoa, TenKhoa) VALUES (?, ?)"
-            total = 0
-            for i in range(0, len(new_data), BATCH_SIZE_DIM):
-                batch = new_data[i:i+BATCH_SIZE_DIM]
-                cursor.fast_executemany = True
-                cursor.executemany(sql, batch)
-                total += len(batch)
-                cursor.connection.commit()
-                print(f"      Batch {i//BATCH_SIZE_DIM + 1}: {len(batch):,} rows")
-            results['DIM_KHOA'] = total
-            print(f"      ✅ Inserted {total:,} new rows")
-        else:
-            print(f"      ⚪ No new rows")
+        print(f"      Columns: {df.columns.tolist()}")
+        inserted = insert_dimension_table(cursor, df, 'DIM_KHOA', 
+                                          ['MaKhoa', 'TenKhoa'], 'MaKhoa')
+        results['DIM_KHOA'] = inserted
+        print(f"      ✅ Inserted {inserted:,} new rows")
     
-    # 2. DIM_NGANH
+    # DIM_NGANH
     print("\n    📌 DIM_NGANH")
     df = dims.get('dim_nganh')
     if df is not None and not df.empty:
-        cursor.execute("SELECT MaNganh FROM DIM_NGANH")
-        existing = {row[0] for row in cursor.fetchall()}
-        new_data = [(row['MaNganh'], row['TenNganh'], row['MaKhoa']) 
-                    for _, row in df.iterrows() if row['MaNganh'] not in existing]
-        if new_data:
-            sql = "INSERT INTO DIM_NGANH (MaNganh, TenNganh, MaKhoa) VALUES (?, ?, ?)"
-            total = 0
-            for i in range(0, len(new_data), BATCH_SIZE_DIM):
-                batch = new_data[i:i+BATCH_SIZE_DIM]
-                cursor.fast_executemany = True
-                cursor.executemany(sql, batch)
-                total += len(batch)
-                cursor.connection.commit()
-                print(f"      Batch {i//BATCH_SIZE_DIM + 1}: {len(batch):,} rows")
-            results['DIM_NGANH'] = total
-            print(f"      ✅ Inserted {total:,} new rows")
-        else:
-            print(f"      ⚪ No new rows")
+        inserted = insert_dimension_table(cursor, df, 'DIM_NGANH',
+                                          ['MaNganh', 'TenNganh', 'MaKhoa'], 'MaNganh')
+        results['DIM_NGANH'] = inserted
+        print(f"      ✅ Inserted {inserted:,} new rows")
     
-    # 3. DIM_CHUYEN_NGANH
+    # DIM_CHUYEN_NGANH
     print("\n    📌 DIM_CHUYEN_NGANH")
     df = dims.get('dim_chuyen_nganh')
     if df is not None and not df.empty:
-        cursor.execute("SELECT MaChuyenNganh FROM DIM_CHUYEN_NGANH")
-        existing = {row[0] for row in cursor.fetchall()}
-        new_data = [(row['MaChuyenNganh'], row['TenChuyenNganh'], row['MaNganh']) 
-                    for _, row in df.iterrows() if row['MaChuyenNganh'] not in existing]
-        if new_data:
-            sql = "INSERT INTO DIM_CHUYEN_NGANH (MaChuyenNganh, TenChuyenNganh, MaNganh) VALUES (?, ?, ?)"
-            total = 0
-            for i in range(0, len(new_data), BATCH_SIZE_DIM):
-                batch = new_data[i:i+BATCH_SIZE_DIM]
-                cursor.fast_executemany = True
-                cursor.executemany(sql, batch)
-                total += len(batch)
-                cursor.connection.commit()
-                print(f"      Batch {i//BATCH_SIZE_DIM + 1}: {len(batch):,} rows")
-            results['DIM_CHUYEN_NGANH'] = total
-            print(f"      ✅ Inserted {total:,} new rows")
-        else:
-            print(f"      ⚪ No new rows")
+        inserted = insert_dimension_table(cursor, df, 'DIM_CHUYEN_NGANH',
+                                          ['MaChuyenNganh', 'TenChuyenNganh', 'MaNganh'], 'MaChuyenNganh')
+        results['DIM_CHUYEN_NGANH'] = inserted
+        print(f"      ✅ Inserted {inserted:,} new rows")
     
-    # 4. DIM_HOC_PHAN
+    # DIM_HOC_PHAN
     print("\n    📌 DIM_HOC_PHAN")
     df = dims.get('dim_hoc_phan')
     if df is not None and not df.empty:
-        cursor.execute("SELECT MaHP FROM DIM_HOC_PHAN")
-        existing = {row[0] for row in cursor.fetchall()}
-        new_data = [(row['MaHP'], row['TenHP'], row['MaKhoa']) 
-                    for _, row in df.iterrows() if row['MaHP'] not in existing]
-        if new_data:
-            sql = "INSERT INTO DIM_HOC_PHAN (MaHP, TenHP, MaKhoa) VALUES (?, ?, ?)"
-            total = 0
-            for i in range(0, len(new_data), BATCH_SIZE_DIM):
-                batch = new_data[i:i+BATCH_SIZE_DIM]
-                cursor.fast_executemany = True
-                cursor.executemany(sql, batch)
-                total += len(batch)
-                cursor.connection.commit()
-                print(f"      Batch {i//BATCH_SIZE_DIM + 1}: {len(batch):,} rows")
-            results['DIM_HOC_PHAN'] = total
-            print(f"      ✅ Inserted {total:,} new rows")
-        else:
-            print(f"      ⚪ No new rows")
+        inserted = insert_dimension_table(cursor, df, 'DIM_HOC_PHAN',
+                                          ['MaHP', 'TenHP', 'MaKhoa'], 'MaHP')
+        results['DIM_HOC_PHAN'] = inserted
+        print(f"      ✅ Inserted {inserted:,} new rows")
     
-    # 5. DIM_GIANG_VIEN
+    # DIM_GIANG_VIEN
     print("\n    📌 DIM_GIANG_VIEN")
     df = dims.get('dim_giang_vien')
     if df is not None and not df.empty:
-        cursor.execute("SELECT MaGV FROM DIM_GIANG_VIEN")
-        existing = {row[0] for row in cursor.fetchall()}
-        new_data = [(row['MaGV'], row['HoDemGV'], row['TenGV']) 
-                    for _, row in df.iterrows() if row['MaGV'] not in existing]
-        if new_data:
-            sql = "INSERT INTO DIM_GIANG_VIEN (MaGV, HoDemGV, TenGV) VALUES (?, ?, ?)"
-            total = 0
-            for i in range(0, len(new_data), BATCH_SIZE_DIM):
-                batch = new_data[i:i+BATCH_SIZE_DIM]
-                cursor.fast_executemany = True
-                cursor.executemany(sql, batch)
-                total += len(batch)
-                cursor.connection.commit()
-                print(f"      Batch {i//BATCH_SIZE_DIM + 1}: {len(batch):,} rows")
-            results['DIM_GIANG_VIEN'] = total
-            print(f"      ✅ Inserted {total:,} new rows")
-        else:
-            print(f"      ⚪ No new rows")
+        inserted = insert_dimension_table(cursor, df, 'DIM_GIANG_VIEN',
+                                          ['MaGV', 'HoDemGV', 'TenGV'], 'MaGV')
+        results['DIM_GIANG_VIEN'] = inserted
+        print(f"      ✅ Inserted {inserted:,} new rows")
     
-    # 6. DIM_HOC_KY
+    # DIM_HOC_KY
     print("\n    📌 DIM_HOC_KY")
     df = dims.get('dim_hoc_ky')
     if df is not None and not df.empty:
-        cursor.execute("SELECT MaHocKy FROM DIM_HOC_KY")
-        existing = {row[0] for row in cursor.fetchall()}
-        new_data = [(row['MaHocKy'], row['NamHoc'], row['HocKy']) 
-                    for _, row in df.iterrows() if row['MaHocKy'] not in existing]
-        if new_data:
-            sql = "INSERT INTO DIM_HOC_KY (MaHocKy, NamHoc, HocKy) VALUES (?, ?, ?)"
-            total = 0
-            for i in range(0, len(new_data), BATCH_SIZE_DIM):
-                batch = new_data[i:i+BATCH_SIZE_DIM]
-                cursor.fast_executemany = True
-                cursor.executemany(sql, batch)
-                total += len(batch)
-                cursor.connection.commit()
-                print(f"      Batch {i//BATCH_SIZE_DIM + 1}: {len(batch):,} rows")
-            results['DIM_HOC_KY'] = total
-            print(f"      ✅ Inserted {total:,} new rows")
-        else:
-            print(f"      ⚪ No new rows")
+        inserted = insert_dimension_table(cursor, df, 'DIM_HOC_KY',
+                                          ['MaHocKy', 'NamHoc', 'HocKy'], 'MaHocKy')
+        results['DIM_HOC_KY'] = inserted
+        print(f"      ✅ Inserted {inserted:,} new rows")
     
-    # 7. DIM_LOP_SINH_VIEN
+    # DIM_LOP_SINH_VIEN
     print("\n    📌 DIM_LOP_SINH_VIEN")
     df = dims.get('dim_lop_sinh_vien')
     if df is not None and not df.empty:
-        cursor.execute("SELECT MaLop FROM DIM_LOP_SINH_VIEN")
-        existing = {row[0] for row in cursor.fetchall()}
-        new_data = [(row['MaLop'], row['Lop'], row['MaChuyenNganh']) 
-                    for _, row in df.iterrows() if row['MaLop'] not in existing]
-        if new_data:
-            sql = "INSERT INTO DIM_LOP_SINH_VIEN (MaLop, Lop, MaChuyenNganh) VALUES (?, ?, ?)"
-            total = 0
-            for i in range(0, len(new_data), BATCH_SIZE_DIM):
-                batch = new_data[i:i+BATCH_SIZE_DIM]
-                cursor.fast_executemany = True
-                cursor.executemany(sql, batch)
-                total += len(batch)
-                cursor.connection.commit()
-                print(f"      Batch {i//BATCH_SIZE_DIM + 1}: {len(batch):,} rows")
-            results['DIM_LOP_SINH_VIEN'] = total
-            print(f"      ✅ Inserted {total:,} new rows")
-        else:
-            print(f"      ⚪ No new rows")
+        inserted = insert_dimension_table(cursor, df, 'DIM_LOP_SINH_VIEN',
+                                          ['MaLop', 'Lop', 'MaChuyenNganh'], 'MaLop')
+        results['DIM_LOP_SINH_VIEN'] = inserted
+        print(f"      ✅ Inserted {inserted:,} new rows")
     
-    # 8. DIM_SINH_VIEN
+    # DIM_SINH_VIEN
     print("\n    📌 DIM_SINH_VIEN")
     df = dims.get('dim_sinh_vien')
     if df is not None and not df.empty:
-        cursor.execute("SELECT MaSV FROM DIM_SINH_VIEN")
-        existing = {row[0] for row in cursor.fetchall()}
-        new_data = [(row['MaSV'], row['HoDem'], row['Ten'], row['NgaySinh'], row['MaLop']) 
-                    for _, row in df.iterrows() if row['MaSV'] not in existing]
-        if new_data:
-            sql = "INSERT INTO DIM_SINH_VIEN (MaSV, HoDem, Ten, NgaySinh, MaLop) VALUES (?, ?, ?, ?, ?)"
-            total = 0
-            for i in range(0, len(new_data), BATCH_SIZE_DIM):
-                batch = new_data[i:i+BATCH_SIZE_DIM]
-                cursor.fast_executemany = True
-                cursor.executemany(sql, batch)
-                total += len(batch)
-                cursor.connection.commit()
-                print(f"      Batch {i//BATCH_SIZE_DIM + 1}: {len(batch):,} rows")
-            results['DIM_SINH_VIEN'] = total
-            print(f"      ✅ Inserted {total:,} new rows")
-        else:
-            print(f"      ⚪ No new rows")
+        inserted = insert_dimension_table(cursor, df, 'DIM_SINH_VIEN',
+                                          ['MaSV', 'HoDem', 'Ten', 'NgaySinh', 'MaLop'], 'MaSV')
+        results['DIM_SINH_VIEN'] = inserted
+        print(f"      ✅ Inserted {inserted:,} new rows")
     
-    # 9. DIM_LOP_HOC_PHAN
+    # DIM_LOP_HOC_PHAN
     print("\n    📌 DIM_LOP_HOC_PHAN")
     df = dims.get('dim_lop_hoc_phan')
     if df is not None and not df.empty:
-        cursor.execute("SELECT MaLopHP FROM DIM_LOP_HOC_PHAN")
-        existing = {row[0] for row in cursor.fetchall()}
-        new_data = [(row['MaLopHP'], row['LopHP'], row['MaHP'], row['MaGV'], row['MaHocKy']) 
-                    for _, row in df.iterrows() if row['MaLopHP'] not in existing]
-        if new_data:
-            sql = "INSERT INTO DIM_LOP_HOC_PHAN (MaLopHP, LopHP, MaHP, MaGV, MaHocKy) VALUES (?, ?, ?, ?, ?)"
-            total = 0
-            for i in range(0, len(new_data), BATCH_SIZE_DIM):
-                batch = new_data[i:i+BATCH_SIZE_DIM]
-                cursor.fast_executemany = True
-                cursor.executemany(sql, batch)
-                total += len(batch)
-                cursor.connection.commit()
-                print(f"      Batch {i//BATCH_SIZE_DIM + 1}: {len(batch):,} rows")
-            results['DIM_LOP_HOC_PHAN'] = total
-            print(f"      ✅ Inserted {total:,} new rows")
-        else:
-            print(f"      ⚪ No new rows")
+        inserted = insert_dimension_table(cursor, df, 'DIM_LOP_HOC_PHAN',
+                                          ['MaLopHP', 'LopHP', 'MaHP', 'MaGV', 'MaHocKy'], 'MaLopHP')
+        results['DIM_LOP_HOC_PHAN'] = inserted
+        print(f"      ✅ Inserted {inserted:,} new rows")
     
     elapsed = time.time() - start
     print(f"\n  ✅ DIMENSION tables done in {elapsed:.2f}s")
@@ -275,15 +183,49 @@ def insert_dimension_tables(cursor, dims):
 
 
 # ================= INSERT FACT TABLES =================
-def insert_fact_tables_pure(cursor, conn, fact_main, fact_ketqua):
-    """Insert FACT tables - CHỈ INSERT, KHÔNG XỬ LÝ"""
-    print("\n  🚀 PURE FACT INSERT (data already processed in JOB 1)")
+def insert_fact_table(cursor, conn, df, table_name, columns):
+    """Insert FACT table - không kiểm tra trùng lặp"""
+    if df is None or df.empty:
+        print(f"      ⚠️ No data for {table_name}")
+        return 0
+    
+    print(f"      Preparing {len(df):,} rows...")
+    
+    # Chuyển DataFrame thành list of tuples
+    data = df[columns].values.tolist()
+    
+    placeholders = ', '.join(['?' for _ in columns])
+    sql = f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({placeholders})"
+    
+    total = 0
+    for i in range(0, len(data), BATCH_SIZE):
+        batch = data[i:i+BATCH_SIZE]
+        cursor.fast_executemany = True
+        cursor.executemany(sql, batch)
+        total += len(batch)
+        conn.commit()
+        print(f"      Batch {i//BATCH_SIZE + 1}: {len(batch):,} rows (total: {total:,})")
+    
+    return total
+
+
+def insert_fact_tables(cursor, conn, fact_main, fact_ketqua):
+    print("\n  🚀 Insert FACT tables...")
     start = time.time()
     results = {}
     
-    if (fact_main is None or fact_main.empty) and (fact_ketqua is None or fact_ketqua.empty):
-        print("  ❌ No FACT data to insert!")
-        return results
+    # Kiểm tra dữ liệu đầu vào
+    print(f"\n  📊 FACT data check:")
+    print(f"     fact_gop_y_tu_luan: {type(fact_main)} - empty: {fact_main.empty if fact_main is not None else 'None'}")
+    print(f"     fact_ket_qua_danh_gia: {type(fact_ketqua)} - empty: {fact_ketqua.empty if fact_ketqua is not None than 'None'}")
+    
+    if fact_main is not None and not fact_main.empty:
+        print(f"     fact_main columns: {fact_main.columns.tolist()}")
+        print(f"     fact_main sample:\n{fact_main.head(2)}")
+    
+    if fact_ketqua is not None and not fact_ketqua.empty:
+        print(f"     fact_ketqua columns: {fact_ketqua.columns.tolist()}")
+        print(f"     fact_ketqua sample:\n{fact_ketqua.head(2)}")
     
     # Tắt constraints
     print("\n  ⚡ Disabling constraints...")
@@ -295,50 +237,50 @@ def insert_fact_tables_pure(cursor, conn, fact_main, fact_ketqua):
     except Exception as e:
         print(f"  ⚠️ Could not disable: {e}")
     
-    # FACT_KET_QUA_DANH_GIA
+    # Insert FACT_KET_QUA_DANH_GIA
     print("\n  📥 Inserting FACT_KET_QUA_DANH_GIA...")
     if fact_ketqua is not None and not fact_ketqua.empty:
-        data = fact_ketqua[['SubmissionID', 'MaCauHoi', 'Diem']].values.tolist()
-        print(f"      Inserting {len(data):,} rows...")
-        
-        sql = "INSERT INTO FACT_KET_QUA_DANH_GIA (SubmissionID, MaCauHoi, Diem) VALUES (?, ?, ?)"
-        
-        total = 0
-        for i in range(0, len(data), BATCH_SIZE_FACT):
-            batch = data[i:i+BATCH_SIZE_FACT]
-            cursor.fast_executemany = True
-            cursor.executemany(sql, batch)
-            total += len(batch)
-            conn.commit()
-            print(f"      Batch {i//BATCH_SIZE_FACT + 1}: {len(batch):,} rows (total: {total:,})")
-        
-        results['FACT_KET_QUA_DANH_GIA'] = total
-        print(f"  ✅ Inserted {total:,} rows")
+        # Kiểm tra cột cần thiết
+        required_cols = ['SubmissionID', 'MaCauHoi', 'Diem']
+        missing_cols = [c for c in required_cols if c not in fact_ketqua.columns]
+        if missing_cols:
+            print(f"      ❌ Missing columns: {missing_cols}")
+        else:
+            inserted = insert_fact_table(cursor, conn, fact_ketqua, 
+                                         'FACT_KET_QUA_DANH_GIA',
+                                         ['SubmissionID', 'MaCauHoi', 'Diem'])
+            results['FACT_KET_QUA_DANH_GIA'] = inserted
+            print(f"  ✅ Inserted {inserted:,} rows")
+    else:
+        print(f"      ⚠️ No data for FACT_KET_QUA_DANH_GIA")
     
-    # FACT_GOP_Y_TU_LUAN
+    # Insert FACT_GOP_Y_TU_LUAN
     print("\n  📥 Inserting FACT_GOP_Y_TU_LUAN...")
     if fact_main is not None and not fact_main.empty:
-        data = fact_main[['SubmissionID', 'MaSV', 'LopHP', 'NoiDungGopY',
-                          'Sentiment', 'Is_Valid', 'Tag_HocPhan', 
-                          'Tag_DayHoc', 'Tag_KiemTra', 'Tag_Khac']].values.tolist()
-        print(f"      Inserting {len(data):,} rows...")
-        
-        sql = """INSERT INTO FACT_GOP_Y_TU_LUAN 
-                 (SubmissionID, MaSV, MaLopHP, NoiDungGopY, Sentiment, 
-                  Is_Valid, Tag_HocPhan, Tag_DayHoc, Tag_KiemTra, Tag_Khac) 
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
-        
-        total = 0
-        for i in range(0, len(data), BATCH_SIZE_FACT):
-            batch = data[i:i+BATCH_SIZE_FACT]
-            cursor.fast_executemany = True
-            cursor.executemany(sql, batch)
-            total += len(batch)
-            conn.commit()
-            print(f"      Batch {i//BATCH_SIZE_FACT + 1}: {len(batch):,} rows (total: {total:,})")
-        
-        results['FACT_GOP_Y_TU_LUAN'] = total
-        print(f"  ✅ Inserted {total:,} rows")
+        # Kiểm tra cột cần thiết
+        required_cols = ['SubmissionID', 'MaSV', 'LopHP', 'NoiDungGopY',
+                         'Sentiment', 'Is_Valid', 'Tag_HocPhan', 
+                         'Tag_DayHoc', 'Tag_KiemTra', 'Tag_Khac']
+        missing_cols = [c for c in required_cols if c not in fact_main.columns]
+        if missing_cols:
+            print(f"      ❌ Missing columns: {missing_cols}")
+            # Thử tìm alternative
+            if 'MaLopHP' in fact_main.columns:
+                print(f"      Using MaLopHP instead of LopHP")
+                fact_main = fact_main.rename(columns={'MaLopHP': 'LopHP'})
+        else:
+            # Giới hạn độ dài text
+            fact_main['NoiDungGopY'] = fact_main['NoiDungGopY'].astype(str).str[:4000]
+            
+            inserted = insert_fact_table(cursor, conn, fact_main,
+                                         'FACT_GOP_Y_TU_LUAN',
+                                         ['SubmissionID', 'MaSV', 'LopHP', 'NoiDungGopY',
+                                          'Sentiment', 'Is_Valid', 'Tag_HocPhan', 
+                                          'Tag_DayHoc', 'Tag_KiemTra', 'Tag_Khac'])
+            results['FACT_GOP_Y_TU_LUAN'] = inserted
+            print(f"  ✅ Inserted {inserted:,} rows")
+    else:
+        print(f"      ⚠️ No data for FACT_GOP_Y_TU_LUAN")
     
     # Bật lại constraints
     print("\n  🔓 Enabling constraints...")
@@ -357,7 +299,7 @@ def insert_fact_tables_pure(cursor, conn, fact_main, fact_ketqua):
 
 # ================= KIỂM TRA DỮ LIỆU =================
 def verify_data(cursor):
-    print("\n  📊 Verifying data...")
+    print("\n  📊 Final data count:")
     tables = [
         'DIM_KHOA', 'DIM_NGANH', 'DIM_CHUYEN_NGANH', 'DIM_HOC_PHAN',
         'DIM_GIANG_VIEN', 'DIM_HOC_KY', 'DIM_LOP_SINH_VIEN', 'DIM_SINH_VIEN',
@@ -377,15 +319,10 @@ def verify_data(cursor):
 def main():
     total_start = time.time()
     print("=" * 80)
-    print("🚀 JOB 2: CHÈN DỮ LIỆU (PURE INSERT)")
+    print("🚀 JOB 2: CHÈN DỮ LIỆU")
     print("=" * 80)
     print(f"📂 Survey: {SURVEY_FILE}")
     print(f"📁 Semester: {SEMESTER}")
-    print("=" * 80)
-    print("\n📌 STRATEGY:")
-    print("   1️⃣ Load 1 file pickle duy nhất")
-    print("   2️⃣ Insert DIMENSION tables")
-    print("   3️⃣ Insert FACT tables (no processing)")
     print("=" * 80)
     
     # 1. Kết nối Azure
@@ -397,7 +334,7 @@ def main():
         print(f"  ❌ Error: {e}")
         return
     
-    # 2. Tải dữ liệu (CHỈ 1 FILE DUY NHẤT)
+    # 2. Tải dữ liệu
     print(f"\n📥 2. Tải preprocessed data...")
     preprocessed_data = download_preprocessed_data(blob_service, f"{FILE_NAME}_preprocessed")
     
@@ -406,7 +343,10 @@ def main():
         print("  💡 Hãy chạy JOB 1 trước!")
         return
     
-    # Lấy dữ liệu từ pickle
+    # Kiểm tra các key có trong dict
+    print(f"\n  📋 Available keys in pickle: {list(preprocessed_data.keys())}")
+    
+    # Lấy dữ liệu
     dims = {k: v for k, v in preprocessed_data.items() if k.startswith('dim_')}
     fact_main = preprocessed_data.get('fact_gop_y_tu_luan', pd.DataFrame())
     fact_ketqua = preprocessed_data.get('fact_ket_qua_danh_gia', pd.DataFrame())
@@ -414,9 +354,16 @@ def main():
     print(f"\n  📊 Data summary:")
     for name, df in dims.items():
         if not df.empty:
-            print(f"     - {name}: {len(df):,} rows")
-    print(f"     - FACT_GOP_Y_TU_LUAN: {len(fact_main):,} rows")
-    print(f"     - FACT_KET_QUA_DANH_GIA: {len(fact_ketqua):,} rows")
+            print(f"     - {name}: {len(df):,} rows, columns: {df.columns.tolist()}")
+    
+    print(f"     - fact_gop_y_tu_luan: {len(fact_main):,} rows, columns: {fact_main.columns.tolist() if not fact_main.empty else 'empty'}")
+    print(f"     - fact_ket_qua_danh_gia: {len(fact_ketqua):,} rows, columns: {fact_ketqua.columns.tolist() if not fact_ketqua.empty else 'empty'}")
+    
+    # Kiểm tra xem fact data có bị rỗng không
+    if fact_main.empty and fact_ketqua.empty:
+        print("\n  ⚠️ WARNING: Both FACT tables are empty!")
+        print("  💡 This suggests JOB 1 didn't generate FACT data.")
+        print("  💡 Check if there are any survey responses with essays or MCQ answers.")
     
     # 3. Kết nối Database
     print("\n💾 3. Kết nối SQL Database...")
@@ -438,10 +385,10 @@ def main():
     
     try:
         # Insert DIMENSION tables
-        dim_results = insert_dimension_tables(cursor, dims)
+        dim_results = insert_all_dimensions(cursor, dims)
         
         # Insert FACT tables
-        fact_results = insert_fact_tables_pure(cursor, conn, fact_main, fact_ketqua)
+        fact_results = insert_fact_tables(cursor, conn, fact_main, fact_ketqua)
         
         # Kiểm tra kết quả
         verify_data(cursor)

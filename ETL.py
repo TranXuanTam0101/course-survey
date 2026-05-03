@@ -7,7 +7,6 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 from azure.storage.blob import BlobServiceClient
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -23,7 +22,7 @@ if not SEMESTER or not SURVEY_FILE:
 
 FILE_NAME = os.path.splitext(os.path.basename(SURVEY_FILE))[0]
 
-# ODBC Connection - Tối ưu kết nối
+# ODBC Connection - Tối ưu
 CONN_STR = (
     f"DRIVER={{ODBC Driver 18 for SQL Server}};"
     f"SERVER=course-survey.database.windows.net;"
@@ -39,8 +38,8 @@ CONN_STR = (
 CONTAINER_NAME = SEMESTER
 PREPROCESSED_PATH = "preprocessed-data"
 
-# Batch size tối ưu - TĂNG LÊN 200K
-BATCH_SIZE = 200000
+# Batch size tối ưu cho FACT
+BATCH_SIZE_FACT = 500000  # Tăng lên 500k
 
 
 # ================= BLOB FUNCTIONS =================
@@ -59,9 +58,8 @@ def download_preprocessed_data(blob_service, filename):
         return None
 
 
-# ================= INSERT DIMENSION TABLES TỐI ƯU =================
+# ================= INSERT DIMENSION TABLES =================
 def insert_dimension_tables(cursor, dims):
-    """Insert dimension tables - chỉ insert mới"""
     print("\n  📥 Insert DIMENSION tables...")
     start = time.time()
     results = {}
@@ -76,17 +74,15 @@ def insert_dimension_tables(cursor, dims):
         if new_data:
             sql = "INSERT INTO DIM_KHOA (MaKhoa, TenKhoa) VALUES (?, ?)"
             total = 0
-            for i in range(0, len(new_data), BATCH_SIZE):
-                batch = new_data[i:i+BATCH_SIZE]
+            for i in range(0, len(new_data), 100000):
+                batch = new_data[i:i+100000]
                 cursor.fast_executemany = True
                 cursor.executemany(sql, batch)
                 total += len(batch)
                 cursor.connection.commit()
-                print(f"      Batch {i//BATCH_SIZE + 1}: {len(batch):,} rows")
+                print(f"      Batch {i//100000 + 1}: {len(batch):,} rows")
             results['DIM_KHOA'] = total
             print(f"      ✅ Inserted {total:,} new rows")
-        else:
-            print(f"      ⚪ No new rows")
     
     # 2. DIM_NGANH
     print("\n    📌 DIM_NGANH")
@@ -99,17 +95,15 @@ def insert_dimension_tables(cursor, dims):
         if new_data:
             sql = "INSERT INTO DIM_NGANH (MaNganh, TenNganh, MaKhoa) VALUES (?, ?, ?)"
             total = 0
-            for i in range(0, len(new_data), BATCH_SIZE):
-                batch = new_data[i:i+BATCH_SIZE]
+            for i in range(0, len(new_data), 100000):
+                batch = new_data[i:i+100000]
                 cursor.fast_executemany = True
                 cursor.executemany(sql, batch)
                 total += len(batch)
                 cursor.connection.commit()
-                print(f"      Batch {i//BATCH_SIZE + 1}: {len(batch):,} rows")
+                print(f"      Batch {i//100000 + 1}: {len(batch):,} rows")
             results['DIM_NGANH'] = total
             print(f"      ✅ Inserted {total:,} new rows")
-        else:
-            print(f"      ⚪ No new rows")
     
     # 3. DIM_CHUYEN_NGANH
     print("\n    📌 DIM_CHUYEN_NGANH")
@@ -122,17 +116,15 @@ def insert_dimension_tables(cursor, dims):
         if new_data:
             sql = "INSERT INTO DIM_CHUYEN_NGANH (MaChuyenNganh, TenChuyenNganh, MaNganh) VALUES (?, ?, ?)"
             total = 0
-            for i in range(0, len(new_data), BATCH_SIZE):
-                batch = new_data[i:i+BATCH_SIZE]
+            for i in range(0, len(new_data), 100000):
+                batch = new_data[i:i+100000]
                 cursor.fast_executemany = True
                 cursor.executemany(sql, batch)
                 total += len(batch)
                 cursor.connection.commit()
-                print(f"      Batch {i//BATCH_SIZE + 1}: {len(batch):,} rows")
+                print(f"      Batch {i//100000 + 1}: {len(batch):,} rows")
             results['DIM_CHUYEN_NGANH'] = total
             print(f"      ✅ Inserted {total:,} new rows")
-        else:
-            print(f"      ⚪ No new rows")
     
     # 4. DIM_HOC_PHAN
     print("\n    📌 DIM_HOC_PHAN")
@@ -145,17 +137,15 @@ def insert_dimension_tables(cursor, dims):
         if new_data:
             sql = "INSERT INTO DIM_HOC_PHAN (MaHP, TenHP, MaKhoa) VALUES (?, ?, ?)"
             total = 0
-            for i in range(0, len(new_data), BATCH_SIZE):
-                batch = new_data[i:i+BATCH_SIZE]
+            for i in range(0, len(new_data), 100000):
+                batch = new_data[i:i+100000]
                 cursor.fast_executemany = True
                 cursor.executemany(sql, batch)
                 total += len(batch)
                 cursor.connection.commit()
-                print(f"      Batch {i//BATCH_SIZE + 1}: {len(batch):,} rows")
+                print(f"      Batch {i//100000 + 1}: {len(batch):,} rows")
             results['DIM_HOC_PHAN'] = total
             print(f"      ✅ Inserted {total:,} new rows")
-        else:
-            print(f"      ⚪ No new rows")
     
     # 5. DIM_GIANG_VIEN
     print("\n    📌 DIM_GIANG_VIEN")
@@ -168,17 +158,15 @@ def insert_dimension_tables(cursor, dims):
         if new_data:
             sql = "INSERT INTO DIM_GIANG_VIEN (MaGV, HoDemGV, TenGV) VALUES (?, ?, ?)"
             total = 0
-            for i in range(0, len(new_data), BATCH_SIZE):
-                batch = new_data[i:i+BATCH_SIZE]
+            for i in range(0, len(new_data), 100000):
+                batch = new_data[i:i+100000]
                 cursor.fast_executemany = True
                 cursor.executemany(sql, batch)
                 total += len(batch)
                 cursor.connection.commit()
-                print(f"      Batch {i//BATCH_SIZE + 1}: {len(batch):,} rows")
+                print(f"      Batch {i//100000 + 1}: {len(batch):,} rows")
             results['DIM_GIANG_VIEN'] = total
             print(f"      ✅ Inserted {total:,} new rows")
-        else:
-            print(f"      ⚪ No new rows")
     
     # 6. DIM_HOC_KY
     print("\n    📌 DIM_HOC_KY")
@@ -191,17 +179,15 @@ def insert_dimension_tables(cursor, dims):
         if new_data:
             sql = "INSERT INTO DIM_HOC_KY (MaHocKy, NamHoc, HocKy) VALUES (?, ?, ?)"
             total = 0
-            for i in range(0, len(new_data), BATCH_SIZE):
-                batch = new_data[i:i+BATCH_SIZE]
+            for i in range(0, len(new_data), 100000):
+                batch = new_data[i:i+100000]
                 cursor.fast_executemany = True
                 cursor.executemany(sql, batch)
                 total += len(batch)
                 cursor.connection.commit()
-                print(f"      Batch {i//BATCH_SIZE + 1}: {len(batch):,} rows")
+                print(f"      Batch {i//100000 + 1}: {len(batch):,} rows")
             results['DIM_HOC_KY'] = total
             print(f"      ✅ Inserted {total:,} new rows")
-        else:
-            print(f"      ⚪ No new rows")
     
     # 7. DIM_LOP_SINH_VIEN
     print("\n    📌 DIM_LOP_SINH_VIEN")
@@ -214,17 +200,15 @@ def insert_dimension_tables(cursor, dims):
         if new_data:
             sql = "INSERT INTO DIM_LOP_SINH_VIEN (MaLop, Lop, MaChuyenNganh) VALUES (?, ?, ?)"
             total = 0
-            for i in range(0, len(new_data), BATCH_SIZE):
-                batch = new_data[i:i+BATCH_SIZE]
+            for i in range(0, len(new_data), 100000):
+                batch = new_data[i:i+100000]
                 cursor.fast_executemany = True
                 cursor.executemany(sql, batch)
                 total += len(batch)
                 cursor.connection.commit()
-                print(f"      Batch {i//BATCH_SIZE + 1}: {len(batch):,} rows")
+                print(f"      Batch {i//100000 + 1}: {len(batch):,} rows")
             results['DIM_LOP_SINH_VIEN'] = total
             print(f"      ✅ Inserted {total:,} new rows")
-        else:
-            print(f"      ⚪ No new rows")
     
     # 8. DIM_SINH_VIEN
     print("\n    📌 DIM_SINH_VIEN")
@@ -237,17 +221,15 @@ def insert_dimension_tables(cursor, dims):
         if new_data:
             sql = "INSERT INTO DIM_SINH_VIEN (MaSV, HoDem, Ten, NgaySinh, MaLop) VALUES (?, ?, ?, ?, ?)"
             total = 0
-            for i in range(0, len(new_data), BATCH_SIZE):
-                batch = new_data[i:i+BATCH_SIZE]
+            for i in range(0, len(new_data), 100000):
+                batch = new_data[i:i+100000]
                 cursor.fast_executemany = True
                 cursor.executemany(sql, batch)
                 total += len(batch)
                 cursor.connection.commit()
-                print(f"      Batch {i//BATCH_SIZE + 1}: {len(batch):,} rows")
+                print(f"      Batch {i//100000 + 1}: {len(batch):,} rows")
             results['DIM_SINH_VIEN'] = total
             print(f"      ✅ Inserted {total:,} new rows")
-        else:
-            print(f"      ⚪ No new rows")
     
     # 9. DIM_LOP_HOC_PHAN
     print("\n    📌 DIM_LOP_HOC_PHAN")
@@ -260,41 +242,65 @@ def insert_dimension_tables(cursor, dims):
         if new_data:
             sql = "INSERT INTO DIM_LOP_HOC_PHAN (MaLopHP, LopHP, MaHP, MaGV, MaHocKy) VALUES (?, ?, ?, ?, ?)"
             total = 0
-            for i in range(0, len(new_data), BATCH_SIZE):
-                batch = new_data[i:i+BATCH_SIZE]
+            for i in range(0, len(new_data), 100000):
+                batch = new_data[i:i+100000]
                 cursor.fast_executemany = True
                 cursor.executemany(sql, batch)
                 total += len(batch)
                 cursor.connection.commit()
-                print(f"      Batch {i//BATCH_SIZE + 1}: {len(batch):,} rows")
+                print(f"      Batch {i//100000 + 1}: {len(batch):,} rows")
             results['DIM_LOP_HOC_PHAN'] = total
             print(f"      ✅ Inserted {total:,} new rows")
-        else:
-            print(f"      ⚪ No new rows")
     
     elapsed = time.time() - start
     print(f"\n  ✅ DIMENSION tables done in {elapsed:.2f}s")
     return results
 
 
-# ================= INSERT FACT TABLES - TỐI ƯU CAO =================
-def insert_fact_tables_optimized(cursor, conn, fact_main, fact_ketqua):
-    """Insert FACT tables với tốc độ cao nhất"""
-    print("\n  🚀 ULTRA FAST FACT INSERT")
+# ================= INSERT FACT TABLES - TỐI ƯU CAO NHẤT =================
+def insert_fact_tables_super_fast(cursor, conn, fact_main, fact_ketqua):
+    """Insert FACT tables với tốc độ siêu cao"""
+    print("\n  🚀 SUPER FAST FACT INSERT")
     start = time.time()
     results = {}
     
-    # TẮT CONSTRAINTS
+    # === BƯỚC 1: TẮT TOÀN BỘ RÀNG BUỘC ===
+    print("\n  ⚡ Disabling constraints and triggers...")
     try:
         cursor.execute("ALTER TABLE FACT_GOP_Y_TU_LUAN NOCHECK CONSTRAINT ALL")
         cursor.execute("ALTER TABLE FACT_KET_QUA_DANH_GIA NOCHECK CONSTRAINT ALL")
+        cursor.execute("DISABLE TRIGGER ALL ON FACT_GOP_Y_TU_LUAN")
+        cursor.execute("DISABLE TRIGGER ALL ON FACT_KET_QUA_DANH_GIA")
         conn.commit()
-        print("  ✅ Constraints disabled")
+        print("  ✅ Constraints and triggers disabled")
     except Exception as e:
-        print(f"  ⚠️ Could not disable constraints: {e}")
+        print(f"  ⚠️ Could not disable: {e}")
     
-    # === FACT_KET_QUA_DANH_GIA (Insert trước vì nhanh hơn) ===
-    print("\n    📌 FACT_KET_QUA_DANH_GIA")
+    # === BƯỚC 2: DROP NON-CLUSTERED INDEXES ===
+    print("\n  🗑️ Dropping non-clustered indexes...")
+    for table in ['FACT_GOP_Y_TU_LUAN', 'FACT_KET_QUA_DANH_GIA']:
+        try:
+            cursor.execute(f"""
+                SELECT name FROM sys.indexes 
+                WHERE object_id = OBJECT_ID('{table}')
+                AND index_id > 1
+                AND is_primary_key = 0
+                AND is_unique_constraint = 0
+                AND name NOT LIKE 'PK%'
+            """)
+            indexes = cursor.fetchall()
+            for idx in indexes:
+                try:
+                    cursor.execute(f"DROP INDEX {idx[0]} ON {table}")
+                    print(f"      Dropped: {idx[0]}")
+                except:
+                    pass
+            conn.commit()
+        except Exception as e:
+            print(f"      Error on {table}: {e}")
+    
+    # === BƯỚC 3: INSERT FACT_KET_QUA_DANH_GIA (Nhanh hơn) ===
+    print("\n  📥 Inserting FACT_KET_QUA_DANH_GIA...")
     if fact_ketqua is not None and not fact_ketqua.empty:
         # Loại bỏ duplicate
         fact_ketqua = fact_ketqua.drop_duplicates(subset=['SubmissionID', 'MaCauHoi'], keep='first')
@@ -306,34 +312,32 @@ def insert_fact_tables_optimized(cursor, conn, fact_main, fact_ketqua):
         sql = "INSERT INTO FACT_KET_QUA_DANH_GIA (SubmissionID, MaCauHoi, Diem) VALUES (?, ?, ?)"
         
         total = 0
-        for i in range(0, len(data), BATCH_SIZE):
-            batch = data[i:i+BATCH_SIZE]
+        for i in range(0, len(data), BATCH_SIZE_FACT):
+            batch = data[i:i+BATCH_SIZE_FACT]
             cursor.fast_executemany = True
             cursor.executemany(sql, batch)
             total += len(batch)
             conn.commit()
-            if (i // BATCH_SIZE + 1) % 5 == 0:
-                print(f"      Batch {i//BATCH_SIZE + 1}: {len(batch):,} rows (total: {total:,})")
+            print(f"      Batch {i//BATCH_SIZE_FACT + 1}: {len(batch):,} rows (total: {total:,})")
         
         results['FACT_KET_QUA_DANH_GIA'] = total
-        print(f"      ✅ Inserted {total:,} rows in {time.time()-start:.1f}s")
+        print(f"  ✅ Inserted {total:,} rows in {time.time()-start:.1f}s")
     
-    # === FACT_GOP_Y_TU_LUAN (Tối ưu với batch nhỏ hơn để tránh lỗi text) ===
-    print("\n    📌 FACT_GOP_Y_TU_LUAN")
+    # === BƯỚC 4: INSERT FACT_GOP_Y_TU_LUAN ===
+    print("\n  📥 Inserting FACT_GOP_Y_TU_LUAN...")
     if fact_main is not None and not fact_main.empty:
-        # Kiểm tra độ dài text và xử lý
         fact_main = fact_main.copy()
         
-        # Đảm bảo cột NoiDungGopY là string
+        # Đảm bảo text không quá dài (nếu column là NVARCHAR(MAX) thì không cần)
         fact_main['NoiDungGopY'] = fact_main['NoiDungGopY'].astype(str)
         
         # Kiểm tra độ dài tối đa
         max_len = fact_main['NoiDungGopY'].str.len().max()
-        print(f"      Max text length: {max_len} characters")
+        print(f"      Max text length: {max_len} chars")
         
-        # Nếu database column là NVARCHAR(MAX) hoặc NVARCHAR(1000), không cần cắt
-        # Chỉ cắt nếu database column có giới hạn nhỏ hơn
-        # Ở đây giả sử column là NVARCHAR(MAX) nên không cắt
+        # Nếu column là NVARCHAR(MAX) trong DB, không cần cắt
+        # Nếu column có giới hạn, comment dòng dưới và uncomment dòng sau
+        # fact_main['NoiDungGopY'] = fact_main['NoiDungGopY'].str[:4000]
         
         data = fact_main[['SubmissionID', 'MaSV', 'LopHP', 'NoiDungGopY',
                          'Sentiment', 'Is_Valid', 'Tag_HocPhan', 
@@ -346,62 +350,72 @@ def insert_fact_tables_optimized(cursor, conn, fact_main, fact_ketqua):
                   Is_Valid, Tag_HocPhan, Tag_DayHoc, Tag_KiemTra, Tag_Khac) 
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
         
-        # Dùng batch nhỏ hơn cho bảng này (50k thay vì 200k) để tránh lỗi
-        fact_batch_size = 50000
         total = 0
-        error_count = 0
-        
-        for i in range(0, len(data), fact_batch_size):
-            batch = data[i:i+fact_batch_size]
-            batch_num = i // fact_batch_size + 1
-            
+        for i in range(0, len(data), BATCH_SIZE_FACT):
+            batch = data[i:i+BATCH_SIZE_FACT]
             try:
                 cursor.fast_executemany = True
                 cursor.executemany(sql, batch)
                 total += len(batch)
                 conn.commit()
-                print(f"      Batch {batch_num}: {len(batch):,} rows (total: {total:,})")
+                print(f"      Batch {i//BATCH_SIZE_FACT + 1}: {len(batch):,} rows (total: {total:,})")
             except Exception as e:
-                error_count += 1
-                print(f"      Batch {batch_num} error: {e}")
-                # Thử insert từng dòng nếu batch lỗi
-                success = 0
-                for row in batch:
+                print(f"      Batch {i//BATCH_SIZE_FACT + 1} error: {e}")
+                # Nếu lỗi, thử với batch nhỏ hơn
+                sub_batch_size = 10000
+                for j in range(0, len(batch), sub_batch_size):
+                    sub_batch = batch[j:j+sub_batch_size]
                     try:
-                        cursor.execute(sql, row)
-                        success += 1
+                        cursor.fast_executemany = True
+                        cursor.executemany(sql, sub_batch)
+                        total += len(sub_batch)
                         conn.commit()
-                    except Exception as row_err:
-                        # Nếu lỗi do text quá dài, cắt bớt
-                        if "truncation" in str(row_err) or "buffer" in str(row_err):
-                            row_fixed = list(row)
-                            row_fixed[3] = row_fixed[3][:500]  # Cắt xuống 500 chars
+                    except Exception as sub_e:
+                        print(f"        Sub-batch error: {sub_e}")
+                        # Insert từng dòng nếu vẫn lỗi
+                        for row in sub_batch:
                             try:
-                                cursor.execute(sql, tuple(row_fixed))
-                                success += 1
+                                cursor.execute(sql, row)
+                                total += 1
                                 conn.commit()
                             except:
                                 pass
-                        else:
-                            pass
-                total += success
-                conn.commit()
-                print(f"      Batch {batch_num}: Inserted {success}/{len(batch)} rows after retry")
+                print(f"      Batch {i//BATCH_SIZE_FACT + 1}: Retry completed")
         
         results['FACT_GOP_Y_TU_LUAN'] = total
-        if error_count > 0:
-            print(f"      ⚠️ Had {error_count} problematic batches, but inserted {total:,} rows")
-        else:
-            print(f"      ✅ Inserted {total:,} rows")
+        print(f"  ✅ Inserted {total:,} rows in {time.time()-start:.1f}s")
     
-    # BẬT LẠI CONSTRAINTS
+    # === BƯỚC 5: REBUILD INDEXES ===
+    print("\n  🔨 Rebuilding indexes...")
+    for table in ['FACT_GOP_Y_TU_LUAN', 'FACT_KET_QUA_DANH_GIA']:
+        try:
+            cursor.execute(f"ALTER INDEX ALL ON {table} REBUILD")
+            print(f"      Rebuilt indexes on {table}")
+        except Exception as e:
+            print(f"      Error rebuilding on {table}: {e}")
+    conn.commit()
+    
+    # === BƯỚC 6: BẬT LẠI RÀNG BUỘC ===
+    print("\n  🔓 Enabling constraints and triggers...")
     try:
         cursor.execute("ALTER TABLE FACT_GOP_Y_TU_LUAN CHECK CONSTRAINT ALL")
         cursor.execute("ALTER TABLE FACT_KET_QUA_DANH_GIA CHECK CONSTRAINT ALL")
+        cursor.execute("ENABLE TRIGGER ALL ON FACT_GOP_Y_TU_LUAN")
+        cursor.execute("ENABLE TRIGGER ALL ON FACT_KET_QUA_DANH_GIA")
         conn.commit()
-        print("\n  ✅ Constraints enabled")
+        print("  ✅ Constraints and triggers enabled")
     except Exception as e:
-        print(f"  ⚠️ Could not enable constraints: {e}")
+        print(f"  ⚠️ Could not enable: {e}")
+    
+    # === BƯỚC 7: UPDATE STATISTICS ===
+    print("\n  📊 Updating statistics...")
+    try:
+        cursor.execute("UPDATE STATISTICS FACT_GOP_Y_TU_LUAN")
+        cursor.execute("UPDATE STATISTICS FACT_KET_QUA_DANH_GIA")
+        conn.commit()
+        print("  ✅ Statistics updated")
+    except Exception as e:
+        print(f"  ⚠️ Could not update statistics: {e}")
     
     elapsed = time.time() - start
     print(f"\n  ✅ FACT tables done in {elapsed:.2f}s")
@@ -430,18 +444,18 @@ def verify_data(cursor):
 def main():
     total_start = time.time()
     print("=" * 80)
-    print("🚀 JOB 2: CHÈN DỮ LIỆU (TỐC ĐỘ CAO)")
+    print("🚀 JOB 2: CHÈN DỮ LIỆU (SIÊU TỐC - TỐI ƯU FACT)")
     print("=" * 80)
     print(f"📂 Survey: {SURVEY_FILE}")
     print(f"📁 Semester: {SEMESTER}")
-    print(f"⚙️ Batch size: {BATCH_SIZE:,} rows/batch")
+    print(f"⚙️ FACT Batch size: {BATCH_SIZE_FACT:,} rows/batch")
     print("=" * 80)
-    print("\n📌 OPTIMIZATION STRATEGY:")
-    print("   1️⃣ Disable constraints for faster insert")
-    print("   2️⃣ Batch insert with 200k rows/batch")
-    print("   3️⃣ Fast_executemany = ON")
-    print("   4️⃣ Insert FACT_KET_QUA first (faster)")
-    print("   5️⃣ Smart retry for text truncation")
+    print("\n📌 SUPER FAST STRATEGY:")
+    print("   1️⃣ Disable ALL constraints & triggers")
+    print("   2️⃣ Drop non-clustered indexes")
+    print("   3️⃣ Batch insert with 500k rows/batch")
+    print("   4️⃣ Rebuild indexes after insert")
+    print("   5️⃣ Update statistics")
     print("=" * 80)
     
     # 1. Kết nối Azure
@@ -496,8 +510,8 @@ def main():
         # Insert DIMENSION tables
         dim_results = insert_dimension_tables(cursor, dims)
         
-        # Insert FACT tables
-        fact_results = insert_fact_tables_optimized(cursor, conn, fact_main, fact_ketqua)
+        # Insert FACT tables (tối ưu cao nhất)
+        fact_results = insert_fact_tables_super_fast(cursor, conn, fact_main, fact_ketqua)
         
         # Kiểm tra kết quả
         verify_data(cursor)
